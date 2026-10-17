@@ -111,3 +111,17 @@ content seeded earlier under the filename slug is still recognised, and
 `python -m maintenance.content retitle [--dry-run]` renames it (Cosmos deck
 title, playlist steps, AI Search chunks and library manifests). See
 `demos/backend/maintenance/content.py` for podcast/video rendering and purge.
+
+Podcast re-renders (staged, so visitors never see duplicates):
+
+```bash
+python -m maintenance.content inventory --json /tmp/before.json   # record current items
+python -m maintenance.content warm-listeners                      # build the cached listener kits first
+python -m maintenance.content render-podcast all --force          # new video + radio renditions
+python -m maintenance.content publish --podcast-id <old-id> --off # unpublish each superseded item (kept for rollback)
+python -m maintenance.content purge --podcast-id <old-id> --record /tmp/purge.json  # only after verification
+```
+
+`render-podcast --format audio` renders a radio-only episode. Run CLI renders
+when nobody is rendering from the studio: the CLI process does not share the
+server's render limits or batch-job pacing.

@@ -16,11 +16,18 @@
  *   $env:OZ_RADIO_E2E_EVIDENCE='<evidence-dir>'
  *   npx playwright test tests/e2e-live.spec.ts --project=chromium --workers=1
  *
- * Tags: @admin (A/B/C: deck flow, raise hand, French), @demo (D), @podcast (E/F).
+ * Tags: @admin (A/B/C: deck flow, raise hand, French), @demo (D), @podcast (E/F/G).
  * Evidence (screenshots, WS/data-channel/analyser timelines, podcast frames)
  * goes to OZ_RADIO_E2E_EVIDENCE.
+ *
+ * G (library Watch + Listen) needs the podcast library, i.e. blob storage for the
+ * backend (AZURE_BLOB_ACCOUNT_NAME or AZURE_BLOB_CONNECTION_STRING): it plays the
+ * episode E rendered, else the newest library podcast with a video and a radio
+ * rendition, and is skipped when there is none.
  */
-import { test, expect, type Browser, type BrowserContext, type Page, type APIRequestContext } from '@playwright/test';
+import {
+  test, expect, type Browser, type BrowserContext, type ElementHandle, type Locator, type Page, type APIRequestContext,
+} from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -833,6 +840,44 @@ function greenFraction(png: string, crop: string): number {
   return green / (raw.length / 3);
 }
 
+/** Stable job warning codes (services/podcast_media.WARNING_CODES). */
+const KNOWN_WARNINGS = ['listener_fallback', 'listener_static', 'listener_timeout', 'reactions_skipped', 'radio_fallback', 'cover_fallback'];
+
+/** Library episode rendered by E (job id), played by G. */
+let podcastLibraryJob = '';
+
+interface LibraryEntry { job_id: string; format?: string | null; has_video?: boolean | null; has_audio?: boolean | null }
+interface RadioTurn { turn_idx: number; speaker: string; start: number; end: number; video_start?: number | null; video_end?: number | null }
+interface RadioTranscript { duration_sec: number; turns: RadioTurn[] }
+
+/** Port of RadioPlayer.mapRenditionTime: radio <-> video position, turn by turn. */
+function mapRenditionTime(transcript: RadioTranscript, t: number, from: 'video' | 'audio'): number {
+  const time = Number.isFinite(t) && t > 0 ? t : 0;
+  const spans = transcript.turns
+    .filter((x) => typeof x.video_start === 'number' && typeof x.video_end === 'number')
+    .map((x) => {
+      const audio: [number, number] = [x.start, x.end];
+      const video: [number, number] = [x.video_start as number, x.video_end as number];
+      return from === 'video' ? { src: video, dst: audio } : { src: audio, dst: video };
+    })
+    .sort((a, b) => a.src[0] - b.src[0]);
+  if (spans.length === 0) return time;
+  if (time < spans[0].src[0]) return Math.max(0, spans[0].dst[0] - (spans[0].src[0] - time));
+  let i = spans.length - 1;
+  while (i > 0 && spans[i].src[0] > time) i--;
+  const { src, dst } = spans[i];
+  if (time <= src[1]) {
+    const span = src[1] - src[0];
+    return dst[0] + (span > 0 ? (time - src[0]) / span : 0) * (dst[1] - dst[0]);
+  }
+  return i + 1 < spans.length ? spans[i + 1].dst[0] : dst[1] + (time - src[1]);
+}
+
+/** A library row action (button or deep link) by accessible name. */
+function rowAction(row: Locator, name: RegExp): Locator {
+  return row.getByRole('button', { name }).or(row.getByRole('link', { name })).first();
+}
+
 test.describe('@podcast podcast render + audience level', () => {
   test('E: short podcast with Sofia + Lucas renders a correct 1920x1080 layout', async ({ browser }) => {
     test.setTimeout(30 * 60_000);
@@ -864,6 +909,19 @@ test.describe('@podcast podcast render + audience level', () => {
     const renderMin = (Date.now() - tStart) / 60_000;
     test.info().annotations.push({ type: 'render-minutes', description: renderMin.toFixed(1) });
     expect(job.state, job.error ?? '').toBe('done');
+    // Watch + Listen: a video job also carries the radio master and reports its listener.
+    const warnings: string[] = job.warnings ?? [];
+    test.info().annotations.push(
+      { type: 'listener-mode', description: String(job.listener_mode) },
+      { type: 'audio-kind', description: String(job.outputs?.audio_kind) },
+      { type: 'warnings', description: warnings.join(',') || 'none' },
+    );
+    expect(job.format ?? 'video').toBe('video');
+    expect(job.outputs?.mp3_url, 'radio MP3 route').toBeTruthy();
+    expect(warnings.filter((w) => !KNOWN_WARNINGS.includes(w)), 'warnings are stable codes').toEqual([]);
+    expect.soft(job.outputs?.audio_kind, 'dedicated radio mix (not the soundtrack fallback)').toBe('radio_mix');
+    expect.soft(job.listener_mode, 'alive listener loop').toBe('idle_loop');
+    if (job.archive_state === 'published') podcastLibraryJob = job.library_job_id ?? job0.id;
     const mp4 = path.join(EVIDENCE, 'E-podcast.mp4');
     const file = await api.get(`/api/podcast/jobs/${job0.id}/file/mp4`, { timeout: 120_000 });
     expect(file.ok()).toBeTruthy();
@@ -881,7 +939,9 @@ test.describe('@podcast podcast render + audience level', () => {
     }
     // No chroma-green left in the avatar band (top 360 px).
     const greens = frames.map((f) => greenFraction(f, '1920:360:0:0'));
-    saveJson('E-summary.json', { job: job0.id, renderMinutes: renderMin, duration: dur, frames, greenFractionTopBand: greens });
+    saveJson('E-summary.json', { job: job0.id, renderMinutes: renderMin, duration: dur, frames, greenFractionTopBand: greens,
+      listenerMode: job.listener_mode, warnings, audioKind: job.outputs?.audio_kind, archiveState: job.archive_state,
+      audioDuration: job.outputs?.audio_duration_sec, videoDuration: job.outputs?.video_duration_sec });
     for (const g of greens) expect(g).toBeLessThan(0.005);
     expect(renderMin, 'render time').toBeLessThan(15);
   });
@@ -905,5 +965,172 @@ test.describe('@podcast podcast render + audience level', () => {
     saveJson('F-summary.json', { beginner: sb, expert: se });
     expect(b).not.toBe(e);
     expect(se.longWords, 'expert script uses more technical vocabulary').toBeGreaterThan(sb.longWords);
+  });
+
+  test('G: library Watch + Listen — the radio player plays with live captions and lit hosts; Watch resumes the video at the mapped position', async ({ browser }) => {
+    test.setTimeout(8 * 60_000);
+    const api = await adminApi(browser);
+    const list: LibraryEntry[] = await (await api.get('/api/podcast/library')).json();
+    const both = (i: LibraryEntry) => (i.has_video ?? i.format !== 'audio') && (i.has_audio ?? true);
+    const target = list.find((i) => i.job_id === podcastLibraryJob && both(i)) ?? list.find(both);
+    if (!target) {
+      test.skip(true, 'No library podcast with a video and a radio rendition: run E first (the backend needs AZURE_BLOB_* storage)');
+      return;
+    }
+    const item = await (await api.get(`/api/podcast/library/${target.job_id}`)).json();
+    let transcript: RadioTranscript | null = item.transcript ?? null;
+    if (!transcript) {
+      const r = await api.get(`/api/podcast/jobs/${target.job_id}/file/transcript`);
+      transcript = r.ok() ? await r.json() : null;
+    }
+    expect(transcript?.turns?.length, 'radio transcript with turns').toBeGreaterThan(0);
+    const tr = transcript as RadioTranscript;
+    // Legacy (soundtrack) items may lack video offsets: the player then maps positions 1:1.
+    const videoOffsets = tr.turns.every((t) => typeof t.video_start === 'number' && typeof t.video_end === 'number');
+    if (target.job_id === podcastLibraryJob) expect(videoOffsets, 'transcript turns carry video_start/video_end').toBe(true);
+
+    const ctx = await browser.newContext({ baseURL: BASE_URL, viewport: { width: 1440, height: 1000 } });
+    const page = await ctx.newPage();
+    attachConsole(page, 'G');
+    const summary: Record<string, unknown> = { job: target.job_id, renderedByE: target.job_id === podcastLibraryJob, videoOffsets };
+    try {
+      const fetched: string[] = [];
+      page.on('request', (r) => {
+        const m = new URL(r.url()).pathname.match(/\/api\/podcast\/library\/(job-[0-9a-f]{8})$/);
+        if (m) fetched.push(m[1]);
+      });
+      const codecs = await page.evaluate(() => ({
+        mp3: document.createElement('audio').canPlayType('audio/mpeg'),
+        mp4: document.createElement('video').canPlayType('video/mp4; codecs="avc1.640028, mp4a.40.2"'),
+      }));
+      summary.codecs = codecs;
+      expect(codecs.mp3 && codecs.mp4, `this Chromium plays MP3 and H.264/AAC (${JSON.stringify(codecs)})`).toBeTruthy();
+
+      // The library row offers Watch and Listen side by side.
+      await page.goto('/podcast/library');
+      const rows = page.getByTestId('library-item');
+      await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+      const row = rows.nth(list.findIndex((i) => i.job_id === target.job_id));
+      await row.scrollIntoViewIfNeeded();
+      const watch = rowAction(row, /^watch\b/i);
+      const listen = rowAction(row, /^listen\b/i);
+      await expect(watch, 'Watch on the library row').toBeVisible();
+      await expect(listen, 'Listen on the library row').toBeVisible();
+      await shot(page, 'G-library-row');
+
+      // Listen: the radio player opens on the Listen tab and plays.
+      await listen.click();
+      const dialog = page.getByRole('dialog');
+      const listenTab = dialog.getByRole('tab', { name: /listen/i });
+      const watchTab = dialog.getByRole('tab', { name: /watch/i });
+      await expect(listenTab).toHaveAttribute('aria-selected', 'true', { timeout: 30_000 });
+      const player = dialog.getByTestId('radio-player');
+      await expect(player).toBeVisible({ timeout: 30_000 });
+      const episode = new URL(page.url()).searchParams.get('episode');
+      expect(episode === target.job_id || fetched.includes(target.job_id),
+        `the row opened ${target.job_id} (url episode=${episode}, fetched ${fetched.join(',') || 'none'})`).toBe(true);
+      const audio = dialog.getByTestId('radio-audio');
+      await expect(audio).toHaveAttribute('src', /\S/, { timeout: 30_000 });
+      const audioEl = (await audio.elementHandle()) as ElementHandle<HTMLAudioElement>;
+      const audioState = () => audioEl.evaluate((a) => ({ t: a.currentTime, paused: a.paused, duration: a.duration }));
+      const autoplayed = await expect.poll(async () => (await audioState()).paused, { timeout: 5_000 }).toBe(false)
+        .then(() => true, () => false);
+      summary.autoplayed = autoplayed;
+      if (!autoplayed) await dialog.getByTestId('radio-play').click();
+      await expect(player).toHaveAttribute('data-state', 'playing', { timeout: 30_000 });
+      const t0 = (await audioState()).t;
+      await expect.poll(async () => (await audioState()).t, { timeout: 20_000, message: 'radio currentTime advances' })
+        .toBeGreaterThan(t0 + 2);
+
+      // Live caption follows the audio.
+      const caption = dialog.getByTestId('radio-caption');
+      const captionText = async () => ((await caption.textContent()) ?? '').trim();
+      await expect(caption, 'a live caption is shown').toHaveText(/\S/, { timeout: 20_000 });
+      const firstCaption = await captionText();
+      await expect.poll(async () => {
+        const text = await captionText();
+        return text && text !== firstCaption ? 'updated' : 'same';
+      }, { timeout: 45_000, message: 'the live caption updates' }).toBe('updated');
+      summary.captions = [firstCaption, await captionText()];
+
+      // Exactly one host disc lights up, and it is the speaker of the current turn.
+      await expect(dialog.locator('[data-testid^="radio-host-"][data-speaking="true"]'), 'a host disc lights up while playing')
+        .toHaveCount(1, { timeout: 15_000 });
+      const hostSamples: { t: number; lit: string[]; speaker: string | null }[] = [];
+      for (let i = 0; i < 10; i++) {
+        const s = await page.evaluate(() => ({
+          t: document.querySelector<HTMLAudioElement>('[data-testid="radio-audio"]')?.currentTime ?? -1,
+          lit: [...document.querySelectorAll('[data-testid^="radio-host-"][data-speaking="true"]')]
+            .map((e) => (e.getAttribute('data-testid') ?? '').replace('radio-host-', '')),
+        }));
+        const turn = tr.turns.find((x) => s.t >= x.start + 0.5 && s.t <= x.end - 0.5);
+        hostSamples.push({ ...s, speaker: turn?.speaker ?? null });
+        await page.waitForTimeout(600);
+      }
+      summary.hostSamples = hostSamples;
+      const judged = hostSamples.filter((s) => s.speaker);
+      expect(judged.length, 'host lighting sampled inside turns').toBeGreaterThan(0);
+      expect(judged.filter((s) => s.lit.length !== 1 || s.lit[0] !== s.speaker), 'the lit host disc is the current speaker')
+        .toEqual([]);
+      await shot(page, 'G-listen-playing');
+
+      // Seek the radio to ~45 % so that the Watch position mapping is not trivial.
+      const radioDuration = (await audioState()).duration;
+      const wave = dialog.getByTestId('radio-waveform');
+      const box = await wave.boundingBox();
+      expect(box, 'waveform slider').not.toBeNull();
+      await wave.click({ position: { x: box!.width * 0.45, y: box!.height / 2 } });
+      await expect.poll(async () => (await audioState()).t, { timeout: 10_000, message: 'a waveform click seeks the radio' })
+        .toBeGreaterThan(radioDuration * 0.4);
+      await expect(player).toHaveAttribute('data-state', 'playing', { timeout: 15_000 });
+      await page.waitForTimeout(1500);
+
+      // Watch: the radio pauses and the video plays from the mapped position.
+      const tAudio = (await audioState()).t;
+      const expectedVideo = mapRenditionTime(tr, tAudio, 'audio');
+      const tSwitch = Date.now();
+      await watchTab.click();
+      await expect(watchTab).toHaveAttribute('aria-selected', 'true');
+      await expect.poll(async () => (await audioState()).paused, { timeout: 5_000, message: 'the radio pauses on Watch' })
+        .toBe(true);
+      const video = dialog.locator('video:visible').first();
+      await expect(video).toBeVisible({ timeout: 30_000 });
+      const videoEl = (await video.elementHandle()) as ElementHandle<HTMLVideoElement>;
+      const videoState = () => videoEl.evaluate((v) => ({
+        t: v.currentTime, paused: v.paused, seeking: v.seeking, ready: v.readyState, duration: v.duration,
+      }));
+      await expect.poll(async () => {
+        const s = await videoState();
+        return !s.paused && !s.seeking && s.ready >= 3;
+      }, { timeout: 30_000, message: 'the video plays on Watch' }).toBe(true);
+      const vStart = (await videoState()).t;
+      const switchSec = (Date.now() - tSwitch) / 1000;
+      Object.assign(summary, { radioDuration, tAudio, expectedVideo, vStart, switchSec });
+      expect(vStart, `video starts near the mapped position ${expectedVideo.toFixed(1)}s (radio ${tAudio.toFixed(1)}s)`)
+        .toBeGreaterThanOrEqual(expectedVideo - 1.5);
+      expect(vStart, `video starts near the mapped position ${expectedVideo.toFixed(1)}s (+${switchSec.toFixed(1)}s switch)`)
+        .toBeLessThanOrEqual(expectedVideo + switchSec + 1.5);
+      await page.waitForTimeout(2500);
+      const vLater = await videoState();
+      summary.videoLater = vLater;
+      expect(vLater.paused, 'the video keeps playing').toBe(false);
+      expect(vLater.t - vStart, 'video currentTime advances').toBeGreaterThan(1);
+      expect((await audioState()).paused, 'one active media element: the radio stays paused').toBe(true);
+      await shot(page, 'G-watch-video');
+
+      // Same episode on both tabs: the tight radio mix is not longer than the video.
+      expect(Number.isFinite(radioDuration) && Number.isFinite(vLater.duration), 'media durations are known').toBe(true);
+      expect(radioDuration, 'Listen is not longer than Watch (+1 s)').toBeLessThanOrEqual(vLater.duration + 1);
+      expect(radioDuration / vLater.duration, 'Listen covers the same episode (>= 50 % of Watch)').toBeGreaterThanOrEqual(0.5);
+      expect(Math.abs(radioDuration - tr.duration_sec), 'radio duration matches the transcript').toBeLessThanOrEqual(1);
+
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden({ timeout: 10_000 });
+      await expect.poll(async () => (await videoState()).paused, { timeout: 5_000, message: 'closing the player stops the video' })
+        .toBe(true);
+    } finally {
+      saveJson('G-summary.json', summary);
+      await ctx.close();
+    }
   });
 });

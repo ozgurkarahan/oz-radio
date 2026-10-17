@@ -92,6 +92,33 @@ param dailyGenerationQuota string = '50'
 @description('Global queued/running render jobs')
 param maxPendingRenders string = '3'
 
+@description('Podcast compose steps (ffmpeg video compose) running at once on the replica')
+param maxConcurrentComposes string = '1'
+
+@description('Batch avatar synthesis jobs active at once on the replica (podcast talking turns + listener kits)')
+param maxActiveBatchJobs string = '8'
+
+@description('Batch avatar job creations per rolling minute (the Speech service allows about 2)')
+param speechBatchCreatePerMin string = '2'
+
+@description('Kill switch: anonymous visitors of published podcasts can stream the audio and read the transcript (true/false)')
+param podcastPublicAudio string = 'false'
+
+@description('Kill switch for podcast listener backchannels in new renders (true/false)')
+param podcastReactions string = 'false'
+
+@allowed([
+  'auto'
+  'idle_loop'
+  'procedural'
+  'still'
+])
+@description('Podcast listener rendering: auto, idle_loop, procedural or still')
+param podcastListenerMode string = 'auto'
+
+@description('Seconds a podcast render waits for the listener kits before using the fallback listener')
+param podcastListenerTimeoutSec string = '900'
+
 @description('Kill switch for the anonymous narration-only live avatar demo (true/false)')
 param publicDemoEnabled string = 'false'
 
@@ -227,6 +254,13 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'MAX_VOICE_SESSION_SECONDS', value: maxVoiceSessionSeconds }
             { name: 'DAILY_GENERATION_QUOTA', value: dailyGenerationQuota }
             { name: 'MAX_PENDING_RENDERS', value: maxPendingRenders }
+            { name: 'MAX_CONCURRENT_COMPOSES', value: maxConcurrentComposes }
+            { name: 'MAX_ACTIVE_BATCH_JOBS', value: maxActiveBatchJobs }
+            { name: 'SPEECH_BATCH_CREATE_PER_MIN', value: speechBatchCreatePerMin }
+            { name: 'PODCAST_PUBLIC_AUDIO', value: podcastPublicAudio }
+            { name: 'PODCAST_REACTIONS', value: podcastReactions }
+            { name: 'PODCAST_LISTENER_MODE', value: podcastListenerMode }
+            { name: 'PODCAST_LISTENER_TIMEOUT_SEC', value: podcastListenerTimeoutSec }
             { name: 'PUBLIC_DEMO_ENABLED', value: publicDemoEnabled }
             { name: 'DEMO_MAX_CONCURRENT', value: demoMaxConcurrent }
             { name: 'DEMO_SESSION_SECONDS', value: demoSessionSeconds }
