@@ -7,7 +7,7 @@ import { useAuth } from '../services/auth';
 import { useDemoConfig } from '../services/demo';
 import { type Deck, listDecks } from '../services/decksApi';
 import { listLibrary as listVideos, type LibrarySummary as VideoSummary } from '../services/videoApi';
-import { listLibrary as listPodcasts, type LibrarySummary as PodcastSummary } from '../services/podcast';
+import { listLibrary as listPodcasts, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import {
   Button, ButtonLink, EpisodeList, EpisodeRow, HostDisc, HostsMini, LivePill, SectionHead,
@@ -45,6 +45,10 @@ const KIND: Record<Episode['kind'], { icon: LucideIcon; label: string }> = {
 };
 
 const time = (iso?: string | null) => (iso ? new Date(iso).getTime() || 0 : 0);
+
+/** Deep link that opens the episode in the podcast library player (Listen for audio-only episodes). */
+const podcastLink = (p: PodcastSummary) =>
+  `/podcast/library?${new URLSearchParams({ episode: p.job_id, mode: isAudioOnly(p) ? 'listen' : 'watch' })}`;
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -92,7 +96,7 @@ export default function HomePage() {
         const named = (p.speaker_names ?? []).map(byName).filter(Boolean) as AvatarInfo[];
         return {
           key: `podcast-${p.job_id}`, kind: 'podcast' as const, title: humanizeTitle(p.title || p.document_title), date: time(p.created_at),
-          to: '/podcast/library', meta: ['Podcast', languageName(p.language)],
+          to: podcastLink(p), meta: ['Podcast', languageName(p.language)],
           hosts: named.length ? named : [lead, co], duration: formatDuration(p.duration_sec),
         };
       }),

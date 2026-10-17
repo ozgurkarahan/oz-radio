@@ -193,3 +193,114 @@
     padding: var(--sp-4) var(--sp-4) var(--sp-5);
   }
 }
+
+/* ---------- Podcasts only: Watch / Listen (the video library is unchanged) ---------- */
+/* Fixed actions column so every row's columns line up (Watch + Listen fit on one line). */
+.library--podcast .library-row {
+  grid-template-columns: 52px minmax(0, 1fr) 170px 84px 72px 12.5rem;
+}
+
+.library--podcast .library-row__play,
+.library--podcast .library-row__manage {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+/* Admin controls sit on their own line under Watch / Listen. */
+.library--podcast .library-row__manage {
+  flex-basis: 100%;
+}
+
+/* Gaps between the buttons keep opening the episode (stretched title link). */
+.library--podcast .library-row .episode-row__actions,
+.library--podcast .library-row__play,
+.library--podcast .library-row__manage {
+  pointer-events: none;
+}
+
+.library--podcast .library-row .episode-row__actions .btn {
+  pointer-events: auto;
+}
+
+/* Audio-only covers are square: show them whole on the stage colour. */
+.library--podcast .library-row--audio .library-thumb {
+  object-fit: contain;
+  background: var(--c-stage);
+}
+
+.library-player--podcast .library-player__formats {
+  /* Right padding keeps the modal close button clear. */
+  padding: var(--sp-2) var(--sp-8) 0 var(--sp-6);
+  border-bottom: var(--bw) solid color-mix(in srgb, var(--c-on-stage) 14%, transparent);
+}
+
+.library-player--podcast .library-player__formats .tabs {
+  border-bottom: 0;
+}
+
+.library-player--podcast .library-player__formats .tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: color-mix(in srgb, var(--c-on-stage) 72%, transparent);
+  transition: color var(--dur) var(--ease);
+}
+
+.library-player--podcast .library-player__formats .tabs__tab svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.library-player--podcast .library-player__formats .tabs__tab:hover,
+.library-player--podcast .library-player__formats .tabs__tab[aria-selected='true'] {
+  color: var(--c-on-stage);
+}
+
+.library-player--podcast .library-player__formats .tabs__tab:focus-visible {
+  outline-color: var(--c-on-stage);
+}
+
+@media (max-width: 960px) {
+  /* The actions get their own line under the title instead of squeezing it. */
+  .library--podcast .library-row {
+    grid-template-columns: 44px minmax(0, 1fr) 72px 64px;
+  }
+
+  .library--podcast .library-row .episode-row__actions {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  .library--podcast .library-row__play,
+  .library--podcast .library-row__manage {
+    justify-content: flex-start;
+  }
+
+  .library--podcast .library-row__manage {
+    flex-basis: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .library--podcast .library-row {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+
+  /* Keep the duration visible beside the title. */
+  .library--podcast .library-row .episode-row__dur {
+    display: block;
+  }
+
+  .library-player--podcast .library-player__formats {
+    padding-left: var(--sp-4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-player--podcast .library-player__formats .tabs__tab {
+    transition: none;
+  }
+}
