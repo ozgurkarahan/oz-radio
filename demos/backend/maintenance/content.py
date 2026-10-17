@@ -11,8 +11,11 @@ Usage (from the backend directory, ``/app`` in the image)::
 
     python -m maintenance.content inventory [--json out.json]
     python -m maintenance.content seed [--dry-run]
-    python -m maintenance.content render-podcast {beginner,practitioner,expert,demo-fr,all} [--dry-run]
+    python -m maintenance.content render-podcast {beginner,practitioner,expert,demo-fr,all} \\
+        [--format video|audio] [--force] [--dry-run]
     python -m maintenance.content render-video {demo-en,demo-fr,practitioner,all} [--dry-run]
+    python -m maintenance.content warm-listeners [--language en-US --language fr-FR] [--timeout 900] [--dry-run]
+    python -m maintenance.content publish --podcast-id job-... [--podcast-id job-...] [--off] [--dry-run]
     python -m maintenance.content purge --deck-title T ... --podcast-id job-... --video-id sv-... \\
         --record deleted.json [--allow-missing video:practitioner] [--dry-run]
     python -m maintenance.content retitle [--dry-run]
@@ -24,16 +27,28 @@ Usage (from the backend directory, ``/app`` in the image)::
 ``az containerapp exec`` call can start a long render; ``logtail`` prints the
 log with URL query strings redacted.
 
-Every command is idempotent: decks are matched by title, the playlist by name
-and podcasts/videos by library title (an existing item is only published).
+Every command is idempotent: decks are matched by title, the playlist by name,
+videos by library title and podcasts by library title and format (an existing
+item is only published).
 Titles match either the display title (``DISPLAY_TITLES``) or the original
 filename slug, so content seeded before ``retitle`` is never duplicated.
 Output never contains signed URLs.
 
+``render-podcast --format`` picks the rendition: ``video`` (MP4 + radio MP3,
+the default of every ``PODCASTS`` spec) or ``audio`` (radio MP3 only, no
+avatar synthesis). Renders ask for listener backchannels; they are only
+rendered when the ``PODCAST_REACTIONS`` kill switch is on.
+
 ``render-podcast``/``render-video --force`` render a fresh item even when one
 with the same title exists (e.g. after a rebrand); retire the previous item
-afterwards with ``purge --podcast-id/--video-id`` (media only: purge touches
-playlists only when ``--deck-title`` deletes decks).
+afterwards: ``publish --podcast-id <old id> --off`` hides it from visitors
+(kept for rollback), ``purge --podcast-id/--video-id`` deletes it (media only:
+purge touches playlists only when ``--deck-title`` deletes decks).
+
+``warm-listeners`` pre-builds the cached listener kits (silent listening loop
+and backchannel clips; one paid batch avatar job per missing kit) of the
+showcase cast in every ``VOICES`` language, so the first video render does
+not wait for them. It prints avatar ids, voices, modes and warning codes only.
 
 ``rebrand-decks`` re-renders the AI decks from the regenerated .pptx and
 overwrites the slide images, slide text and search chunks of the *same*
@@ -50,6 +65,7 @@ import json
 import logging
 import shutil
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -143,6 +159,9 @@ PLAYLIST_STEPS = (
 )
 
 
+PODCAST_FORMATS = ("video", "audio")
+
+
 @dataclass(frozen=True)
 class PodcastSpec(_Titled):
     deck: str
@@ -151,6 +170,8 @@ class PodcastSpec(_Titled):
     audience_level: str
     length: str = "medium"
     num_turns: int = 8
+    # "video" = MP4 + radio MP3 (Watch and Listen); "audio" = radio MP3 only.
+    format: str = "video"
 
     @property
     def _source(self) -> str:  # type: ignore[override]
@@ -354,13 +375,25 @@ def _podcast_roles(language: str):
     return roles
 
 
-def _existing(lib, titles: frozenset[str] | set[str]) -> Optional[dict]:
-    items = [i for i in lib.list() if i.get("title") in titles]
+def _existing(lib, titles: frozenset[str] | set[str], fmt: Optional[str] = None) -> Optional[dict]:
+    """First library item with one of ``titles`` (and, for podcasts, the format ``fmt``).
+
+    Items without a ``format`` (manifest v1) are videos."""
+    items = [i for i in lib.list() if i.get("title") in titles
+             and (fmt is None or (i.get("format") or "video") == fmt)]
     return items[0] if items else None
 
 
+def _podcast_format(spec: PodcastSpec, fmt: Optional[str]) -> str:
+    value = fmt or spec.format
+    if value not in PODCAST_FORMATS:
+        raise MaintenanceError(f"unknown podcast format {value!r} (expected one of {list(PODCAST_FORMATS)})")
+    return value
+
+
 async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
-                         force: bool = False) -> dict:
+                         force: bool = False, fmt: Optional[str] = None) -> dict:
+    """Render + publish one ``PODCASTS`` episode; ``fmt`` overrides the spec's format."""
     from routers import podcast as pr
     from services.podcast_ingest import ingest_file
     from services.podcast_models import (
@@ -369,15 +402,16 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
     from services.podcast_script import generate_script_stream
 
     spec = PODCASTS[name]
+    fmt = _podcast_format(spec, fmt)
     path = _deck_path(spec.deck, deck_dir)
     roles = _podcast_roles(spec.language)
     lib = pr._get_library(cfg)
     if not lib.available:
         raise MaintenanceError("podcast library storage unavailable")
-    plan = {"name": name, "title": spec.title, "language": spec.language, "style": spec.style,
+    plan = {"name": name, "title": spec.title, "format": fmt, "language": spec.language, "style": spec.style,
             "audience_level": spec.audience_level,
             "roles": {"interviewer": roles.interviewer.model_dump(), "expert": roles.expert.model_dump()}}
-    found = _existing(lib, spec.titles)
+    found = _existing(lib, spec.titles, fmt)
     if found and force:
         plan["replaces"] = found["job_id"]
     elif found:
@@ -412,16 +446,19 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
     job = PodcastJob(id=f"job-{uuid.uuid4().hex[:8]}", script_id=script.id, roles=roles,
                      layout="split_screen_with_slides", music=True, intro=True, state=JobState.queued,
                      progress=JobProgress(stage="queued", total=len(turns)), outputs=JobOutputs(),
-                     created_at=now, updated_at=now)
+                     created_at=now, updated_at=now, format=fmt, reactions=True)
     pr.JOBS[job.id] = job
-    _say(f"podcast {name}: render {job.id} ({len(turns)} turns)")
+    _say(f"podcast {name}: render {job.id} ({fmt}, {len(turns)} turns)")
     await pr._render_job_body(job.id, cfg)
     if job.state != JobState.done or job.archive_state != "published":
         raise MaintenanceError(f"podcast {job.id} failed: state={job.state.value} archive={job.archive_state}")
     if not lib.set_published(job.id, True):
         raise MaintenanceError(f"podcast {job.id} rendered but publishing failed")
-    plan.update(action="rendered", job_id=job.id, published=True, turns=len(turns))
-    _say(f"podcast {name}: published {job.id}")
+    # Warnings are stable codes (podcast_media.WARNING_CODES), never raw error text.
+    plan.update(action="rendered", job_id=job.id, published=True, turns=len(turns),
+                warnings=list(job.warnings), listener_mode=job.listener_mode)
+    suffix = f" (warnings: {', '.join(job.warnings)})" if job.warnings else ""
+    _say(f"podcast {name}: published {job.id}{suffix}")
     return plan
 
 
@@ -504,6 +541,139 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
     plan.update(action="rendered", job_id=job.job_id, published=True, slides=len(narrations))
     _say(f"video {name}: published {job.job_id}")
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Listener kits (warm-up)
+# ---------------------------------------------------------------------------
+def warm_listeners(cfg, *, languages: Optional[list[str]] = None, dry_run: bool = False,
+                   timeout_sec: Optional[float] = None) -> dict[str, Any]:
+    """Build (or find cached) the listener kit of each podcast host in each language.
+
+    One kit per (avatar, voice, language) of the showcase cast; a missing kit
+    costs one batch avatar job. Kits never fail a render (fallback listener),
+    so this only reports: ``ok`` is False when the kit fell back or has no
+    backchannel clips. The output holds registry avatar ids, voices, modes
+    and stable warning codes only — never Speech character names."""
+    from services.podcast_media import (
+        WARNING_LISTENER_FALLBACK, WARNING_LISTENER_TIMEOUT, listener_mode, listener_timeout_sec,
+    )
+
+    langs = list(dict.fromkeys(languages or VOICES))
+    unknown = [lang for lang in langs if lang not in VOICES]
+    if unknown:
+        raise MaintenanceError(f"no podcast voices for {unknown} (known: {list(VOICES)})")
+    if timeout_sec is not None and not timeout_sec > 0:
+        raise MaintenanceError("--timeout must be positive")
+    kits: list[tuple[str, str, str]] = []
+    for lang in langs:
+        roles = _podcast_roles(lang)
+        kits += [(role.avatar, role.voice, lang) for role in (roles.interviewer, roles.expert)]
+    budget = float(timeout_sec) if timeout_sec else listener_timeout_sec()
+    report: dict[str, Any] = {"dry_run": dry_run, "listener_mode": listener_mode(), "timeout_sec": budget,
+                              "kits": [], "errors": []}
+    if dry_run:
+        report["kits"] = [{"avatar_id": avatar, "voice": voice, "language": lang, "action": "would warm"}
+                          for avatar, voice, lang in kits]
+        return report
+
+    from services import podcast_listener
+
+    fell_back = {WARNING_LISTENER_FALLBACK, WARNING_LISTENER_TIMEOUT}
+    for avatar_id, voice, lang in kits:
+        label = f"listener kit {avatar_id} ({lang})"
+        _say(f"{label}: warming")
+        started = time.monotonic()
+        try:
+            kit = podcast_listener.ensure_listener_kit(cfg, avatar_id, voice, lang, want_reactions=True,
+                                                       deadline=started + budget)
+        except Exception as exc:  # noqa: BLE001 — documented as never raising; keep going regardless
+            report["errors"].append({"item": label, "error": type(exc).__name__})
+            report["kits"].append({"avatar_id": avatar_id, "voice": voice, "language": lang, "ok": False})
+            _say(f"FAILED {label}: {type(exc).__name__}")
+            continue
+        warnings = list(kit.warnings)
+        idle = kit.idle
+        entry: dict[str, Any] = {
+            "avatar_id": kit.avatar_id,
+            "voice": kit.voice,
+            "language": lang,
+            "mode": kit.mode,
+            "idle": None if idle is None else {"duration_sec": round(idle.duration_sec, 2),
+                                                 "motion_score": round(idle.motion_score, 3),
+                                                 "static": idle.static},
+            "reactions": sorted(kit.reactions),
+            "warnings": warnings,
+            "elapsed_sec": round(time.monotonic() - started, 1),
+            "ok": not (fell_back & set(warnings)) and bool(kit.reactions),
+        }
+        if not entry["ok"]:
+            report["errors"].append({"item": label, "error": ", ".join(warnings) or "no backchannel clips"})
+        suffix = f", warnings: {', '.join(warnings)}" if warnings else ""
+        _say(f"{label}: {kit.mode}, {len(kit.reactions)} reactions{suffix}")
+        report["kits"].append(entry)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Publish / unpublish podcasts (staged rollout)
+# ---------------------------------------------------------------------------
+def publish_podcasts(cfg, podcast_ids: list[str], *, published: bool = True,
+                     dry_run: bool = False) -> dict[str, Any]:
+    """Show (``published=True``) or hide podcasts from anonymous visitors.
+
+    During a staged re-render the superseded items are hidden (kept for
+    rollback) until they are purged. Never deletes; the output has no URLs.
+    Each entry warns when its title ends up with no published item, or with
+    another published item (duplicate cards for visitors)."""
+    from routers import podcast as pr
+    from security import PODCAST_JOB_RE
+
+    ids = list(dict.fromkeys(podcast_ids))
+    if not ids:
+        raise MaintenanceError("give at least one --podcast-id")
+    bad = [i for i in ids if not PODCAST_JOB_RE.fullmatch(i or "")]
+    if bad:
+        raise MaintenanceError(f"invalid podcast ids: {bad}")
+    lib = pr._get_library(cfg)
+    if not lib.available:
+        raise MaintenanceError("podcast library storage unavailable")
+    items = {i.get("job_id"): i for i in lib.list()}
+    state = {job_id: bool(i.get("published")) for job_id, i in items.items()}
+    report: dict[str, Any] = {"dry_run": dry_run, "published": published, "podcasts": [], "errors": []}
+    for job_id in ids:
+        item = items.get(job_id)
+        if item is None:
+            report["podcasts"].append({"job_id": job_id, "action": "not found"})
+            report["errors"].append({"item": f"podcast {job_id}", "error": "not found"})
+            _say(f"podcast {job_id}: not found")
+            continue
+        entry: dict[str, Any] = {"job_id": job_id, "title": item.get("title"),
+                                 "format": item.get("format") or "video"}
+        if state[job_id] == published:
+            entry["action"] = "already"
+        elif dry_run:
+            entry["action"] = "would publish" if published else "would unpublish"
+            state[job_id] = published
+        elif lib.set_published(job_id, published) is None:
+            entry["action"] = "failed"
+            report["errors"].append({"item": f"podcast {job_id}", "error": "publish flag update failed"})
+        else:
+            entry["action"] = "published" if published else "unpublished"
+            state[job_id] = published
+        _say(f"podcast {job_id}: {entry['action']}")
+        report["podcasts"].append(entry)
+    for entry in report["podcasts"]:
+        if "title" not in entry:
+            continue
+        entry["published"] = state[entry["job_id"]]
+        others = sorted(j for j, i in items.items()
+                        if j != entry["job_id"] and i.get("title") == entry["title"] and state[j])
+        if entry["published"] and others:
+            entry["warning"] = f"also published with this title: {others}"
+        elif not entry["published"] and not others:
+            entry["warning"] = "no published item left with this title"
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -939,6 +1109,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("render-podcast", help="Render + publish an AI podcast")
     p.add_argument("name", choices=[*PODCASTS, "all"])
+    p.add_argument("--format", dest="fmt", choices=PODCAST_FORMATS, default=None,
+                   help="video = MP4 + radio MP3 (Watch and Listen), audio = radio MP3 only "
+                        "(default: the episode's format, video)")
     p.add_argument("--force", action="store_true",
                    help="Render a new item even if one with this title exists (purge the old id afterwards)")
     p.add_argument("--dry-run", action="store_true")
@@ -947,6 +1120,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", choices=[*VIDEOS, "all"])
     p.add_argument("--force", action="store_true",
                    help="Render a new item even if one with this title exists (purge the old id afterwards)")
+    p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("warm-listeners",
+                       help="Pre-build the cached podcast listener kits (idle loop + backchannels) of the cast")
+    p.add_argument("--language", action="append", default=[], choices=list(VOICES),
+                   help="Limit to these languages (default: every podcast language)")
+    p.add_argument("--timeout", type=float, default=None, metavar="SEC",
+                   help="Budget per kit in seconds (default: PODCAST_LISTENER_TIMEOUT_SEC, 900)")
+    p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("publish", help="Show podcasts to anonymous visitors, or hide them with --off (kept)")
+    p.add_argument("--podcast-id", action="append", default=[], required=True)
+    p.add_argument("--off", action="store_true", help="Unpublish: hide the items (nothing is deleted)")
     p.add_argument("--dry-run", action="store_true")
 
     p = sub.add_parser("purge", help="Delete retired decks/podcasts/videos (+ their playlists)")
@@ -1042,13 +1228,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.cmd == "render-podcast":
             names = list(PODCASTS) if args.name == "all" else [args.name]
             _print([asyncio.run(render_podcast(cfg, n, dry_run=args.dry_run, deck_dir=args.deck_dir,
-                                               force=args.force))
+                                               force=args.force, fmt=args.fmt))
                     for n in names])
         elif args.cmd == "render-video":
             names = list(VIDEOS) if args.name == "all" else [args.name]
             _print([asyncio.run(render_video(cfg, n, dry_run=args.dry_run, deck_dir=args.deck_dir,
                                              force=args.force))
                     for n in names])
+        elif args.cmd == "warm-listeners":
+            result = warm_listeners(cfg, languages=args.language or None, dry_run=args.dry_run,
+                                    timeout_sec=args.timeout)
+            _print(result)
+            if result["errors"]:
+                return 1
+        elif args.cmd == "publish":
+            result = publish_podcasts(cfg, args.podcast_id, published=not args.off, dry_run=args.dry_run)
+            _print(result)
+            if result["errors"]:
+                return 1
         elif args.cmd == "purge":
             result = purge(cfg, deck_titles=args.deck_title, podcast_ids=args.podcast_id,
                            video_ids=args.video_id, record=args.record,

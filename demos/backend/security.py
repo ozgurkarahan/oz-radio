@@ -11,9 +11,11 @@ import ipaddress
 import os
 import re
 import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Mapping, Optional
+from typing import Iterator, Mapping, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, UploadFile
@@ -233,8 +235,68 @@ class ConcurrencyLimiter:
             self._active = 0
 
 
+class BlockingLimiter:
+    """Counting semaphore whose callers *wait* for a free slot instead of failing.
+
+    For CPU-heavy steps that must queue (the podcast video compose). The size
+    is re-read from ``env_name`` while waiting, so raising it frees waiters.
+    Blocks the calling thread: use it from worker threads, never on the
+    event loop.
+    """
+
+    _POLL_SEC = 1.0
+
+    def __init__(self, env_name: str, default: int) -> None:
+        self._env_name = env_name
+        self._default = default
+        self._cond = threading.Condition()
+        self._active = 0
+
+    def limit(self) -> int:
+        return _env_int(self._env_name, self._default, minimum=1)
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    def acquire(self, timeout: Optional[float] = None) -> bool:
+        """Take a slot, waiting up to ``timeout`` seconds (None = forever); False on timeout."""
+        end = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._cond:
+            while self._active >= self.limit():
+                remaining = None if end is None else end - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._cond.wait(self._POLL_SEC if remaining is None else min(remaining, self._POLL_SEC))
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        with self._cond:
+            self._active = max(0, self._active - 1)
+            self._cond.notify_all()
+
+    @contextmanager
+    def slot(self, timeout: Optional[float] = None) -> Iterator[None]:
+        """``with limiter.slot():`` — ``TimeoutError`` when no slot frees up in time."""
+        if not self.acquire(timeout):
+            raise TimeoutError(f"no free {self._env_name} slot")
+        try:
+            yield
+        finally:
+            self.release()
+
+    def reset(self) -> None:
+        with self._cond:
+            self._active = 0
+            self._cond.notify_all()
+
+
 PENDING_RENDERS = ConcurrencyLimiter("MAX_PENDING_RENDERS", 3)
 VOICE_SESSIONS = ConcurrencyLimiter("MAX_VOICE_SESSIONS", 2)
+# Podcast video composes (ffmpeg, the heaviest step on the 2 vCPU replica):
+# further renders wait for the slot instead of being rejected.
+COMPOSE_SLOTS = BlockingLimiter("MAX_CONCURRENT_COMPOSES", 1)
 
 
 def acquire_render_slot() -> None:
