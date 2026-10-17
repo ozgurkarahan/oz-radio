@@ -104,6 +104,10 @@ python -m maintenance.content seed --dry-run   # plan only
 python -m maintenance.content seed             # upload, publish, translate, live demo, playlist
 ```
 
+Display titles contain non-ASCII characters (`·`, `é`): if `az containerapp exec`
+aborts with a Unicode error, prefix the command with
+`env PYTHONIOENCODING=ascii:backslashreplace` (the output then shows `\xb7`-style escapes).
+
 It is idempotent (decks are matched by title, the playlist by name). Decks,
 podcasts and videos get human-readable display titles (`DISPLAY_TITLES` in
 `demos/backend/maintenance/content.py`, e.g. *AI, demystified · Beginner*);
