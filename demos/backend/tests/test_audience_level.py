@@ -15,9 +15,11 @@ LEVELS = ["beginner", "practitioner", "expert"]
 VOICE = "en-US-Ava:DragonHDLatestNeural"
 VIDEO_DOC_ID = "0b5f2a7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 
-# SHA-256 of the system prompts built before audience levels existed, for the
-# fixtures below. audience_level=None must keep them byte-for-byte.
-PODCAST_BASELINE_SHA = "2259d293fd67578bc61dcc2eabee61726701c872f575d6c2ca5a2cf2f294f606"
+# SHA-256 of the system prompts for the fixtures below with audience_level=None,
+# which must stay byte-for-byte. PODCAST_BASELINE_SHA was re-pinned deliberately
+# when the radio-safe directive and the optional listener `reaction` hint were
+# added to the podcast prompt (video prompt unchanged).
+PODCAST_BASELINE_SHA = "0aa1d245da430d4962016021b3c01ede253d364527c8df8b5f7bf42f9be4ab50"
 VIDEO_BASELINE_SHA = "972809be83f98e7ae23534bdfdb18a9ed970972eee27dfd6225a76270c00be4d"
 
 LEVEL_MARKERS = {

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Optional
 from xml.sax.saxutils import escape as _xml_escape
@@ -483,6 +485,121 @@ def _get_speech_base_url(config: AzureConfig) -> str:
     return f"https://{config.speech_region}.api.cognitive.microsoft.com"
 
 
+PAUSE_MIN_MS = 100
+PAUSE_MAX_MS = 2000
+
+# Sentence ends that need no following whitespace (zh/ja). ASCII ends also count
+# when CJK text follows them.
+_CJK_SENTENCE_ENDS = frozenset("。！？｡")
+_ASCII_SENTENCE_ENDS = frozenset(".!?")
+_SENTENCE_CLOSERS = frozenset("”’」』）〕】》〉\"')]")
+_CJK_START_RE = re.compile(
+    "[\u3005-\u3008\u300a\u300c\u300e\u3010\u3014\u3040-\u30ff\u3400-\u4dbf"
+    "\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff08\uff66-\uff9f]"
+)
+
+
+def _split_cjk(chunk: str) -> list[tuple[str, str]]:
+    """Split one ``_split_sentences`` chunk after CJK sentence ends.
+
+    Returns ``(sentence, joiner)`` pairs, ``joiner`` being " " or "" (how the
+    sentence was attached to the next one). A chunk without CJK sentence ends,
+    and without CJK text right after . ! ?, comes back whole.
+    """
+    pieces: list[tuple[str, str]] = []
+    start = i = 0
+    n = len(chunk)
+    while i < n:
+        if chunk[i] not in _CJK_SENTENCE_ENDS and chunk[i] not in _ASCII_SENTENCE_ENDS:
+            i += 1
+            continue
+        j = i
+        while j < n and (chunk[j] in _CJK_SENTENCE_ENDS or chunk[j] in _ASCII_SENTENCE_ENDS):
+            j += 1
+        while j < n and chunk[j] in _SENTENCE_CLOSERS:
+            j += 1
+        k = j
+        while k < n and chunk[k].isspace():
+            k += 1
+        cjk_end = any(c in _CJK_SENTENCE_ENDS for c in chunk[i:j])
+        if k < n and (cjk_end or _CJK_START_RE.match(chunk[k])):
+            sentence = chunk[start:j].strip()
+            if sentence:
+                pieces.append((sentence, " " if k > j else ""))
+            start = k
+        i = j
+    tail = chunk[start:].strip()
+    if tail:
+        pieces.append((tail, " "))
+    return pieces
+
+
+def _pause_segments(text: str) -> list[tuple[int, str, str]]:
+    """``(chunk index, sentence, joiner)`` per pause sentence; the chunk index
+    refers to ``_split_sentences`` (the unit gestures are aligned to)."""
+    segments: list[tuple[int, str, str]] = []
+    for chunk_idx, chunk in enumerate(_split_sentences(text or "")):
+        for sentence, joiner in _split_cjk(chunk):
+            segments.append((chunk_idx, sentence, joiner))
+    return segments
+
+
+def split_sentences_for_pauses(text: str) -> list[str]:
+    """Sentences counted by ``build_ssml(pause_after_sentence=...)`` (1-based).
+
+    Identical to ``_split_sentences`` for text without CJK. In addition it splits
+    after the CJK sentence ends 。！？ (and ｡), which need no following space,
+    and after . ! ? when CJK text follows, so zh-CN/ja-JP turns get sentence
+    boundaries too. Count and plan reaction pauses with this function.
+    """
+    return [sentence for _chunk_idx, sentence, _joiner in _pause_segments(text)]
+
+
+def _sentence_pauses(pause_after_sentence: object, n_sentences: int) -> dict[int, int]:
+    """Valid ``{after_sentence: ms}`` entries: 1 <= after_sentence < n_sentences
+    (a pause *between* sentences; trailing breaks are truncated by batch avatar
+    synthesis), ms rounded and clamped to [PAUSE_MIN_MS, PAUSE_MAX_MS]."""
+    if not pause_after_sentence or not isinstance(pause_after_sentence, Mapping) or n_sentences < 2:
+        return {}
+    pauses: dict[int, int] = {}
+    for key, value in pause_after_sentence.items():
+        if isinstance(key, bool) or not isinstance(key, int) or not 1 <= key < n_sentences:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            continue
+        pauses[key] = min(PAUSE_MAX_MS, max(PAUSE_MIN_MS, int(round(value))))
+    return pauses
+
+
+def _paused_body(text: str, pause_after_sentence: object, gesture_names: Optional[list[str]]) -> Optional[str]:
+    """SSML body with the planned breaks, or None when no pause applies."""
+    segments = _pause_segments(text)
+    pauses = _sentence_pauses(pause_after_sentence, len(segments))
+    if not pauses:
+        return None
+    parts: list[str] = []
+    for k, (chunk_idx, sentence, joiner) in enumerate(segments):
+        if gesture_names and (k == 0 or segments[k - 1][0] != chunk_idx):
+            g = gesture_names[chunk_idx] if chunk_idx < len(gesture_names) else ""
+            if g and _is_safe_gesture_name(g):
+                parts.append(f"<bookmark mark='gesture.{g}'/>")
+        parts.append(_xml_escape(sentence))
+        if k < len(segments) - 1:
+            ms = pauses.get(k + 1)
+            parts.append(f'<break time="{ms}ms"/>' if ms else joiner)
+    return "".join(parts)
+
+
+def _single_gesture_bookmark(intro_gesture_for: Optional[str], gesture_name: Optional[str]) -> str:
+    resolved_gesture = gesture_name
+    if not resolved_gesture and intro_gesture_for:
+        style = AVATAR_STYLES.get(intro_gesture_for, "")
+        resolved_gesture = AVATAR_INTRO_GESTURES.get((intro_gesture_for, style))
+    if resolved_gesture and _is_safe_gesture_name(resolved_gesture):
+        return f"<bookmark mark='gesture.{resolved_gesture}'/>"
+    return ""
+
+
 def build_ssml(
     text: str,
     language: str,
@@ -491,6 +608,7 @@ def build_ssml(
     intro_gesture_for: Optional[str] = None,
     gesture_name: Optional[str] = None,
     gesture_names: Optional[list[str]] = None,
+    pause_after_sentence: Optional[dict[int, int]] = None,
 ) -> str:
     """Build SSML for avatar synthesis.
 
@@ -513,9 +631,29 @@ def build_ssml(
             Index 0 lands before sentence 0, index 1 before sentence 1,
             etc. Empty / falsy entries skip a slot. Unsafe entries are
             silently dropped.
+        pause_after_sentence: ``{after_sentence: ms}`` planned speaker
+            pauses (e.g. room for a listener backchannel). ``after_sentence``
+            is 1-based, counted with ``split_sentences_for_pauses`` (CJK
+            aware); a ``<break time="{ms}ms"/>`` replaces the space after that
+            sentence, gestures still land before their sentence. Only pauses
+            between sentences apply (1 <= after_sentence < sentence count) and
+            ms is clamped to 100-2000. When nothing applies, the SSML is
+            byte-identical to a call without this option.
     """
     voice_name = _attr(voice or VOICE_MAP.get(language, VOICE_MAP["en-US"]))
     language = _attr(language if _LANG_RE.fullmatch(language or "") else "en-US")
+
+    if pause_after_sentence:
+        paused = _paused_body(text, pause_after_sentence, gesture_names)
+        if paused is not None:
+            lead = "" if gesture_names else _single_gesture_bookmark(intro_gesture_for, gesture_name)
+            return (
+                f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+                f'xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="{language}">'
+                f'<voice name="{voice_name}">'
+                f'<break time="250ms"/>{lead}{paused}'
+                f"</voice></speak>"
+            )
 
     if gesture_names:
         sentences = _split_sentences(text or "")
@@ -539,13 +677,7 @@ def build_ssml(
         )
 
     safe_text = _xml_escape(text or "")
-    gesture = ""
-    resolved_gesture = gesture_name
-    if not resolved_gesture and intro_gesture_for:
-        style = AVATAR_STYLES.get(intro_gesture_for, "")
-        resolved_gesture = AVATAR_INTRO_GESTURES.get((intro_gesture_for, style))
-    if resolved_gesture and _is_safe_gesture_name(resolved_gesture):
-        gesture = f"<bookmark mark='gesture.{resolved_gesture}'/>"
+    gesture = _single_gesture_bookmark(intro_gesture_for, gesture_name)
     return (
         f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
         f'xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="{language}">'

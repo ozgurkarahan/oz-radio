@@ -1,17 +1,22 @@
 """GPT-4.1 script generation for podcasts.
 
 Generates a two-host conversation (interviewer + expert) from an ingested
-Document, streaming each DialogueTurn as soon as GPT produces it.
+Document, streaming each DialogueTurn as soon as GPT produces it. Lines are
+kept radio-safe (no visual references: every episode also ships as audio
+only), and the model may suggest one listener backchannel per turn
+(``DialogueTurn.reaction``, stable ids only; see ``podcast_reactions``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
+
+from pydantic import ValidationError
 
 from config import AzureConfig
-from services.podcast_models import DialogueTurn, Document, ScriptRequest
+from services.podcast_models import DialogueTurn, Document, ReactionHint, ScriptRequest
 from services.translation import get_openai_client
 
 log = logging.getLogger(__name__)
@@ -52,6 +57,26 @@ AUDIENCE_DIRECTIVES = {
 }
 AUDIENCE_SCOPE_NOTE = (
     " This adjusts depth and vocabulary only; it does not change the turn, slide or output-format rules."
+)
+
+# Every episode is also published as an audio-only radio mix.
+RADIO_SAFE_DIRECTIVE = (
+    "RADIO-SAFE: The episode is also published as audio only, so the dialogue must work without any "
+    "visuals. Never reference what the audience sees (no \"as you can see\", \"on this slide\", "
+    "\"look at\", \"here on the screen\"); describe charts, images and figures in words instead."
+)
+
+# Optional listener backchannel per turn: stable ids only, the spoken words are
+# chosen server-side per language (podcast_media.reaction_text).
+REACTION_HINT_RULES = (
+    "Optionally add `reaction`: {\"after_sentence\": n, \"reaction_id\": id} when the OTHER host "
+    "would naturally react out loud right after sentence n of this turn (n counts from 1), before "
+    "the speaker goes on. "
+    "`reaction_id` is one of: ack (neutral acknowledgement), right (agreement), yeah (casual "
+    "agreement), exactly (strong agreement), isee (understanding), interesting (curiosity). "
+    "Use at most one reaction per turn, on about one turn in three, never on the first or last turn, "
+    "only on turns with at least 2 sentences, and n must be smaller than the number of sentences in "
+    "that turn. Never write the reaction itself into `text`; omit `reaction` on other turns. "
 )
 
 
@@ -102,10 +127,12 @@ def _build_system_prompt(req: ScriptRequest, doc: Document) -> str:
         f"Target length: about {n_turns} turns total, alternating speakers starting with the Interviewer."
         f"{slide_hint}"
         f"{focus}\n\n"
+        f"{RADIO_SAFE_DIRECTIVE}\n\n"
         "Output format: a JSON object with key `turns`, which is an array of objects. "
         "Each object has: `idx` (0-based int), `speaker` (\"interviewer\"|\"expert\"), "
         "`text` (the spoken line, 1–3 sentences, natural prose — no stage directions), "
         "and `slide_idx` (int or null). "
+        f"{REACTION_HINT_RULES}"
         "Return ONLY the JSON object, no prose before or after."
     )
 
@@ -171,6 +198,31 @@ async def generate_script_stream(
         log.warning("final JSON parse failed; %d turns already emitted", len(emitted))
 
 
+def _coerce_reaction(raw: object) -> Optional[ReactionHint]:
+    """Validate an LLM backchannel hint; anything malformed is dropped (stable ids only).
+
+    Whether ``after_sentence`` fits the turn is checked later, against the real
+    sentence count, by ``podcast_reactions.plan_reactions``.
+    """
+    if not isinstance(raw, dict):
+        return None
+    reaction_id = raw.get("reaction_id")
+    after = raw.get("after_sentence")
+    if not isinstance(reaction_id, str) or isinstance(after, bool):
+        return None
+    if isinstance(after, float) and after.is_integer():
+        after = int(after)
+    elif isinstance(after, str):
+        after = after.strip()
+        after = int(after) if after.isascii() and after.isdigit() else None
+    if not isinstance(after, int):
+        return None
+    try:
+        return ReactionHint(after_sentence=after, reaction_id=reaction_id.strip().lower())
+    except ValidationError:
+        return None
+
+
 def _coerce_turn(t: dict, fallback_idx: int) -> DialogueTurn:
     speaker = t.get("speaker", "expert")
     if speaker not in ("interviewer", "expert"):
@@ -186,6 +238,7 @@ def _coerce_turn(t: dict, fallback_idx: int) -> DialogueTurn:
         speaker=speaker,
         text=str(t.get("text", "")).strip(),
         slide_idx=slide_idx,
+        reaction=_coerce_reaction(t.get("reaction")),
     )
 
 
