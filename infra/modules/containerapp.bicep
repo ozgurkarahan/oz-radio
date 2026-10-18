@@ -338,3 +338,4 @@ resource authConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (a
 
 output url string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 output name string = containerApp.name
+output logAnalyticsWorkspaceId string = logAnalytics.id

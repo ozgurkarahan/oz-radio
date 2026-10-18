@@ -35,7 +35,7 @@ Placeholders look like `<this>`. Never commit real IDs or secrets.
 | *External AI Services* (optional) | Reuses an existing Speech/Foundry resource, for example one that hosts custom photo avatars | You (pre-existing) | `EXTERNAL_AI_SERVICES_ENDPOINT` / `_REGION` / `_RESOURCE_ID`. Same subscription, any resource group. The same three roles are assigned there if `ASSIGN_EXTERNAL_AI_SERVICES_ROLES=true` |
 | Cosmos DB `cosmos-*` | Presentations, decks, playlists, demo quota counters | Bicep (`cosmos.bicep`) | **Serverless**, `disableLocalAuth: true`. Database `ai-presenter`. Containers `presentations` (`/id`) and `playlist_progress` (`/user_id`). Identity has Built-in Data Contributor |
 | Storage account `st*` | Slide images, source files, rendered media | Bicep (`storage.bicep`) | StorageV2 LRS. **`allowSharedKeyAccess: false`**. No public blob access. Container `slide-images`. SAS URLs use a user-delegation key. Identity has Storage Blob Data Contributor |
-| Log Analytics `cae-*-logs` | Container Apps logs | Bicep (`containerapp.bicep`) | PerGB2018, 30-day retention |
+| Log Analytics `cae-*-logs` | Container Apps logs; Blob `StorageRead` access logs (podcast audio reads, unless `ENABLE_BLOB_ACCESS_LOGS=false`) | Bicep (`containerapp.bicep`, `blob-access-logs.bicep`) | PerGB2018, 30-day retention |
 | Container Apps environment `cae-*` and app `ca-*` | Hosts the FastAPI backend and the built React SPA (port 8000) | Bicep (`containerapp.bicep`) | **2 vCPU / 4 GiB**, scale **0–1** replicas. External HTTPS ingress. `AUTH_MODE=easyauth`. `USE_LOCAL_SEARCH=true` |
 | Easy Auth (Microsoft Entra ID) | Sign-in. Hybrid mode: anonymous visitors are let through and the backend authorizes each route | Bicep (`authConfigs`), **only when `AUTH_CLIENT_ID` is set** | `unauthenticatedClientAction: AllowAnonymous`, `requireHttps`. Issuer `…/<tenant>/v2.0`. The client secret is stored as a Container App secret |
 | Budget `budget-<env>` | Cost alert on the resource group | Bicep (`budget.bicep`), **only when `BUDGET_CONTACT_EMAILS` is set** | Monthly, `BUDGET_AMOUNT` (default 50). Alerts at 80% actual and 100% forecasted |
@@ -224,6 +224,7 @@ Values live in `.azure/<env>/.env`. That folder is git-ignored and **holds the c
 | `EXTERNAL_AI_SERVICES_ENDPOINT` / `_REGION` / `_RESOURCE_ID` | when external | empty | Endpoint (`https://<name>.cognitiveservices.azure.com/`), region, and full ARM ID |
 | `ASSIGN_EXTERNAL_AI_SERVICES_ROLES` | | `true` | Assign the three AI roles on the external resource |
 | `EXTRA_TAGS_JSON` | | empty | JSON object merged into every resource's tags (policy) |
+| `ENABLE_BLOB_ACCESS_LOGS` | | `true` | Blob `StorageRead` diagnostic setting → the Log Analytics workspace (audio reads, expired-SAS 403s, user agents). See [infra/README.md](../infra/README.md) |
 | `BUDGET_CONTACT_EMAILS` | recommended | empty (no budget) | Comma-separated recipients. The budget is deployed only when this is set |
 | `BUDGET_AMOUNT` / `BUDGET_START_DATE` | | `50` / current month | Monthly amount / `yyyy-MM-01`. Pin the date to keep re-provisions idempotent |
 
