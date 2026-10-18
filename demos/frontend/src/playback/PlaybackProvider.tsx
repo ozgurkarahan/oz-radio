@@ -45,6 +45,12 @@ const SAVE_INTERVAL_MS = 5000;
 const RESUME_MAX_AGE_MS = 5 * 60_000;
 /** Past `prepareAt`: re-fetch unless fetched within the last minute. */
 const NEAR_END_MAX_AGE_MS = 60_000;
+/** Never prepare the next episode earlier than this before the end (prepared items live 10 min). */
+const NEAR_END_LEAD_SEC = 300;
+/** A near-end prefetch that failed (no prepared item yet) is retried at most this often. */
+const PREPARE_RETRY_MS = 10_000;
+/** The catalog behind next-episode order is reloaded at a new start when older than this. */
+const CATALOG_MAX_AGE_MS = 10 * 60_000;
 
 const INITIAL_STATE: PlaybackState = {
   current: null,
@@ -227,6 +233,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const internalRef = useRef({ radioStatus: null as RadioStatus | null, slotMounted: false, suppress: 0 });
   const catalogRef = useRef<LibrarySummary[] | null>(null);
   const catalogLoadingRef = useRef(false);
+  const catalogLoadedAtRef = useRef(0);
   const lastPublishRef = useRef(0);
   const publishTimerRef = useRef<number | undefined>(undefined);
   const lastSaveRef = useRef(0);
@@ -234,7 +241,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   /** Episode marked done by `ended`: no position checkpoint may overwrite that. */
   const doneForRef = useRef<string | null>(null);
   /** Episode for which the next one was made ready past `prepareAt`. */
-  const nearEndForRef = useRef<string | null>(null);
+  const nearEndRef = useRef<{ jobId: string; at: number } | null>(null);
   const advanceSeqRef = useRef(0);
 
   /** Merges `patch` and derives presentation, mini-player visibility and status. */
@@ -282,22 +289,34 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     if (next) prepared.prepare([next.job_id], maxAgeMs);
   }, [resolveNeighbour]);
 
-  /** Past `prepareAt` of the loaded episode (once per episode, once the catalog is known). */
+  /**
+   * Keeps the next episode ready near the end of the loaded one: at `prepareAt`, but never earlier
+   * than NEAR_END_LEAD_SEC before the end (long episodes vs the 10-min prepared cache). A failed
+   * fetch is retried (≤ 1 per PREPARE_RETRY_MS) until an item is prepared: one network blip with
+   * the screen locked must not end the series.
+   */
   const checkNearEnd = useCallback((t: number) => {
     const cur = currentRef.current;
-    if (!cur || nearEndForRef.current === cur.jobId || !catalogRef.current) return;
+    if (!cur || !catalogRef.current) return;
     const d = radioDuration();
-    if (d <= 0 || t / d < nextEpisodeResolver.prepareAt) return;
-    nearEndForRef.current = cur.jobId;
+    if (d <= 0 || t < Math.max(d * nextEpisodeResolver.prepareAt, d - NEAR_END_LEAD_SEC)) return;
+    const last = nearEndRef.current;
+    if (last && last.jobId === cur.jobId) {
+      const next = resolveNeighbour('next');
+      if (!next || prepared.get(next.job_id) || Date.now() - last.at < PREPARE_RETRY_MS) return;
+    }
+    nearEndRef.current = { jobId: cur.jobId, at: Date.now() };
     prepareNext(NEAR_END_MAX_AGE_MS);
-  }, [prepareNext, radioDuration]);
+  }, [prepareNext, radioDuration, resolveNeighbour]);
 
   const ensureCatalog = useCallback(() => {
-    if (catalogRef.current || catalogLoadingRef.current) return;
+    if (catalogLoadingRef.current) return;
+    if (catalogRef.current && Date.now() - catalogLoadedAtRef.current < CATALOG_MAX_AGE_MS) return;
     catalogLoadingRef.current = true;
     listLibrary()
       .then((rows) => {
         catalogRef.current = rows;
+        catalogLoadedAtRef.current = Date.now();
         setCatalogVersion((v) => v + 1);
         checkNearEnd(radioRef.current?.getCurrentTime() ?? 0);
       }, () => { /* retried on the next start */ })
@@ -325,12 +344,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     } else {
       try {
         const saved = progressStore.get(jobId);
-        if (saved && !saved.done && Number.isFinite(saved.position)) start = Math.max(0, saved.position);
+        if (saved && !saved.done && Number.isFinite(saved.position)) {
+          // A bookmark saved more than a minute ago rewinds a little, like an in-session long pause.
+          start = Math.max(0, progressStore.positionAfterPause(jobId, saved.position, Date.now() - saved.updatedAt));
+        }
       } catch { /* silent */ }
     }
     currentRef.current = { jobId, item };
     doneForRef.current = null;
-    nearEndForRef.current = null;
+    nearEndRef.current = null;
     pausedAtRef.current = null;
     lastSaveRef.current = Date.now();
     internalRef.current.radioStatus = null;
@@ -452,6 +474,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     if (item && audioSrcOf(item)) {
       // Same task as `ended`: new src + play() before the audio session can go idle.
       startImpl(item, { autoPlay: true, start: 0 }, cur.jobId);
+      return;
+    }
+    if (next) {
+      // Not prepared (prefetch failed or never ran): best effort. The element stays unlocked, but a
+      // locked phone may suspend the page before the fetch returns.
+      const endedId = cur.jobId;
+      const stillEnded = () => currentRef.current?.jobId === endedId && doneForRef.current === endedId;
+      publish({ playing: false, time: radioDuration() });
+      prepared.load(next.job_id).then(
+        (loaded) => {
+          if (!stillEnded()) return; // the listener replayed, stopped or picked another episode
+          if (audioSrcOf(loaded)) startImpl(loaded, { autoPlay: true, start: 0 }, endedId);
+          else publish({ finished: true, playing: false });
+        },
+        () => { if (stillEnded()) publish({ finished: true, playing: false }); },
+      );
       return;
     }
     publish({ finished: true, playing: false, time: radioDuration() });
