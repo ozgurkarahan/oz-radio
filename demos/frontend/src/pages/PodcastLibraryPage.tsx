@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ComponentProps, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
+} from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  AudioLines, Captions, ChevronDown, Download, FileText, GraduationCap, Headphones, Layers, MonitorPlay, Music, Package,
-  Plus, RotateCw, Trash2,
+  AudioLines, Captions, Check, ChevronDown, Download, FileText, GraduationCap, Headphones, History, Layers,
+  MonitorPlay, Music, Package, Plus, RotateCw, Trash2,
 } from 'lucide-react';
 import {
   AUDIENCE_LEVEL_LABELS, LibraryItem, LibrarySummary, PodcastHost, toAudienceLevel,
@@ -16,6 +18,7 @@ import { usePlaybackCommands, usePlaybackSelector, useSuppressMiniPlayer } from 
 import { PlayerSlot } from '../playback/PlayerSlot';
 import { miniPlayerFocusTarget } from '../playback/MiniPlayer';
 import { invalidate as forgetPrepared } from '../playback/prepare';
+import { type ProgressSnapshot, usePlaybackProgress } from '../playback/progress';
 import { OPENED_HERE, audioSrcOf } from '../playback/types';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner, Tabs,
@@ -36,8 +39,13 @@ const MODE_PARAM = 'mode';
 const ROLE_ORDER: Record<string, number> = { interviewer: 0, expert: 1 };
 /** Rows whose playable details are prefetched for a one-tap Listen. */
 const PREFETCH_ROWS = 10;
-/** Touch-first phones: an episode opened without a mode starts in Listen when it has audio. */
+/**
+ * Touch-first phones: an episode opened without a mode starts in Listen when it has audio, and
+ * episode rows lead with Listen (the owner listens with the screen locked; video stops there).
+ */
 const PHONE_QUERY = '(hover: none) and (pointer: coarse)';
+/** A bookmark from this many seconds in is offered as "Resume" (earlier, the episode just starts over). */
+const RESUME_FROM_SEC = 3;
 
 /** Per-open playback settings of the rendition being mounted. */
 interface Playback {
@@ -79,6 +87,39 @@ function resolveMode(item: LibraryItem, wanted: Mode): Mode {
 
 function prefersListen(): boolean {
   return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
+}
+
+function onPhoneQueryChange(listener: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {};
+  const query = window.matchMedia(PHONE_QUERY);
+  query.addEventListener?.('change', listener);
+  return () => query.removeEventListener?.('change', listener);
+}
+
+/** `prefersListen()` for rendering (library rows, Home episode links); follows input changes (a docked tablet). */
+export function usePrefersListen(): boolean {
+  return useSyncExternalStore(onPhoneQueryChange, prefersListen);
+}
+
+/** The listener's progress on an episode: "Resume · 1:12 left" (a bookmark) or "Played" (heard to the end). */
+function progressChip(saved: ProgressSnapshot | null) {
+  if (!saved) return null;
+  if (saved.done) {
+    return <Chip icon={Check} className="library-row__progress" data-testid="progress-chip" data-progress="played">Played</Chip>;
+  }
+  const left = saved.duration - saved.position;
+  if (saved.position < RESUME_FROM_SEC || !(left > 0)) return null;
+  return (
+    <Chip tone="clay" icon={History} className="library-row__progress" data-testid="progress-chip" data-progress="resume">
+      {`Resume · ${formatDuration(Math.max(1, left))} left`}
+    </Chip>
+  );
+}
+
+/** A library row with the listener's progress leading its meta; re-renders on progress changes only. */
+function PodcastRow({ jobId, meta = [], ...row }: { jobId: string } & ComponentProps<typeof EpisodeRow>) {
+  const chip = progressChip(usePlaybackProgress(jobId));
+  return <EpisodeRow {...row} meta={chip ? [chip, ...meta] : meta} />;
 }
 
 /** Navigation state of the current history entry (React Router stores it under `usr`). */
@@ -126,6 +167,8 @@ export default function PodcastLibraryPage() {
   const player = usePlaybackCommands();
   const lastAdvance = usePlaybackSelector((s) => s.lastAdvance);
   const radioItem = usePlaybackSelector((s) => s.current?.item ?? null);
+  /** Touch phones: every row leads with Listen (title tap and primary button). */
+  const listenFirst = usePrefersListen();
 
   useLayoutEffect(() => {
     navigateRef.current = navigate;
@@ -495,9 +538,37 @@ export default function PodcastLibraryPage() {
               const audioOnly = isAudioOnly(it);
               const canWatch = hasVideo(it);
               const canListen = hasAudio(it);
+              const titleMode: Mode = (listenFirst ? canListen : audioOnly) ? 'listen' : 'watch';
+              // Primary button: on phones every row's title action; on desktop only the first row's.
+              const lead: Mode | null = listenFirst ? titleMode : i === 0 ? (canWatch ? 'watch' : 'listen') : null;
+              const watchButton = canWatch && (
+                <Button
+                  size="sm"
+                  icon={MonitorPlay}
+                  variant={lead === 'watch' ? 'primary' : 'outline'}
+                  aria-label={`Watch ${rowTitle}`}
+                  data-testid="library-watch"
+                  onClick={() => openEpisode(it.job_id, 'watch')}
+                >
+                  Watch
+                </Button>
+              );
+              const listenButton = canListen && (
+                <Button
+                  size="sm"
+                  icon={Headphones}
+                  variant={lead === 'listen' ? 'primary' : 'outline'}
+                  aria-label={`Listen to ${rowTitle}`}
+                  data-testid="library-listen"
+                  onClick={() => openEpisode(it.job_id, 'listen')}
+                >
+                  Listen
+                </Button>
+              );
               return (
-                <EpisodeRow
+                <PodcastRow
                   key={it.job_id}
+                  jobId={it.job_id}
                   data-testid="library-item"
                   data-format={audioOnly ? 'audio' : 'video'}
                   className={[
@@ -509,7 +580,7 @@ export default function PodcastLibraryPage() {
                   onPointerDown={canListen ? () => player.prepare([it.job_id]) : undefined}
                   num={episodeNumber(i + 1)}
                   title={rowTitle}
-                  onOpen={() => openEpisode(it.job_id, audioOnly ? 'listen' : 'watch')}
+                  onOpen={() => openEpisode(it.job_id, titleMode)}
                   meta={[
                     formatDate(it.created_at),
                     languageName(it.language),
@@ -528,30 +599,9 @@ export default function PodcastLibraryPage() {
                   actions={(
                     <>
                       <span className="library-row__play">
-                        {canWatch && (
-                          <Button
-                            size="sm"
-                            icon={MonitorPlay}
-                            variant={i === 0 ? 'primary' : 'outline'}
-                            aria-label={`Watch ${rowTitle}`}
-                            data-testid="library-watch"
-                            onClick={() => openEpisode(it.job_id, 'watch')}
-                          >
-                            Watch
-                          </Button>
-                        )}
-                        {canListen && (
-                          <Button
-                            size="sm"
-                            icon={Headphones}
-                            variant={i === 0 && !canWatch ? 'primary' : 'outline'}
-                            aria-label={`Listen to ${rowTitle}`}
-                            data-testid="library-listen"
-                            onClick={() => openEpisode(it.job_id, 'listen')}
-                          >
-                            Listen
-                          </Button>
-                        )}
+                        {listenFirst && listenButton}
+                        {watchButton}
+                        {!listenFirst && listenButton}
                       </span>
                       {isAdmin && (
                         <span className="library-row__manage">

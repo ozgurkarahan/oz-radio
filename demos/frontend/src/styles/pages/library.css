@@ -31,6 +31,13 @@
   padding-block: 1px;
 }
 
+/* Listening progress ("Resume · 1:12 left", "Played"): a narrow meta column (thumbnail rows on
+   small phones, large text) wraps the label inside the chip instead of overflowing the row. */
+.library-row .library-row__progress {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .library-thumb {
   display: block;
   width: 100%;
