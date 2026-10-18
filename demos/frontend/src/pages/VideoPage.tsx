@@ -749,6 +749,7 @@ function DoneView({ jobId, job, title, onNew }: {
             controls
             playsInline
             preload="metadata"
+            data-oz-media="video"
           />
         </div>
       )}

@@ -8,7 +8,8 @@
   --pd-inset-x: calc(env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px));
   position: fixed;
   left: calc(var(--pd-edge) + env(safe-area-inset-left, 0px));
-  bottom: calc(var(--pd-edge) + env(safe-area-inset-bottom, 0px));
+  /* Above the mini-player (--mini-player-h is 0px when it is hidden) and the home indicator. */
+  bottom: calc(var(--pd-edge) + var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
   z-index: 1500;
   display: flex;
   flex-direction: column-reverse; /* toggle first in the tab order, panel above it */
