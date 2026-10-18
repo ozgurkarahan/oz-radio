@@ -432,6 +432,17 @@ src/components/podcast/JobStatus.tsx          // progress + final player
 - `src/pages/PodcastLibraryPage.tsx` — **Watch** and **Listen** side by side on each episode (audio-only: **Listen** + an *Audio only* chip); a player with Watch | Listen tabs that maps the position turn by turn (`video_start`/`video_end` ↔ `start`/`end`) and keeps one active media element; deep link `?episode=<id>&mode=watch|listen`.
 - `src/pages/PodcastPage.tsx` — the format choice at the top of **Review & cast**, the **Listener reactions** and **Intro & outro** options, format-aware stages and the same Watch / Listen player in the result view.
 
+#### On-device playback log (`?debug=player`)
+
+An opt-in event log for testing listening on a real phone (screen locked, earbuds) without a remote inspector — e.g. an iPhone tested from a Windows PC, where Safari Web Inspector is unavailable. Code: `src/debug/playerDebug.ts` (hooks + ring buffer) and `src/debug/PlayerDebugPanel.tsx` (lazy chunk, loaded only when the log is on).
+
+- **Turn on**: open any page with `?debug=player` (e.g. `/podcast/library?debug=player`). The flag is kept in `localStorage` (`oz-radio.debug`), so it survives navigation and reloads on that device. **Turn off**: the panel's **Turn off** button (clears the flag and reloads without `?debug`) or any page with `?debug=off`. Off, nothing is patched, listened to or stored.
+- **What is logged**: a `session` entry per page load (user agent, viewport, device pixel ratio, standalone display mode); every `<audio>`/`<video>` event `loadstart`, `loadedmetadata`, `canplay`, `play`, `playing`, `pause`, `waiting`, `stalled`, `seeking`, `seeked`, `ratechange`, `ended`, `emptied`, `abort`, `error` (element + `data-testid`, `currentTime`, `duration`, `readyState`, `networkState`, `paused`, `playbackRate`, `error.code`, source URL); each `play()` call with `navigator.userActivation.isActive` and its outcome (`play() resolved` / `play() rejected` with the error name, e.g. `NotAllowedError`); every Media Session action from the lock screen or earbuds (`mediasession`: action, `seekOffset`, `seekTime`); page lifecycle (`visibilitychange`, `pagehide`/`pageshow`, `freeze`/`resume`, `online`/`offline`, `focus`/`blur`) and uncaught errors.
+- **No SAS tokens**: media URLs are logged as origin + path — the query string is always stripped (`srcId` numbers distinct full URLs within the page load, so a re-signed URL still shows up as a new source).
+- **Storage**: the last 500 entries `{ t, dt, kind, detail }` (ISO time with ms, ms since the previous entry) in `localStorage` (`oz-radio.debug.log`), written at most once a second and flushed when the page is hidden or left, so a reload or a killed tab keeps the log. Turning off keeps the stored log until it is cleared.
+- **Read and export**: tap **Debug** (bottom left, above dialogs) for the entries, newest first. **Copy** puts the whole log on the clipboard (a header, then one JSON entry per line, oldest first; without clipboard access — plain HTTP on a LAN address — the text is selected for a manual copy). **Share** opens the OS share sheet (Mail, Teams, Notes…) where supported. **Clear** empties it.
+- A player that plays a detached `new Audio()` (never in the DOM) must call `registerMediaElement(el)` (idempotent, a no-op when the log is off); elements in the document are picked up automatically. UI tests: `tests/player-debug.spec.ts`.
+
 ---
 
 ## 6. Security & compliance
