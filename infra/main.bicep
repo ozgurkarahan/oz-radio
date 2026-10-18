@@ -148,6 +148,13 @@ param externalAiServicesResourceId string = ''
 param assignExternalAiServicesRoles bool = true
 
 // ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
+@description('Send Blob read logs (StorageRead only: podcast audio SAS reads, status codes, user agents) to the Log Analytics workspace')
+param enableBlobAccessLogs bool = true
+
+// ---------------------------------------------------------------------------
 // Governance
 // ---------------------------------------------------------------------------
 
@@ -353,6 +360,16 @@ module containerapp 'modules/containerapp.bicep' = {
     demoQaDailyMax: demoQaDailyMax
     demoQaDailyPerIp: demoQaDailyPerIp
     tags: tags
+  }
+}
+
+// Blob read logs: podcast audio is streamed from Blob Storage with SAS URLs the backend never sees
+module blobAccessLogs 'modules/blob-access-logs.bicep' = if (enableBlobAccessLogs) {
+  name: 'blobAccessLogs'
+  scope: rg
+  params: {
+    storageAccountName: storage.outputs.name
+    logAnalyticsWorkspaceId: containerapp.outputs.logAnalyticsWorkspaceId
   }
 }
 

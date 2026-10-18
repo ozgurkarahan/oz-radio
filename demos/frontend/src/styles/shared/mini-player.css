@@ -1,0 +1,202 @@
+/*
+ * Mini-player (playback/MiniPlayer.tsx) — the fixed "Now playing" bar on every route.
+ * Tokens only (tokens.css); Teams dark / contrast themes come through --c-stage / --c-on-stage.
+ * --mini-player-h (set on <html> by MiniPlayer) = the bar height above the home-indicator inset.
+ */
+
+/* Keyboard focus and in-page jumps never land behind the bar (WCAG 2.4.11). */
+:root {
+  scroll-padding-bottom: var(--mini-player-h, 0px);
+}
+
+:root[data-mini-player] {
+  scroll-padding-bottom: calc(var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
+}
+
+/* In-flow twin of the fixed bar: the end of every page scrolls clear of it. */
+.mini-player-spacer {
+  flex: none;
+  height: calc(var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
+}
+
+/* Above page content and the mobile menu's page; below the masthead, dialogs and toasts. */
+.mini-player {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 45;
+  padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  background: var(--c-stage);
+  color: var(--c-on-stage);
+  box-shadow: var(--shadow-overlay);
+  color-scheme: dark;
+}
+
+.mini-player[hidden] {
+  display: none;
+}
+
+@media (min-width: 641px) {
+  .mini-player {
+    right: auto;
+    left: 50%;
+    width: min(720px, 100%);
+    overflow: hidden;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    transform: translateX(-50%);
+  }
+}
+
+/* Progress hairline on the top edge (decorative: the status says how much is left). */
+.mini-player__progress {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--c-on-stage) 16%, transparent);
+  pointer-events: none;
+}
+
+.mini-player__progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--c-clay);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-slow) linear;
+}
+
+.mini-player__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 64px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-2);
+}
+
+.mini-player__open {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  min-height: var(--tap);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: inherit;
+  text-align: left;
+  transition: background-color var(--dur) var(--ease);
+}
+
+.mini-player__open:hover {
+  background: color-mix(in srgb, var(--c-on-stage) 8%, transparent);
+}
+
+.mini-player :focus-visible {
+  outline-color: var(--c-on-stage);
+}
+
+.mini-player__open:focus-visible {
+  outline-offset: -2px;
+}
+
+.mini-player__thumb {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--c-sand);
+  color: var(--c-clay-ink);
+}
+
+.mini-player__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mini-player__thumb svg {
+  width: 20px;
+  height: 20px;
+}
+
+.mini-player__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mini-player__title,
+.mini-player__status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-player__title {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+}
+
+.mini-player__status {
+  color: color-mix(in srgb, var(--c-on-stage) 72%, transparent);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-snug);
+}
+
+.mini-player .mini-player__play {
+  --btn-h: 48px;
+  flex: none;
+}
+
+.mini-player .mini-player__play svg {
+  width: 22px;
+  height: 22px;
+}
+
+.mini-player .mini-player__stop {
+  --btn-h: var(--tap);
+  flex: none;
+  border-color: transparent;
+  color: var(--c-on-stage);
+}
+
+.mini-player .mini-player__stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-on-stage) 12%, transparent);
+  color: var(--c-on-stage);
+}
+
+/* Teams high contrast: a visible edge between the bar and the page. */
+[data-theme='teams-contrast'] .mini-player {
+  border-top: var(--bw) solid var(--c-line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mini-player__progress > span,
+  .mini-player__open {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .mini-player {
+    border-top: 1px solid CanvasText;
+  }
+
+  .mini-player__progress > span {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+}

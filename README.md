@@ -525,6 +525,28 @@ $env:AI_PRESENTER_BASE_URL = "http://localhost:5173"
 npx playwright test tests/decks.spec.ts tests/playlists.spec.ts --project=chromium
 ```
 
+### Phone listening: regression, emulated phones, production smoke
+
+The mocked suites run from the repository root against the Vite dev server alone (`AI_PRESENTER_BASE_URL`, default `http://localhost:5173`): every `/api` call is answered by `tests/support/mock-api.ts` and the media are real fixtures served with byte ranges (`tests/fixtures/media`), so audio genuinely plays — no backend, no Azure.
+
+| Script | Projects | What it covers |
+|---|---|---|
+| `npm run test:regression` | `chromium` (desktop; the phone tests emulate a 390 × 844 touch phone themselves) | Site regression, podcast library Watch/Listen and studio, plus the phone listening suites: persistent player and mini-player (`playback-engine`), resume and speed (`playback-resume`), auto-next (`playback-continuity`), safe areas, overflow and 16 px controls (`mobile-platform`), `?debug=player` (`player-debug`), listen-first rows (`listen-first`) and accessibility (`mobile-a11y`: axe WCAG 2.2 AA with zero serious/critical violations on the library, the Listen sheet and Home with the mini-player; transport buttons ≥ 44 × 44 px; focus never hidden behind the mini-player) |
+| `npm run test:mobile` | `mobile-webkit` (iPhone 15, WebKit) + `mobile-chromium` (Pixel 7) | The same phone listening specs (`playback-*`, `mobile-*`, `listen-first`, `player-debug`) on emulated phones |
+| `npm run test:prod-smoke` | `mobile-chromium`, against production | Read-only deploy check, **skipped unless `OZ_RADIO_PROD_SMOKE=1`** (below) |
+
+Emulation is not a phone. The phone projects give the real engines a mobile user agent, pixel ratio, meta viewport, touch and `(hover: none) and (pointer: coarse)`; they do **not** reproduce iOS autoplay rules (the one-tap user-activation budget), the lock screen / Control Center / Android media notification, background audio with the screen off, AirPods or call interruptions, or Safari's dynamic toolbars — those are proven on real phones (device script with `?debug=player`). A spec's own `test.use({ viewport, isMobile, hasTouch })` wins over the device, and engine-specific checks skip themselves with a reason (the emulated safe-area insets use the Chromium DevTools protocol; WebKit's Tab key skips links).
+
+⚠️ **WebKit on Windows cannot play mocked media.** Playwright's WebKit build for Windows decodes media with Windows Media Foundation, which downloads media URLs itself (outside WebKit's network stack): `page.route()` never sees those requests, the Vite server answers them with `index.html`, and the radio ends in `MEDIA_ERR_SRC_NOT_SUPPORTED`. On Windows, `mobile-webkit` covers layout, touch and accessibility — its playback-dependent tests skip themselves with that reason (`mockedMediaUnavailable` / `MOCKED_MEDIA_REASON` in `tests/support/mock-api.ts`); playback on a phone engine is covered by `mobile-chromium`, on WebKit by macOS/Linux runs, and on iOS by the device script.
+
+**Production smoke** (`tests/prod-smoke.spec.ts`, the deploy step's browser check): unmocked, as an anonymous visitor on an emulated Pixel 7, and strictly read-only — every non-GET request is aborted, nothing is signed in, created, published, reset or deleted. It warms the Container App first (`GET /api/health`, up to 120 s: it scales to zero, cold start ≈ 30 s), then checks that the library lists an episode, one tap on Listen opens the sheet and plays the episode from Blob storage (`currentTime` advances, muted), "Minimise player" keeps it playing in the mini-player, "Open now playing" reopens the sheet on the same `<audio>` element, and the page's `/assets/*.js` are served with `content-encoding: gzip` and an `immutable` `Cache-Control`. SAS query strings are stripped from every message and tracing is off.
+
+```powershell
+$env:OZ_RADIO_PROD_SMOKE = "1"
+$env:AI_PRESENTER_BASE_URL = "https://<your-app>.<env>.<region>.azurecontainerapps.io"   # required with OZ_RADIO_PROD_SMOKE=1
+npm run test:prod-smoke
+```
+
 ### Live browser E2E (real Azure, real avatar)
 
 `tests/e2e-live.spec.ts` drives real Chromium against a local backend wired to real Speech / Voice Live / OpenAI: deck upload → avatar (WebRTC video + audio) → "Present all" with playback-driven advance, raise hand (fake-mic voice question, Ask now, typed), French narration, the anonymous public demo (countdown, 2-question cap) and a short podcast render + frame checks. It is **skipped unless `OZ_RADIO_LIVE_E2E=1`**, so CI and the mocked suites never touch Azure. Needs `az login` with data-plane access to the Speech/AI Services and OpenAI resources in `demos/backend/.env`, LibreOffice, and ffmpeg/ffprobe (`OZ_RADIO_E2E_TOOL_DIRS` when not on `PATH`).

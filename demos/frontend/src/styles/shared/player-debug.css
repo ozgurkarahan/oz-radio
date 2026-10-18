@@ -1,0 +1,173 @@
+/*
+ * PlayerDebugPanel (debug/PlayerDebugPanel.tsx): the opt-in on-device playback log (?debug=player).
+ * Floats bottom-left, above dialogs (.modal, z-index 1000) and below toasts (.toast, 2000).
+ * Tokens only (tokens.css); every control is at least var(--tap) tall.
+ */
+.player-debug {
+  --pd-edge: var(--sp-3);
+  --pd-inset-x: calc(env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px));
+  position: fixed;
+  left: calc(var(--pd-edge) + env(safe-area-inset-left, 0px));
+  /* Above the mini-player (--mini-player-h is 0px when it is hidden) and the home indicator. */
+  bottom: calc(var(--pd-edge) + var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
+  z-index: 1500;
+  display: flex;
+  flex-direction: column-reverse; /* toggle first in the tab order, panel above it */
+  align-items: flex-start;
+  gap: var(--sp-2);
+  max-width: calc(100vw - 2 * var(--pd-edge) - var(--pd-inset-x));
+  color: var(--c-ink);
+  font-family: var(--font-ui);
+  pointer-events: none; /* only the toggle and the panel catch taps */
+}
+
+.player-debug > * {
+  pointer-events: auto;
+}
+
+.player-debug .btn {
+  --btn-h: var(--tap);
+}
+
+/* ---------- Toggle ---------- */
+.player-debug .player-debug__toggle,
+.player-debug .player-debug__toggle:hover:not(:disabled) {
+  border-color: var(--c-ink);
+  background: var(--c-ink);
+  color: var(--c-bg);
+  box-shadow: var(--shadow-media);
+}
+
+.player-debug .player-debug__toggle[aria-expanded='true'],
+.player-debug .player-debug__toggle[aria-expanded='true']:hover:not(:disabled) {
+  border-color: var(--c-clay);
+  background: var(--c-clay);
+  color: var(--c-on-clay);
+}
+
+.player-debug__badge {
+  min-width: 2.25em;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--c-bg);
+  color: var(--c-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* ---------- Panel ---------- */
+.player-debug__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: min(36rem, calc(100vw - 2 * var(--pd-edge) - var(--pd-inset-x)));
+  max-height: min(40rem, calc(100vh - var(--tap) - 4 * var(--pd-edge)));
+  max-height: min(40rem, calc(100dvh - var(--tap) - 4 * var(--pd-edge)
+    - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)));
+  padding: var(--sp-4);
+  border: var(--bw) solid var(--c-line-strong);
+  border-radius: var(--r-lg);
+  background: var(--c-paper);
+  box-shadow: var(--shadow-overlay);
+}
+
+.player-debug__panel[hidden] {
+  display: none;
+}
+
+.player-debug__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-1) var(--sp-3);
+}
+
+.player-debug__title {
+  font-size: 1.25rem;
+}
+
+.player-debug__count,
+.player-debug__status {
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.player-debug__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.player-debug__export {
+  flex: none;
+  max-height: 8rem;
+  overflow: auto;
+  padding: var(--sp-2);
+  border: var(--bw) dashed var(--c-line-strong);
+  border-radius: var(--r-sm);
+  background: var(--c-bg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ---------- Entries ---------- */
+.player-debug__list {
+  flex: 1 1 auto;
+  min-height: 6rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border-top: var(--bw) solid var(--c-line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.player-debug__entry {
+  padding: var(--sp-2) 0;
+  border-bottom: var(--bw) solid var(--c-line);
+  overflow-wrap: anywhere;
+}
+
+/* A page load starts with a session entry: the heavier rule separates loads (newest first). */
+.player-debug__entry[data-kind='session'] {
+  border-bottom: 2px solid var(--c-rule);
+}
+
+.player-debug__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sp-2);
+}
+
+.player-debug__line time,
+.player-debug__gap {
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.player-debug__kind {
+  color: var(--c-clay-ink);
+  font-weight: 700;
+}
+
+.player-debug__entry:is(
+  [data-kind='error'], [data-kind='stalled'], [data-kind='abort'], [data-kind='play() rejected'],
+  [data-kind='play() threw'], [data-kind='js-error'], [data-kind='unhandled-rejection']
+) .player-debug__kind {
+  color: var(--c-danger);
+}
+
+.player-debug__detail {
+  color: var(--c-ink-2);
+}

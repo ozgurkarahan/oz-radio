@@ -350,6 +350,8 @@ Region: Sweden Central (swedencentral)
     └── Storage Blob Data Contributor → Storage Account
 ```
 
+**SPA delivery** — FastAPI serves the Vite build copied into `demos/backend/static`. `index.html` and client routes stay `no-cache, no-store` so a deploy is picked up on the next load, while `/assets/*` goes through `StaticAssetDeliveryMiddleware` (`app.py`): gzip for text-like files ≥ 1 KB (never `Range` requests, API, media or the shell; `Vary: Accept-Encoding`, weak ETag when encoded) and `Cache-Control: public, max-age=31536000, immutable` for content-hashed `<name>-<hash>.<ext>` files (`max-age=3600` otherwise). The main JS bundle drops from ~665 KB to ~208 KB on the wire and is not re-requested between visits.
+
 ---
 
 ## Security

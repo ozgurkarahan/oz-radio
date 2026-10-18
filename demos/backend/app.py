@@ -7,9 +7,13 @@ import time
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.gzip import GZipMiddleware
 
 # Configure logging before importing first-party modules: some of them log at
 # import time (e.g. the avatar registry summary), which would otherwise be lost.
@@ -1520,6 +1524,80 @@ if os.path.isdir(os.path.join(STATIC_DIR, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
 
 _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+ASSET_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+ASSET_SHORT_CACHE = "public, max-age=3600"
+# Vite build output is named ``<name>-<hash>.<ext>`` with an 8-char base64url
+# hash, e.g. ``index-QO2cPfnY.js`` or ``...-normal-Dg-wlmqe.woff2``.
+_ASSET_HASH_RE = re.compile(r"-([A-Za-z0-9_-]{8})(?:\.[A-Za-z0-9]+)+$")
+# Text-like formats worth gzipping (images, audio/video and woff/woff2 are already compressed).
+_COMPRESSIBLE_ASSET_EXTS = frozenset({
+    ".js", ".mjs", ".css", ".map", ".json", ".webmanifest", ".svg", ".xml", ".txt",
+    ".wasm", ".ttf", ".otf", ".eot", ".ico",
+})
+
+
+def asset_cache_control(name: str) -> str:
+    """``Cache-Control`` for a file under ``/assets``: immutable only when content-hashed."""
+    match = _ASSET_HASH_RE.search(name)
+    # Real hashes mix in a capital or a digit; "-standard.css" is just a name.
+    hashed = match is not None and any(c.isupper() or c.isdigit() for c in match.group(1))
+    return ASSET_IMMUTABLE_CACHE if hashed else ASSET_SHORT_CACHE
+
+
+class StaticAssetDeliveryMiddleware:
+    """Pure-ASGI gzip + caching policy for the SPA build under ``/assets/`` only.
+
+    Every other path (API, media, index.html, root static files) passes through
+    untouched. For ``/assets/*``:
+
+    - gzip via Starlette's ``GZipMiddleware`` (bodies >= 1 KB) for text-like
+      files when the client accepts it, never for ``Range`` requests;
+    - ``Vary: Accept-Encoding`` on compressible files (304s included);
+    - ``Cache-Control`` on 200/206/304 (errors untouched): content-hashed Vite
+      files are immutable for a year, other files are cached for an hour;
+    - gzip responses (and their 304s) get a weak ETag, as nginx does: the strong
+      one describes the identity bytes. ``If-None-Match`` still matches it.
+    """
+
+    def __init__(self, app, prefix: str = "/assets/", minimum_size: int = 1024, compresslevel: int = 6) -> None:
+        self.app = app
+        self.prefix = prefix
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size, compresslevel=compresslevel)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith(self.prefix):
+            await self.app(scope, receive, send)
+            return
+
+        name = scope["path"].rsplit("/", 1)[-1]
+        cache_control = asset_cache_control(name)
+        compressible = os.path.splitext(name)[1].lower() in _COMPRESSIBLE_ASSET_EXTS
+        request_headers = Headers(scope=scope)
+        use_gzip = compressible and "range" not in request_headers
+        accepts_gzip = use_gzip and "gzip" in request_headers.get("accept-encoding", "")
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start" and message["status"] in (200, 206, 304):
+                message.setdefault("headers", [])
+                headers = MutableHeaders(scope=message)
+                if "cache-control" not in headers:
+                    headers["Cache-Control"] = cache_control
+                vary = {token.strip().lower() for token in headers.get("vary", "").split(",")}
+                if compressible and not vary & {"accept-encoding", "*"}:
+                    headers.add_vary_header("Accept-Encoding")
+                etag = headers.get("etag", "")
+                encoded = headers.get("content-encoding") == "gzip" or (message["status"] == 304 and accepts_gzip)
+                if encoded and etag.startswith('"'):
+                    headers["ETag"] = f"W/{etag}"
+            await send(message)
+
+        await (self.gzip if use_gzip else self.app)(scope, receive, send_wrapper)
+
+
+# Outermost user middleware: it compresses the final body, after the security
+# headers (and CORS, when enabled) have been set by the inner middlewares.
+app.add_middleware(StaticAssetDeliveryMiddleware)
 
 
 @app.get("/{full_path:path}")

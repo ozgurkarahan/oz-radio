@@ -17,8 +17,18 @@ import TopNav from './components/TopNav';
 import AuthToast from './components/AuthToast';
 import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, installAuthErrorInterceptor } from './services/auth';
+import { installPlayerDebug, isPlayerDebugEnabled } from './debug/playerDebug';
+import { PlaybackProvider } from './playback/PlaybackProvider';
+import { MiniPlayer } from './playback/MiniPlayer';
 
 installAuthErrorInterceptor();
+
+// Opt-in on-device playback log (?debug=player): hooks before render, panel as a lazy chunk.
+const playerDebug = isPlayerDebugEnabled();
+if (playerDebug) installPlayerDebug();
+const PlayerDebugPanel = playerDebug
+  ? React.lazy<React.ComponentType>(() => import('./debug/PlayerDebugPanel').catch(() => ({ default: () => null })))
+  : null;
 
 function RoutedContent({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
@@ -33,6 +43,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <AuthProvider>
     <BrowserRouter>
+      <PlaybackProvider>
       <TopNav />
       <AuthToast />
       <RoutedContent>
@@ -50,7 +61,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Route path="/video/library" element={<VideoLibraryPage />} />
       </Routes>
       </RoutedContent>
+      <MiniPlayer />
+      </PlaybackProvider>
     </BrowserRouter>
     </AuthProvider>
+    {PlayerDebugPanel && <React.Suspense fallback={null}><PlayerDebugPanel /></React.Suspense>}
   </React.StrictMode>
 );

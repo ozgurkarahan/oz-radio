@@ -199,7 +199,7 @@ export default function VideoLibraryPage() {
           <>
             <div className="library-player__screen">
               {selected.video_url ? (
-                <video data-testid="library-player" src={selected.video_url} controls autoPlay />
+                <video data-testid="library-player" data-oz-media="video" src={selected.video_url} controls autoPlay />
               ) : (
                 <div className="library-player__status">Video unavailable</div>
               )}

@@ -1,17 +1,25 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ComponentProps, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
+} from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  AudioLines, Captions, Download, FileText, GraduationCap, Headphones, Layers, MonitorPlay, Music, Package, Plus,
-  RotateCw, Trash2,
+  AudioLines, Captions, Check, ChevronDown, Download, FileText, GraduationCap, Headphones, History, Layers,
+  MonitorPlay, Music, Package, Plus, RotateCw, Trash2,
 } from 'lucide-react';
 import {
   AUDIENCE_LEVEL_LABELS, LibraryItem, LibrarySummary, PodcastHost, toAudienceLevel,
-  deleteLibraryItem, getLibraryItem, hasAudio, hasVideo, isAudioOnly, listLibrary, publishLibraryItem,
+  deleteLibraryItem, hasAudio, hasVideo, isAudioOnly, listLibrary, publishLibraryItem,
 } from '../services/podcast';
 import { useAuth } from '../services/auth';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import { GateNotice, PublishBadge, PublishToggle } from '../components/AuthGate';
-import { RadioPlayer, type RadioPlayerHandle, mapRenditionTime, toRadioHosts } from '../components/RadioPlayer';
+import { mapRenditionTime, toRadioHosts } from '../components/RadioPlayer';
+import { usePlaybackCommands, usePlaybackSelector, useSuppressMiniPlayer } from '../playback/PlaybackProvider';
+import { PlayerSlot } from '../playback/PlayerSlot';
+import { miniPlayerFocusTarget } from '../playback/MiniPlayer';
+import { invalidate as forgetPrepared } from '../playback/prepare';
+import { type ProgressSnapshot, usePlaybackProgress } from '../playback/progress';
+import { OPENED_HERE, audioSrcOf } from '../playback/types';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner, Tabs,
   type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, humanizeTitle, languageName, pluralize,
@@ -20,7 +28,7 @@ import '../styles/pages/library.css';
 
 const KIND = { icon: Headphones, label: 'Podcast' };
 
-/** Watch = MP4 video, Listen = radio MP3 (RadioPlayer). */
+/** Watch = MP4 video (page-owned), Listen = the app's persistent radio player (playback/). */
 type Mode = 'watch' | 'listen';
 const MODE_LABEL: Record<Mode, string> = { watch: 'Watch', listen: 'Listen' };
 const toMode = (v: string | null): Mode | null => (v === 'watch' || v === 'listen' ? v : null);
@@ -28,9 +36,16 @@ const toMode = (v: string | null): Mode | null => (v === 'watch' || v === 'liste
 /** Deep link: /podcast/library?episode=<job_id>&mode=watch|listen */
 const EPISODE_PARAM = 'episode';
 const MODE_PARAM = 'mode';
-/** History state of an entry pushed by opening an episode on this page: closing pops it. */
-const OPENED_HERE = 'podcastEpisode';
 const ROLE_ORDER: Record<string, number> = { interviewer: 0, expert: 1 };
+/** Rows whose playable details are prefetched for a one-tap Listen. */
+const PREFETCH_ROWS = 10;
+/**
+ * Touch-first phones: an episode opened without a mode starts in Listen when it has audio, and
+ * episode rows lead with Listen (the owner listens with the screen locked; video stops there).
+ */
+const PHONE_QUERY = '(hover: none) and (pointer: coarse)';
+/** A bookmark from this many seconds in is offered as "Resume" (earlier, the episode just starts over). */
+const RESUME_FROM_SEC = 3;
 
 /** Per-open playback settings of the rendition being mounted. */
 interface Playback {
@@ -56,7 +71,56 @@ function audienceChip(level: unknown) {
   return lvl ? <Chip icon={GraduationCap} data-testid="audience-chip">{AUDIENCE_LEVEL_LABELS[lvl]} audience</Chip> : null;
 }
 const videoSrcOf = (item: LibraryItem) => (hasVideo(item) ? item.mp4_url ?? item.video_url ?? null : null);
-const audioSrcOf = (item: LibraryItem) => (hasAudio(item) ? item.audio_url ?? item.mp3_url ?? null : null);
+
+function availableModes(item: LibraryItem): Mode[] {
+  const modes: Mode[] = [];
+  if (videoSrcOf(item)) modes.push('watch');
+  if (audioSrcOf(item)) modes.push('listen');
+  return modes;
+}
+
+/** The rendition actually shown for a requested mode (falls back to one the episode has). */
+function resolveMode(item: LibraryItem, wanted: Mode): Mode {
+  const available = availableModes(item);
+  return available.includes(wanted) ? wanted : available[0] ?? (isAudioOnly(item) ? 'listen' : 'watch');
+}
+
+function prefersListen(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
+}
+
+function onPhoneQueryChange(listener: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {};
+  const query = window.matchMedia(PHONE_QUERY);
+  query.addEventListener?.('change', listener);
+  return () => query.removeEventListener?.('change', listener);
+}
+
+/** `prefersListen()` for rendering (library rows, Home episode links); follows input changes (a docked tablet). */
+export function usePrefersListen(): boolean {
+  return useSyncExternalStore(onPhoneQueryChange, prefersListen);
+}
+
+/** The listener's progress on an episode: "Resume · 1:12 left" (a bookmark) or "Played" (heard to the end). */
+function progressChip(saved: ProgressSnapshot | null) {
+  if (!saved) return null;
+  if (saved.done) {
+    return <Chip icon={Check} className="library-row__progress" data-testid="progress-chip" data-progress="played">Played</Chip>;
+  }
+  const left = saved.duration - saved.position;
+  if (saved.position < RESUME_FROM_SEC || !(left > 0)) return null;
+  return (
+    <Chip tone="clay" icon={History} className="library-row__progress" data-testid="progress-chip" data-progress="resume">
+      {`Resume · ${formatDuration(Math.max(1, left))} left`}
+    </Chip>
+  );
+}
+
+/** A library row with the listener's progress leading its meta; re-renders on progress changes only. */
+function PodcastRow({ jobId, meta = [], ...row }: { jobId: string } & ComponentProps<typeof EpisodeRow>) {
+  const chip = progressChip(usePlaybackProgress(jobId));
+  return <EpisodeRow {...row} meta={chip ? [chip, ...meta] : meta} />;
+}
 
 /** Navigation state of the current history entry (React Router stores it under `usr`). */
 function historyState(): Record<string, unknown> | null {
@@ -88,20 +152,28 @@ export default function PodcastLibraryPage() {
   /** Latest open request: responses for any other (closed / superseded) request are ignored. */
   const requestRef = useRef<{ id: string } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const radioRef = useRef<RadioPlayerHandle>(null);
   /** Rendition currently on screen; media events from the other one are ignored. */
   const activeModeRef = useRef<Mode | null>(null);
-  /** Whether the active rendition is (meant to be) playing — carried over on Watch ↔ Listen. */
+  /** Whether the Watch video is (meant to be) playing — carried over to Listen. */
   const playIntentRef = useRef(true);
-  /** Item re-fetched by the radio player after a SAS expiry, applied at the next switch. */
-  const freshItemRef = useRef<LibraryItem | null>(null);
+  const selectedRef = useRef<LibraryItem | null>(null);
   /** Closing went back one history entry and that traversal (popstate) has not landed yet. */
   const backPendingRef = useRef(false);
   const backTimerRef = useRef<number | undefined>(undefined);
   /** Episode opened while that back was in flight: its URL is pushed once the back has landed. */
   const queuedOpenRef = useRef<{ id: string; mode: Mode } | null>(null);
 
-  useLayoutEffect(() => { navigateRef.current = navigate; });
+  /** The app's persistent radio (Listen): it outlives this dialog and this page. */
+  const player = usePlaybackCommands();
+  const lastAdvance = usePlaybackSelector((s) => s.lastAdvance);
+  const radioItem = usePlaybackSelector((s) => s.current?.item ?? null);
+  /** Touch phones: every row leads with Listen (title tap and primary button). */
+  const listenFirst = usePrefersListen();
+
+  useLayoutEffect(() => {
+    navigateRef.current = navigate;
+    selectedRef.current = selected;
+  });
 
   // Fallback pair when speaker names don't match a known avatar: default host + a contrasting co-host.
   const fallbackHosts = useMemo(() => {
@@ -136,20 +208,24 @@ export default function PodcastLibraryPage() {
   useEffect(() => { if (!auth.loading) refresh(); }, [auth.loading, auth.is_admin]);
 
   // ---- Player: open / close / deep link ----------------------------------------------
-  const pauseAll = useCallback(() => {
-    videoRef.current?.pause();
-    radioRef.current?.pause();
-  }, []);
-
+  /**
+   * Closes the dialog. Listen only minimises (the persistent radio keeps playing in the
+   * mini-player); Watch stops its video and leaves the radio where the video was.
+   */
   const closeLocal = useCallback(() => {
+    const video = videoRef.current;
+    const shown = selectedRef.current;
+    if (activeModeRef.current === 'watch' && video && shown && video.currentTime > 0
+      && player.getCurrent()?.jobId === shown.job_id) {
+      player.seek(mapRenditionTime(shown.transcript, video.currentTime, 'video'));
+    }
     requestRef.current = null;
     queuedOpenRef.current = null;
-    freshItemRef.current = null;
     activeModeRef.current = null;
-    pauseAll();
+    video?.pause();
     setSelected(null);
     setLoadingId(null);
-  }, [pauseAll]);
+  }, [player]);
 
   const pushEpisodeUrl = useCallback((id: string, mode: Mode) => {
     const params = new URLSearchParams(window.location.search);
@@ -170,7 +246,7 @@ export default function PodcastLibraryPage() {
     return true;
   }, [pushEpisodeUrl]);
 
-  /** Drops ?episode/&mode: pops the entry pushed by an in-page open, else replaces the deep link. */
+  /** Drops ?episode/&mode: pops the entry pushed by an in-app open, else replaces the deep link. */
   const leaveEpisodeUrl = useCallback(() => {
     if (backPendingRef.current) return; // already leaving this entry
     const params = new URLSearchParams(window.location.search);
@@ -190,22 +266,50 @@ export default function PodcastLibraryPage() {
     navigateRef.current({ search: search ? `?${search}` : '' }, { replace: true });
   }, [settleBack]);
 
-  const beginLoad = useCallback((id: string, wanted: Mode | null) => {
+  /**
+   * Opens an episode. Listen with the episode already in the radio, or a fresh prefetched one,
+   * opens instantly; from a tap (`gesture`) the radio starts synchronously inside it. Otherwise
+   * the details load first (Watch always does: its video is page-owned).
+   */
+  const beginLoad = useCallback((id: string, wanted: Mode | null, gesture = false) => {
     const request = { id };
     requestRef.current = request;
-    freshItemRef.current = null;
     activeModeRef.current = null;
     playIntentRef.current = true;
-    pauseAll();
+    videoRef.current?.pause();
+    const requested: Mode = wanted ?? (prefersListen() ? 'listen' : 'watch');
+    setPlayback({ mode: requested, start: 0, autoPlay: true });
+
+    if (requested === 'listen') {
+      const held = player.getCurrent();
+      const instant = held?.jobId === id ? held.item : player.getPrepared(id);
+      if (instant && audioSrcOf(instant)) {
+        if (gesture) {
+          player.startEpisode(instant, { autoPlay: true }); // same episode: resumes, never reloads
+        } else if (held?.jobId !== id) {
+          queueMicrotask(() => {
+            if (requestRef.current === request) player.startEpisode(instant, { autoPlay: true });
+          });
+        }
+        setOpenError(null);
+        setLoadingId(null);
+        setSelected(instant);
+        return;
+      }
+    }
+
+    // Watch pauses the radio; a cold Listen pauses it until the new episode replaces it.
+    player.pause();
     setSelected(null);
     setLoadingId(id);
-    setPlayback({ mode: wanted ?? 'watch', start: 0, autoPlay: true });
-    getLibraryItem(id).then(
+    player.loadEpisode(id).then(
       (item) => {
         if (requestRef.current !== request) return; // closed, or another episode was opened meanwhile
         setOpenError(null);
         setSelected(item);
         setLoadingId(null);
+        // Not in a tap any more: a refused autoplay shows "Press play".
+        if (resolveMode(item, requested) === 'listen') player.startEpisode(item, { autoPlay: true });
       },
       (e: any) => {
         if (requestRef.current !== request) return;
@@ -216,10 +320,10 @@ export default function PodcastLibraryPage() {
         leaveEpisodeUrl();
       },
     );
-  }, [pauseAll, leaveEpisodeUrl]);
+  }, [player, leaveEpisodeUrl]);
 
   function openEpisode(id: string, wanted: Mode) {
-    beginLoad(id, wanted);
+    beginLoad(id, wanted, true);
     if (backPendingRef.current) queuedOpenRef.current = { id, mode: wanted };
     else pushEpisodeUrl(id, wanted);
   }
@@ -266,16 +370,15 @@ export default function PodcastLibraryPage() {
   }, []);
 
   const videoSrc = selected ? videoSrcOf(selected) : null;
-  const audioSrc = selected ? audioSrcOf(selected) : null;
-  const available: Mode[] = [];
-  if (videoSrc) available.push('watch');
-  if (audioSrc) available.push('listen');
-  const mode: Mode = available.includes(playback.mode)
-    ? playback.mode
-    : available[0] ?? (selected && isAudioOnly(selected) ? 'listen' : 'watch');
+  const available: Mode[] = selected ? availableModes(selected) : [];
+  const mode: Mode = selected ? resolveMode(selected, playback.mode) : playback.mode;
   const showTabs = available.length > 1;
+  const listening = !!selected && mode === 'listen';
 
   useLayoutEffect(() => { activeModeRef.current = selected ? mode : null; }, [selected, mode]);
+
+  // The mini-player stays hidden behind any episode dialog (Watch, loading); Listen shows the player itself.
+  useSuppressMiniPlayer(!!(selected || loadingId));
 
   // Keep ?mode= in step with what is shown (fallback rendition, tab switches) without new entries.
   useEffect(() => {
@@ -286,53 +389,77 @@ export default function PodcastLibraryPage() {
     navigate({ search: `?${params}` }, { replace: true, state: historyState() });
   }, [selected, mode, navigate, episodeParam, modeParam]);
 
-  /** Watch ↔ Listen: pause the current medium and start the other at the same point of the conversation. */
+  // The radio moved on by itself (auto-next) while this sheet shows it: follow without a new entry.
+  useEffect(() => {
+    const shown = selectedRef.current;
+    if (!lastAdvance || !shown || shown.job_id !== lastAdvance.from || activeModeRef.current !== 'listen') return;
+    if (requestRef.current?.id !== shown.job_id) return;
+    const cur = player.getCurrent();
+    if (!cur || cur.jobId !== lastAdvance.to) return;
+    requestRef.current = { id: cur.jobId };
+    setSelected(cur.item);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get(EPISODE_PARAM) !== shown.job_id) return;
+    params.set(EPISODE_PARAM, cur.jobId);
+    params.set(MODE_PARAM, 'listen');
+    const state = historyState();
+    const openedHere = state?.[OPENED_HERE] === shown.job_id;
+    navigateRef.current(
+      { search: `?${params}` },
+      { replace: true, state: openedHere ? { ...state, [OPENED_HERE]: cur.jobId } : state },
+    );
+  }, [lastAdvance, player]);
+
+  // A fresher copy of the shown episode (the radio renewed an expired link): keep its other URLs fresh too.
+  useEffect(() => {
+    if (radioItem) setSelected((prev) => (prev && prev !== radioItem && prev.job_id === radioItem.job_id ? radioItem : prev));
+  }, [radioItem]);
+
+  // One-tap Listen: keep the first rows' playable details ready (on load and whenever the page shows again).
+  const prefetchIds = useMemo(
+    () => (items ?? []).slice(0, PREFETCH_ROWS).filter((it) => hasAudio(it)).map((it) => it.job_id),
+    [items],
+  );
+  useEffect(() => {
+    if (prefetchIds.length === 0) return undefined;
+    player.prepare(prefetchIds);
+    const onVisible = () => { if (document.visibilityState === 'visible') player.prepare(prefetchIds); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [prefetchIds, player]);
+
+  /** Watch ↔ Listen: pause the current medium and continue on the other at the same point of the conversation. */
   function switchMode(next: Mode) {
     if (!selected || next === mode || !available.includes(next)) return;
-    const wasPlaying = playIntentRef.current;
-    let start = 0;
+    activeModeRef.current = next;
     if (mode === 'watch') {
+      const wasPlaying = playIntentRef.current;
       const video = videoRef.current;
       const t = video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
       video?.pause();
-      start = mapRenditionTime(selected.transcript, t, 'video');
+      const start = Math.max(0, mapRenditionTime(selected.transcript, t, 'video'));
+      if (player.getCurrent()?.jobId === selected.job_id) {
+        player.seek(start);
+        if (wasPlaying) void player.play();
+      } else {
+        player.startEpisode(selected, { autoPlay: wasPlaying, start });
+      }
+      setPlayback({ mode: next, start, autoPlay: wasPlaying });
     } else {
-      const radio = radioRef.current;
-      const t = radio ? radio.getCurrentTime() : 0;
-      radio?.pause();
-      start = mapRenditionTime(selected.transcript, t, 'audio');
+      const wasPlaying = player.getState().playing;
+      const t = player.getCurrentTime();
+      player.pause();
+      const start = Math.max(0, mapRenditionTime(selected.transcript, t, 'audio'));
+      const held = player.getCurrent();
+      if (held && held.jobId === selected.job_id && held.item !== selected) setSelected(held.item);
+      playIntentRef.current = wasPlaying; // the video's own play / pause events take over from here
+      setPlayback({ mode: next, start, autoPlay: wasPlaying });
     }
-    activeModeRef.current = next;
-    const fresh = freshItemRef.current;
-    freshItemRef.current = null;
-    if (fresh && fresh.job_id === selected.job_id) setSelected(fresh);
-    setPlayback({ mode: next, start: Math.max(0, start), autoPlay: wasPlaying });
   }
 
-  const refreshAudio = useCallback(async (): Promise<string | null> => {
-    const request = requestRef.current;
-    if (!request) return null;
-    try {
-      const fresh = await getLibraryItem(request.id);
-      if (requestRef.current !== request) return null;
-      freshItemRef.current = fresh;
-      return audioSrcOf(fresh);
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const onRadioPlayState = useCallback((playing: boolean) => {
-    if (activeModeRef.current === 'listen') playIntentRef.current = playing;
-  }, []);
   const onVideoPlayState = (playing: boolean) => {
     if (activeModeRef.current === 'watch') playIntentRef.current = playing;
   };
-
-  const radioHosts = useMemo(
-    () => (selected ? toRadioHosts(selected.hosts, avatars, selected.speaker_names ?? []) : []),
-    [selected, avatars],
-  );
 
   // ---- Admin actions ------------------------------------------------------------------
   async function togglePublish(jobId: string, next: boolean) {
@@ -354,8 +481,10 @@ export default function PodcastLibraryPage() {
     setDeleting(jobId);
     try {
       await deleteLibraryItem(jobId);
+      forgetPrepared(jobId);
       setItems((prev) => prev?.filter((i) => i.job_id !== jobId) ?? null);
       if (requestRef.current?.id === jobId) closePlayer();
+      if (player.getCurrent()?.jobId === jobId) player.stop();
     } catch (e: any) {
       setError(`Delete failed: ${e?.message ?? e}`);
     } finally {
@@ -409,9 +538,37 @@ export default function PodcastLibraryPage() {
               const audioOnly = isAudioOnly(it);
               const canWatch = hasVideo(it);
               const canListen = hasAudio(it);
+              const titleMode: Mode = (listenFirst ? canListen : audioOnly) ? 'listen' : 'watch';
+              // Primary button: on phones every row's title action; on desktop only the first row's.
+              const lead: Mode | null = listenFirst ? titleMode : i === 0 ? (canWatch ? 'watch' : 'listen') : null;
+              const watchButton = canWatch && (
+                <Button
+                  size="sm"
+                  icon={MonitorPlay}
+                  variant={lead === 'watch' ? 'primary' : 'outline'}
+                  aria-label={`Watch ${rowTitle}`}
+                  data-testid="library-watch"
+                  onClick={() => openEpisode(it.job_id, 'watch')}
+                >
+                  Watch
+                </Button>
+              );
+              const listenButton = canListen && (
+                <Button
+                  size="sm"
+                  icon={Headphones}
+                  variant={lead === 'listen' ? 'primary' : 'outline'}
+                  aria-label={`Listen to ${rowTitle}`}
+                  data-testid="library-listen"
+                  onClick={() => openEpisode(it.job_id, 'listen')}
+                >
+                  Listen
+                </Button>
+              );
               return (
-                <EpisodeRow
+                <PodcastRow
                   key={it.job_id}
+                  jobId={it.job_id}
                   data-testid="library-item"
                   data-format={audioOnly ? 'audio' : 'video'}
                   className={[
@@ -420,9 +577,10 @@ export default function PodcastLibraryPage() {
                     audioOnly && 'library-row--audio',
                     isAdmin && 'library-row--admin',
                   ].filter(Boolean).join(' ')}
+                  onPointerDown={canListen ? () => player.prepare([it.job_id]) : undefined}
                   num={episodeNumber(i + 1)}
                   title={rowTitle}
-                  onOpen={() => openEpisode(it.job_id, audioOnly ? 'listen' : 'watch')}
+                  onOpen={() => openEpisode(it.job_id, titleMode)}
                   meta={[
                     formatDate(it.created_at),
                     languageName(it.language),
@@ -441,30 +599,9 @@ export default function PodcastLibraryPage() {
                   actions={(
                     <>
                       <span className="library-row__play">
-                        {canWatch && (
-                          <Button
-                            size="sm"
-                            icon={MonitorPlay}
-                            variant={i === 0 ? 'primary' : 'outline'}
-                            aria-label={`Watch ${rowTitle}`}
-                            data-testid="library-watch"
-                            onClick={() => openEpisode(it.job_id, 'watch')}
-                          >
-                            Watch
-                          </Button>
-                        )}
-                        {canListen && (
-                          <Button
-                            size="sm"
-                            icon={Headphones}
-                            variant={i === 0 && !canWatch ? 'primary' : 'outline'}
-                            aria-label={`Listen to ${rowTitle}`}
-                            data-testid="library-listen"
-                            onClick={() => openEpisode(it.job_id, 'listen')}
-                          >
-                            Listen
-                          </Button>
-                        )}
+                        {listenFirst && listenButton}
+                        {watchButton}
+                        {!listenFirst && listenButton}
                       </span>
                       {isAdmin && (
                         <span className="library-row__manage">
@@ -501,6 +638,9 @@ export default function PodcastLibraryPage() {
         variant="stage"
         className={['library-player', 'library-player--podcast', showTabs && 'library-player--tabs'].filter(Boolean).join(' ')}
         data-mode={selected ? mode : undefined}
+        closeLabel={listening ? 'Minimise player' : 'Close'}
+        closeIcon={listening ? ChevronDown : undefined}
+        fallbackFocus={miniPlayerFocusTarget}
       >
         {loadingId || !selected ? (
           <div className="library-player__status"><Spinner label="Loading podcast…" /></div>
@@ -526,25 +666,14 @@ export default function PodcastLibraryPage() {
               data-mode={mode}
             >
               {mode === 'listen' ? (
-                <RadioPlayer
-                  key={selected.job_id}
-                  ref={radioRef}
-                  tone="stage"
-                  src={audioSrc}
-                  title={title}
-                  transcript={selected.transcript ?? null}
-                  coverUrl={selected.cover_url ?? null}
-                  hosts={radioHosts}
-                  autoPlay={playback.autoPlay}
-                  initialTime={playback.start}
-                  onRefreshSource={refreshAudio}
-                  onPlayStateChange={onRadioPlayState}
-                />
+                // The app's radio (one <audio> for the whole visit) moves in here; closing parks it, still playing.
+                <PlayerSlot />
               ) : videoSrc ? (
                 <video
                   key={selected.job_id}
                   ref={videoRef}
                   data-testid="library-player"
+                  data-oz-media="video"
                   src={videoSrc}
                   controls
                   autoPlay={playback.autoPlay}

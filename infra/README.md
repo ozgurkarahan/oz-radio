@@ -14,7 +14,7 @@
 | Azure AI Services `ais-*` (Speech/Avatar) | Skipped when an external resource is used. Local auth disabled. |
 | Cosmos DB (serverless) | Local (key) auth disabled; RBAC data contributor for the identity. |
 | Storage account | Shared-key access disabled; SAS URLs are signed with a user delegation key. |
-| Log Analytics workspace | Container Apps logs (key never emitted as an output). |
+| Log Analytics workspace | Container Apps logs (key never emitted as an output) and Blob read logs (`ENABLE_BLOB_ACCESS_LOGS`). |
 | Budget (optional) | Monthly, alerts at 80 % actual and 100 % forecasted. |
 
 ## Authentication (fail closed)
@@ -68,6 +68,7 @@ allowlist is forced empty, so nobody can act as admin.
 | `USE_EXTERNAL_AI_SERVICES` | `false` | Reuse an existing AI Services / Speech resource (e.g. one hosting custom photo avatars). |
 | `EXTERNAL_AI_SERVICES_ENDPOINT` / `_REGION` / `_RESOURCE_ID` | empty | Details of that resource (may be in another resource group of the same subscription). |
 | `ASSIGN_EXTERNAL_AI_SERVICES_ROLES` | `true` | Grant the app identity `Cognitive Services User`, `Cognitive Services Speech User` and `Foundry User` on the external resource. Requires Owner / User Access Administrator on its resource group; set `false` and assign them manually otherwise. |
+| `ENABLE_BLOB_ACCESS_LOGS` | `true` | Diagnostic setting `blob-access-logs` sending Blob **read** logs (`StorageRead` only) to the Log Analytics workspace, table `StorageBlobLogs`. See [Blob access logs](#blob-access-logs-podcast-audio). |
 | `EXTRA_TAGS_JSON` | empty | JSON object merged into every resource's tags, e.g. `{"CostCenter":"demo"}`. Use it for tags required or exempted by policy on policy-managed enterprise subscriptions. |
 | `BUDGET_CONTACT_EMAILS` | empty | Comma-separated recipients; the budget is deployed only when set. |
 | `BUDGET_AMOUNT` | `50` | Monthly amount in the billing currency. |
@@ -110,6 +111,41 @@ items (`publish --podcast-id <old id>`) and hide the new ones (`--off`).
 `PODCAST_REACTIONS` and `PODCAST_LISTENER_MODE` only affect new renders:
 episodes already rendered keep their backchannels and listener. See
 [`docs/podcast.md`](../docs/podcast.md#44-operator-cli) for the CLI.
+
+### Blob access logs (podcast audio)
+
+Podcast MP3s are streamed straight from Blob Storage with SAS URLs, so the
+backend never sees those requests. With `ENABLE_BLOB_ACCESS_LOGS=true` (default),
+`azd provision` adds the diagnostic setting `blob-access-logs` on the storage
+account's blob service. It sends the `StorageRead` category only (no
+`StorageWrite` / `StorageDelete`, no metrics) to the existing Log Analytics
+workspace (`cae-*-logs`), table `StorageBlobLogs`: failed audio reads (403 once
+a SAS has expired), 206 range reads and the players' user agents.
+
+- **Cost**: Log Analytics ingestion of read logs only, one row per read request
+  on the blob service (slide images and the backend's own reads included), billed
+  per GB at the workspace's pay-as-you-go rate; retention stays within the
+  workspace's 30 days. Check the volume with
+  `Usage | where TimeGenerated > ago(30d) and DataType == "StorageBlobLogs" | summarize IngestedMB = sum(Quantity) by Day = bin(TimeGenerated, 1d)`.
+- **Turn it off**: `azd env set ENABLE_BLOB_ACCESS_LOGS false` so provisioning no
+  longer creates it. Deployments are incremental and never delete resources, so
+  where the setting already exists also delete it once:
+  `az monitor diagnostic-settings delete --name blob-access-logs --resource "$(az storage account show -n <AZURE_BLOB_ACCOUNT_NAME> --query id -o tsv)/blobServices/default"`.
+
+`Uri` carries the SAS query string (`sig`, `skoid`, …): never project or export
+it, keep only the path. Podcast audio reads per hour, by status code, with the
+top 3 user agents of each:
+
+```kusto
+StorageBlobLogs
+| where TimeGenerated > ago(7d) and OperationName == "GetBlob"
+| extend Path = tostring(split(Uri, "?")[0])   // drop the SAS query string
+| where Path endswith ".mp3"
+| top-nested of Hour = bin(TimeGenerated, 1h) by HourRequests = count(),
+  top-nested of StatusCode by Requests = count(),
+  top-nested 3 of UserAgentHeader by UserAgentRequests = count()
+| order by Hour desc, Requests desc, UserAgentRequests desc
+```
 
 ## Not provisioned
 

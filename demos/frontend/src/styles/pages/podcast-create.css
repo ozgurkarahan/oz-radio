@@ -32,7 +32,8 @@
 
 .pc-setup__side {
   position: sticky;
-  top: calc(var(--masthead-h) + var(--sp-4));
+  /* The masthead grows by the status-bar inset under viewport-fit=cover (Home Screen / landscape). */
+  top: calc(var(--masthead-h) + env(safe-area-inset-top, 0px) + var(--sp-4));
   min-width: 0;
 }
 

@@ -31,6 +31,13 @@
   padding-block: 1px;
 }
 
+/* Listening progress ("Resume · 1:12 left", "Played"): a narrow meta column (thumbnail rows on
+   small phones, large text) wraps the label inside the chip instead of overflowing the row. */
+.library-row .library-row__progress {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .library-thumb {
   display: block;
   width: 100%;
@@ -302,5 +309,129 @@
 @media (prefers-reduced-motion: reduce) {
   .library-player--podcast .library-player__formats .tabs__tab {
     transition: none;
+  }
+}
+
+/* ---------- Podcast player on phones: a full-screen "Now playing" sheet ---------- */
+/* One scroll container (the sheet); the minimise chevron and the format tabs stay on top,
+   the seek bar + transport (RadioPlayer's dock) stay in the thumb zone at the bottom. */
+@media (max-width: 640px), (max-height: 500px) and (orientation: landscape) and (pointer: coarse) {
+  .modal__panel.library-player--podcast {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    padding:
+      env(safe-area-inset-top, 0px)
+      env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px)
+      env(safe-area-inset-left, 0px);
+    border-radius: 0;
+    box-shadow: none;
+    overscroll-behavior: contain;
+  }
+
+  .library-player--podcast .modal__close {
+    --btn-h: var(--tap);
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + var(--sp-1));
+    right: auto;
+    left: calc(env(safe-area-inset-left, 0px) + var(--sp-2));
+    z-index: 3;
+  }
+
+  .library-player--podcast .library-player__formats {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: var(--sp-1) var(--sp-4) 0 calc(var(--tap) + var(--sp-4));
+    background: var(--c-stage);
+  }
+
+  /* No tabs (audio only, loading): a top bar of its own for the minimise button. */
+  .library-player--podcast:not(.library-player--tabs) {
+    padding-top: calc(env(safe-area-inset-top, 0px) + var(--tap) + var(--sp-2));
+  }
+
+  .library-player--podcast .radio-player__cover {
+    width: min(220px, 64vw, 38vh);
+    width: min(220px, 64vw, 38dvh);
+  }
+
+  /* Reading the caption or the transcript never hides the controls: they ride the bottom edge. */
+  .library-player--podcast .radio-player__dock {
+    order: 1;
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    gap: var(--sp-3);
+    margin-inline: calc(-1 * var(--rp-pad-x));
+    padding: var(--sp-3) var(--rp-pad-x) var(--sp-3);
+    border-top: var(--bw) solid color-mix(in srgb, var(--c-on-stage) 14%, transparent);
+    background: var(--c-stage);
+  }
+
+  .library-player--podcast .radio-player .radio-player__play {
+    --btn-h: 64px;
+  }
+
+  .library-player--podcast .radio-player .radio-player__play svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  .library-player--podcast .radio-player .radio-player__skip,
+  .library-player--podcast .radio-player__speed .field__control {
+    min-height: var(--tap);
+  }
+
+  /* The transcript opens inside the sheet: no nested scroll area. */
+  .library-player--podcast .radio-player__cues {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+/* Short landscape: a smaller cover, and the seek bar beside the transport keeps the pinned zone short. */
+@media (max-height: 500px) and (orientation: landscape) and (pointer: coarse) {
+  .library-player--podcast .radio-player__cover {
+    width: min(140px, 30vh);
+    width: min(140px, 30dvh);
+  }
+
+  .library-player--podcast .radio-player__dock {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--sp-5);
+    padding-block: var(--sp-2);
+  }
+
+  .library-player--podcast .radio-player__seek {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .library-player--podcast .radio-player__transport {
+    flex: 0 1 auto;
+    justify-content: flex-end;
+    gap: var(--sp-2) var(--sp-4);
+  }
+
+  .library-player--podcast .radio-player__speed {
+    margin-left: 0;
+  }
+
+  .library-player--podcast .radio-player__note {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (forced-colors: active) {
+  .library-player--podcast .radio-player__dock {
+    border-top: 1px solid CanvasText;
   }
 }

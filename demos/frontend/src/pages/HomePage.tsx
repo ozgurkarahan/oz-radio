@@ -7,8 +7,9 @@ import { useAuth } from '../services/auth';
 import { useDemoConfig } from '../services/demo';
 import { type Deck, listDecks } from '../services/decksApi';
 import { listLibrary as listVideos, type LibrarySummary as VideoSummary } from '../services/videoApi';
-import { listLibrary as listPodcasts, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
+import { listLibrary as listPodcasts, hasAudio, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
+import { usePrefersListen } from './PodcastLibraryPage';
 import {
   Button, ButtonLink, EpisodeList, EpisodeRow, HostDisc, HostsMini, LivePill, SectionHead,
   episodeNumber, formatDuration, humanizeTitle, languageName, pluralize,
@@ -46,9 +47,14 @@ const KIND: Record<Episode['kind'], { icon: LucideIcon; label: string }> = {
 
 const time = (iso?: string | null) => (iso ? new Date(iso).getTime() || 0 : 0);
 
-/** Deep link that opens the episode in the podcast library player (Listen for audio-only episodes). */
-const podcastLink = (p: PodcastSummary) =>
-  `/podcast/library?${new URLSearchParams({ episode: p.job_id, mode: isAudioOnly(p) ? 'listen' : 'watch' })}`;
+/**
+ * Deep link that opens the episode in the podcast library player: Listen for audio-only episodes,
+ * and on touch phones (`listenFirst`) for every episode with audio, like the library rows.
+ */
+const podcastLink = (p: PodcastSummary, listenFirst: boolean) => {
+  const mode = isAudioOnly(p) || (listenFirst && hasAudio(p)) ? 'listen' : 'watch';
+  return `/podcast/library?${new URLSearchParams({ episode: p.job_id, mode })}`;
+};
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -56,6 +62,7 @@ export default function HomePage() {
   const locked = !auth.loading && !auth.is_admin;
   const demo = useDemoConfig();
   const { avatars } = useAvatars();
+  const listenFirst = usePrefersListen();
   const [decks, setDecks] = useState<Deck[]>([]);
   const [videos, setVideos] = useState<VideoSummary[]>([]);
   const [podcasts, setPodcasts] = useState<PodcastSummary[]>([]);
@@ -96,14 +103,14 @@ export default function HomePage() {
         const named = (p.speaker_names ?? []).map(byName).filter(Boolean) as AvatarInfo[];
         return {
           key: `podcast-${p.job_id}`, kind: 'podcast' as const, title: humanizeTitle(p.title || p.document_title), date: time(p.created_at),
-          to: podcastLink(p), meta: ['Podcast', languageName(p.language)],
+          to: podcastLink(p, listenFirst), meta: ['Podcast', languageName(p.language)],
           hosts: named.length ? named : [lead, co], duration: formatDuration(p.duration_sec),
         };
       }),
     ];
     return items.sort((a, b) => b.date - a.date).slice(0, 6);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [decks, videos, podcasts, avatars, demo.enabled]);
+  }, [decks, videos, podcasts, avatars, demo.enabled, listenFirst]);
 
   const minutes = Math.max(1, Math.round(demo.session_seconds / 60));
 

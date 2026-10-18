@@ -957,6 +957,7 @@ function ResultView({ job, format, title, turns, cast, reactions, onNew }: {
                   src={outputs.mp4_url}
                   className="pc-result__video"
                   data-testid="result-video"
+                  data-oz-media="video"
                   onPlay={onVideoPlay}
                 />
               ) : (
