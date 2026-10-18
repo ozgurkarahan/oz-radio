@@ -404,13 +404,17 @@
 
 .toast {
   position: fixed;
-  right: var(--sp-5);
-  bottom: var(--sp-5);
+  /* Clear the notch, the home indicator and the fixed mini-player (--mini-player-h is 0 when hidden). */
+  right: max(var(--sp-5), env(safe-area-inset-right, 0px));
+  bottom: calc(var(--sp-5) + var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
   z-index: 2000;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  max-width: min(440px, calc(100vw - 2 * var(--sp-5)));
+  max-width: min(
+    440px,
+    calc(100vw - max(var(--sp-5), env(safe-area-inset-left, 0px)) - max(var(--sp-5), env(safe-area-inset-right, 0px)))
+  );
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
   border-radius: var(--r-md);
   background: var(--c-ink);
@@ -869,6 +873,14 @@ textarea.field__control {
   font-size: var(--fs-sm);
 }
 
+/* iOS Safari zooms into any focused control whose text is under 16px: touch screens get 16px, desktop is unchanged. */
+@media (pointer: coarse) {
+  .field__control,
+  .field--sm .field__control {
+    font-size: max(1rem, var(--fs-body));
+  }
+}
+
 .checkbox {
   display: inline-flex;
   align-items: center;
@@ -990,7 +1002,11 @@ input[type='range'] {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--sp-5);
+  padding:
+    max(var(--sp-5), env(safe-area-inset-top, 0px))
+    max(var(--sp-5), env(safe-area-inset-right, 0px))
+    max(var(--sp-5), env(safe-area-inset-bottom, 0px))
+    max(var(--sp-5), env(safe-area-inset-left, 0px));
   background: var(--c-scrim);
 }
 
@@ -999,6 +1015,8 @@ input[type='range'] {
   width: 100%;
   max-width: 1100px;
   max-height: 92vh;
+  /* 100%: never spill into the modal's safe-area padding on short (landscape) screens. */
+  max-height: min(92dvh, 100%);
   overflow: auto;
   background: var(--c-bg);
   border-radius: var(--r-lg);

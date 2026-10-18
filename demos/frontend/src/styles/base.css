@@ -17,6 +17,7 @@ html {
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--c-bg);
   color: var(--c-ink);
   font-family: var(--font-ui);
@@ -103,6 +104,7 @@ a:hover {
 
 #root {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -112,7 +114,9 @@ a:hover {
   width: 100%;
   max-width: calc(var(--maxw) + 2 * var(--gutter));
   margin-inline: auto;
-  padding-inline: var(--gutter);
+  /* viewport-fit=cover: clear the notch in landscape. Insets are physical, hence left/right. */
+  padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
 }
 
 .page {
@@ -203,7 +207,7 @@ h2 em {
 
 .skip-link {
   position: absolute;
-  left: var(--sp-4);
+  left: max(var(--sp-4), env(safe-area-inset-left, 0px));
   top: -100px;
   z-index: 100;
   background: var(--c-ink);
@@ -213,7 +217,7 @@ h2 em {
 }
 
 .skip-link:focus {
-  top: var(--sp-3);
+  top: calc(var(--sp-3) + env(safe-area-inset-top, 0px));
 }
 
 @media (prefers-reduced-motion: reduce) {
