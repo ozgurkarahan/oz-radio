@@ -183,9 +183,13 @@ test('?debug=player logs Listen playback without SAS query strings; Copy, Share 
     expectNoSas(label, text);
   }
 
-  // Closing the player clears its handlers: null still reaches the browser untouched.
+  // Minimising (Escape) keeps the lock-screen controls; Stop clears them: null still reaches the browser untouched.
   await page.keyboard.press('Escape');
   await expect(dialog(page)).toHaveCount(0);
+  expect(await page.evaluate(() => typeof (window as unknown as { __mediaHandlers: Record<string, unknown> })
+    .__mediaHandlers.seekforward)).toBe('function');
+  await page.getByTestId('mini-player').getByRole('button', { name: 'Stop and close player' }).click();
+  await expect(page.getByTestId('mini-player')).toBeHidden();
   expect(await page.evaluate(() => (window as unknown as { __mediaHandlers: Record<string, unknown> })
     .__mediaHandlers.seekforward)).toBeNull();
 

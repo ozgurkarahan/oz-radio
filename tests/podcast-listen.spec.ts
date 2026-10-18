@@ -265,7 +265,9 @@ test.describe('Podcast library — Listen (radio player)', () => {
 
     const d = dialog(page);
     await d.getByRole('tab', { name: 'Watch' }).click();
-    await expect(radioAudio(page)).toHaveCount(0);
+    // The app's radio stays loaded (paused, parked outside the dialog) while Watch plays.
+    await expect(d.getByTestId('radio-audio')).toHaveCount(0);
+    expect((await audioState(page)).paused).toBe(true);
     await d.getByRole('tab', { name: 'Listen' }).click();
     await expect(d.getByTestId('radio-speed')).toHaveValue('1.5');
     await expect.poll(async () => (await audioState(page)).rate).toBe(1.5);
@@ -286,12 +288,13 @@ test.describe('Podcast library — Listen (radio player)', () => {
     expect(await mediaInDialog(page)).toBe(1);
     const historyLength = await page.evaluate(() => history.length);
 
-    // Playing carries over: the video starts, the radio is unmounted.
+    // Playing carries over: the video starts, the radio pauses outside the dialog.
     await d.getByRole('tab', { name: 'Watch' }).click();
     await expect(d).toHaveAttribute('data-mode', 'watch');
     await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
     await expect(videoEl(page)).toHaveAttribute('src', POD_VIDEO.mp4_url!);
-    await expect(radioAudio(page)).toHaveCount(0);
+    await expect(d.getByTestId('radio-audio')).toHaveCount(0);
+    expect((await audioState(page)).paused).toBe(true);
     await expect.poll(() => videoPaused(page)).toBe(false);
     expect(await mediaInDialog(page)).toBe(1);
 
@@ -363,7 +366,8 @@ test.describe('Podcast library — deep links & loading', () => {
     await expect(d.getByRole('tab', { name: 'Listen' })).toHaveAttribute('aria-selected', 'true');
     await expect(radioAudio(page)).toHaveAttribute('src', POD_VIDEO.mp3_url);
     await expect(d.getByTestId('radio-player')).toHaveAttribute('data-state', /^(playing|press-play)$/);
-    await d.getByRole('button', { name: 'Close' }).click();
+    // Listen minimises (the audio carries on in the mini-player) instead of closing.
+    await d.getByRole('button', { name: 'Minimise player' }).click();
     await expect(d).toHaveCount(0);
     await expect(page).toHaveURL(/\/podcast\/library$/);
     await expect(page.getByTestId('library-item')).toHaveCount(3);
@@ -422,18 +426,22 @@ test.describe('Podcast library — deep links & loading', () => {
   });
 
   test('a late episode response is ignored once the player moved on', async ({ page }) => {
-    const { errors } = await openLibrary(page, 'visitor');
-    await expect(page.getByTestId('library-item')).toHaveCount(3);
+    // Hold the episode's details from the start: the library prefetches them on load (one-tap Listen).
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await mockApi(page, 'visitor', { podcastV2: true });
     const detailPath = `/api/podcast/library/${POD_VIDEO.job_id}`;
     const held: (() => void)[] = [];
     await page.route((url) => url.pathname === detailPath, async (route) => {
       await new Promise<void>((resolve) => held.push(resolve));
       await route.fallback();
     });
+    await page.goto('/podcast/library');
+    await expect(page.getByTestId('library-item')).toHaveCount(3);
     const lateResponse = () => page.waitForResponse((r) => new URL(r.url()).pathname === detailPath);
     const d = dialog(page);
 
-    // Open (held) → close → open another episode → the late response lands.
+    // Open (held: the open joins the in-flight prefetch) → close → open another episode → the late response lands.
     await rowOf(page, VIDEO_TITLE).getByTestId('library-listen').click();
     await expect(page.getByRole('dialog', { name: 'Loading podcast' })).toBeVisible();
     await expect.poll(() => held.length).toBe(1);
@@ -471,8 +479,10 @@ test.describe('Podcast library — deep links & loading', () => {
   });
 
   test('an expired audio URL is re-fetched from the episode and playback resumes', async ({ page }) => {
-    const { errors } = await openLibrary(page, 'visitor');
-    await expect(page.getByTestId('library-item')).toHaveCount(3);
+    // Routes first: the library prefetches the episode (the expired link) as soon as it lists it.
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await mockApi(page, 'visitor', { podcastV2: true });
     let detailCalls = 0;
     const rejected: string[] = [];
     await page.route((url) => url.pathname === `/api/podcast/library/${POD_VIDEO.job_id}`, (route) => {
@@ -485,6 +495,9 @@ test.describe('Podcast library — deep links & loading', () => {
       rejected.push(route.request().url());
       return route.fulfill({ status: 403, contentType: 'application/xml', body: '<Error><Code>AuthenticationFailed</Code></Error>' });
     });
+    await page.goto('/podcast/library');
+    await expect(page.getByTestId('library-item')).toHaveCount(3);
+    await expect.poll(() => detailCalls).toBe(1);
 
     await rowOf(page, VIDEO_TITLE).getByTestId('library-listen').click();
     const player = dialog(page).getByTestId('radio-player');

@@ -4,12 +4,13 @@
  * The local --rp-* variables are derived from tokens.css only (no extra palette).
  */
 .radio-player {
+  --rp-pad-x: clamp(var(--sp-4), 4vw, var(--sp-6));
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
   width: 100%;
   min-width: 0;
-  padding: var(--sp-5) clamp(var(--sp-4), 4vw, var(--sp-6)) var(--sp-6);
+  padding: var(--sp-5) var(--rp-pad-x) var(--sp-6);
   background: var(--rp-bg);
   color: var(--rp-fg);
   text-align: left;
@@ -266,6 +267,14 @@
 }
 
 /* ---------- Seekable waveform ---------- */
+/* Seek + transport travel together (the phone sheet pins this block to the bottom). */
+.radio-player__dock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
 .radio-player__seek {
   display: flex;
   flex-direction: column;

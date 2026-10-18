@@ -3,12 +3,19 @@
  *
  * Accessible custom controls around a native <audio preload="metadata"> (no
  * native controls): cover art, both hosts lit from the radio transcript (glow on
- * backchannel cues), the current speaker as text, a polite live caption that only
- * changes with the cue, a collapsible click-to-seek transcript, a seekable peaks
- * waveform (role="slider", turn ticks), ±15 s, speed, keyboard shortcuts
- * (Space/K, J/L), Media Session, autoplay-rejection handling and SAS-expiry
- * recovery (at most one source refresh per minute; position and play state are
- * restored). Parents drive it through the imperative handle (Watch ↔ Listen).
+ * backchannel cues), the current speaker as text, a visible caption that only
+ * changes with the cue (not announced: it would duplicate the audio for screen-reader
+ * users, who have the transcript on demand), a collapsible click-to-seek transcript,
+ * a seekable peaks waveform (role="slider", turn ticks), ±15 s, speed, keyboard
+ * shortcuts (Space/K, J/L), Media Session (through playback/mediaSession.ts),
+ * autoplay-rejection handling and SAS-expiry recovery (at most one source refresh per
+ * minute and per episode; position and play state are restored). Parents drive it
+ * through the imperative handle (Watch ↔ Listen).
+ *
+ * Works standalone (creator page) and as the app's persistent root player
+ * (playback/PlaybackProvider): there it is never remounted per episode — `episodeKey`
+ * marks a new episode on the same <audio> element, `parked` stops the playhead's paint
+ * loop while it is off screen, `onEnded` runs inside the media `ended` event.
  * Styles: styles/shared/radio-player.css — tone "stage" (dark modal) or "light"
  * (studio card).
  */
@@ -20,6 +27,11 @@ import {
 } from 'lucide-react';
 import type { PodcastHost, Speaker, Transcript, TranscriptCue, TranscriptTurn } from '../services/podcast';
 import { Alert, Button, Field, HostDisc, LivePill, Select, Waveform } from '../ui';
+import {
+  claimMediaSession, isMediaSessionOwner, releaseMediaSession, setMediaPositionState, updateMediaSession,
+  type MediaMetadataInit, type MediaSessionHandlers,
+} from '../playback/mediaSession';
+import { progressStore } from '../playback/progress';
 import '../styles/shared/radio-player.css';
 
 // ---- Public API -----------------------------------------------------------
@@ -52,19 +64,47 @@ export interface RadioPlayerProps {
   hosts: RadioHost[];
   /** Try to start when a source loads; a browser refusal shows "Press play" (no error). */
   autoPlay?: boolean;
-  /** Start position in seconds, applied whenever a new `src` loads (use the handle to seek later). */
+  /** Start position in seconds, applied whenever a new `src` / `episodeKey` loads (use the handle to seek later). */
   initialTime?: number;
   /** 'stage' = dark modal player, 'light' = studio card (default). */
   tone?: 'stage' | 'light';
-  /** Returns a fresh source after a media error (expired SAS). Called at most once per minute. */
+  /**
+   * Episode identity, distinct from `src`. A new key fully resets the episode (position,
+   * SAS-refresh throttle, scrubbing, "Press play", late events of the previous source) on the
+   * SAME <audio> element. Renewing the same episode's URL must go through `onRefreshSource`,
+   * never through `src`. Omitted: `src` is the identity (standalone use).
+   */
+  episodeKey?: string;
+  /** Off screen (parked by the playback provider): stops the playhead's requestAnimationFrame loop only. */
+  parked?: boolean;
+  /** Returns a fresh source after a media error (expired SAS). Called at most once per minute per episode. */
   onRefreshSource?: () => Promise<string | null>;
-  /** Media `timeupdate` (≈ 4 Hz) and seeks applied before the media is ready. */
-  onTimeUpdate?: (t: number) => void;
-  onPlayStateChange?: (playing: boolean) => void;
+  /** Media `timeupdate` (≈ 4 Hz) and seeks applied before the media is ready, with the episode key. */
+  onTimeUpdate?: (t: number, episodeKey: string | undefined) => void;
+  onPlayStateChange?: (playing: boolean, episodeKey: string | undefined) => void;
+  /** Called synchronously inside the media `ended` event (after the player's own updates). */
+  onEnded?: (episodeKey: string | undefined) => void;
+  /** Player state + the status line shown under the hosts (e.g. for a mini-player). */
+  onStatusChange?: (status: RadioStatus) => void;
+  /** Extra OS media actions (lock screen / earbuds), e.g. `nexttrack` / `previoustrack`. */
+  extraMediaActions?: RadioMediaActions;
   className?: string;
   /** Show the full transcript expanded initially (default: collapsed). */
   defaultTranscriptOpen?: boolean;
 }
+
+export type RadioState =
+  'unavailable' | 'error' | 'refreshing' | 'press-play' | 'buffering' | 'playing' | 'paused' | 'idle';
+
+export interface RadioStatus {
+  state: RadioState;
+  /** Visible status text ("Lucas is speaking", "Paused", "Press play to start listening"…). */
+  text: string;
+  /** Display name of the host speaking now, while playing. */
+  speaker: string | null;
+}
+
+export type RadioMediaActions = Partial<Record<'nexttrack' | 'previoustrack' | 'stop', () => void>>;
 
 /** Structural subset of `AvatarInfo` (services/avatars) used to resolve portraits. */
 export interface RadioAvatarLike {
@@ -92,7 +132,6 @@ const ROLES: Speaker[] = ['interviewer', 'expert'];
 const ROLE_LABEL: Record<Speaker, string> = { interviewer: 'Interviewer', expert: 'Expert' };
 const ALBUM = 'Oz Radio';
 const UNAVAILABLE = "The audio couldn't be loaded.";
-const MEDIA_ACTIONS: MediaSessionAction[] = ['play', 'pause', 'seekbackward', 'seekforward', 'seekto'];
 
 // Waveform geometry (SVG user units = CSS px once the width is measured).
 const BAR_AREA_H = 46;
@@ -104,8 +143,13 @@ const NO_TICKS: number[] = [];
 
 /** Playback speed survives source changes and remounts within the page session. */
 let rememberedSpeed = 1;
-/** Player instance that last claimed the OS media controls. */
-let mediaSessionOwner: object | null = null;
+
+/** Initial speed: the saved preference (playback/progress), else this session's choice. */
+function initialSpeed(): number {
+  let saved: number | null = null;
+  try { saved = progressStore.getSpeed(); } catch { saved = null; }
+  return saved != null && SPEEDS.includes(saved) ? saved : rememberedSpeed;
+}
 
 // ---- Pure helpers -------------------------------------------------------------
 
@@ -137,10 +181,6 @@ function lastAtOrBefore(starts: number[], t: number): number {
 
 const isRole = (v: unknown): v is Speaker => v === 'interviewer' || v === 'expert';
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-
-function hasMediaSession(): boolean {
-  return typeof navigator !== 'undefined' && 'mediaSession' in navigator;
-}
 
 function isTypingTarget(el: EventTarget | null): boolean {
   return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
@@ -311,7 +351,10 @@ function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const measure = (w: number) => setWidth((prev) => (Math.abs(prev - w) < 1 ? prev : Math.round(w)));
+    // 0 = not rendered (e.g. parked off screen): keep the last real width until it shows again.
+    const measure = (w: number) => {
+      if (w > 0) setWidth((prev) => (Math.abs(prev - w) < 1 ? prev : Math.round(w)));
+    };
     measure(el.getBoundingClientRect().width);
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver((entries) => {
@@ -326,13 +369,23 @@ function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // ---- Presentational pieces ---------------------------------------------------------
 
-function CoverArt({ url }: { url: string | null }) {
+function CoverArt({ url, onNaturalSize }: { url: string | null; onNaturalSize?: (size: string | null) => void }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const showImage = !!url && failedUrl !== url;
   return (
     <div className="radio-player__cover" data-testid="radio-cover" data-cover={showImage ? 'image' : 'placeholder'}>
       {showImage ? (
-        <img src={url} alt="" decoding="async" draggable={false} onError={() => setFailedUrl(url)} />
+        <img
+          src={url}
+          alt=""
+          decoding="async"
+          draggable={false}
+          onLoad={(e) => {
+            const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+            onNaturalSize?.(w > 0 && h > 0 ? `${w}x${h}` : null);
+          }}
+          onError={() => setFailedUrl(url)}
+        />
       ) : (
         <span className="radio-player__placeholder" aria-hidden>
           <span className="radio-player__placeholder-mark"><RadioIcon /></span>
@@ -443,7 +496,7 @@ const TranscriptList = memo(function TranscriptList({
 export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(function RadioPlayer(props, ref) {
   const {
     src, title, transcript = null, coverUrl = null, hosts, autoPlay = false, initialTime = 0,
-    tone = 'light', className, defaultTranscriptOpen = false,
+    tone = 'light', className, defaultTranscriptOpen = false, episodeKey, parked = false, extraMediaActions,
   } = props;
 
   const uid = useId();
@@ -454,13 +507,15 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
 
   // Mutable runtime state read by media / DOM callbacks (kept out of React renders).
   const propsRef = useRef(props);
-  const metaRef = useRef({ title, artist: '', cover: coverUrl });
+  const metaRef = useRef<{ title: string; artist: string; cover: string | null; coverSize: string | null }>({
+    title, artist: '', cover: coverUrl, coverSize: null,
+  });
   const mountedRef = useRef(false);
-  const ownerToken = useRef<object>({}).current;
   const startAt = Number.isFinite(initialTime) && initialTime > 0 ? initialTime : 0;
   const lastTimeRef = useRef(startAt);
   const durationRef = useRef(0);
-  const speedRef = useRef(rememberedSpeed);
+  const [speed, setSpeed] = useState(initialSpeed);
+  const speedRef = useRef(speed);
   const wantPlayRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
   const resumeRef = useRef<{ time: number } | null>(null);
@@ -468,6 +523,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   const refreshingRef = useRef(false);
   const lastRefreshAtRef = useRef(0);
   const srcGenRef = useRef(0);
+  const episodeKeyRef = useRef<string | undefined>(undefined);
   const scrubRef = useRef<number | null>(null);
   const playingRef = useRef(false);
   const userScrollAtRef = useRef(0);
@@ -482,11 +538,11 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   const [needsGesture, setNeedsGesture] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [speed, setSpeed] = useState(rememberedSpeed);
   const [scrubTime, setScrubTime] = useState<number | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(defaultTranscriptOpen);
   const [sliderFocused, setSliderFocused] = useState(false);
   const [ariaHeld, setAriaHeld] = useState<number | null>(null);
+  const [coverSize, setCoverSize] = useState<{ for: string | null; size: string | null }>({ for: null, size: null });
   const reducedMotion = usePrefersReducedMotion();
   const waveWidth = useElementWidth(waveRef);
 
@@ -502,9 +558,10 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   const artist = nameI === nameE ? nameI : `${nameI} & ${nameE}`;
 
   // Keep the latest props for stable callbacks (declared before the source effect below).
+  const coverSizeNow = coverSize.for === coverUrl ? coverSize.size : null;
   useLayoutEffect(() => {
     propsRef.current = props;
-    metaRef.current = { title, artist, cover: coverUrl };
+    metaRef.current = { title, artist, cover: coverUrl, coverSize: coverSizeNow };
   });
 
   // ---- Waveform painting (direct DOM writes; never a React render per frame) ----
@@ -525,52 +582,51 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   }, [duration, time, scrubTime, waveWidth, paint]);
 
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || parked) return;
     let frame = 0;
     const loop = () => { paint(); frame = requestAnimationFrame(loop); };
     frame = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frame);
-  }, [playing, paint]);
+  }, [playing, parked, paint]);
 
-  // ---- Media Session -----------------------------------------------------------------
-  const ownsSession = useCallback(() => mediaSessionOwner === ownerToken && hasMediaSession(), [ownerToken]);
+  // ---- Media Session (owner = this player's <audio> element) ----------------------------
+  const ownsSession = useCallback(() => isMediaSessionOwner(audioRef.current), []);
+
+  const sessionMetadata = useCallback((): MediaMetadataInit => {
+    const meta = metaRef.current;
+    return {
+      title: meta.title,
+      artist: meta.artist,
+      album: ALBUM,
+      artwork: meta.cover ? [{ src: meta.cover, ...(meta.coverSize ? { sizes: meta.coverSize } : {}) }] : [],
+    };
+  }, []);
 
   const applyMetadata = useCallback(() => {
-    if (!ownsSession() || typeof MediaMetadata === 'undefined') return;
-    const meta = metaRef.current;
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: meta.title,
-        artist: meta.artist,
-        album: ALBUM,
-        artwork: meta.cover ? [{ src: meta.cover }] : [],
-      });
-    } catch { /* invalid artwork URL */ }
-  }, [ownsSession]);
+    const a = audioRef.current;
+    if (a) updateMediaSession(a, { metadata: sessionMetadata() });
+  }, [sessionMetadata]);
 
   const updatePositionState = useCallback(() => {
     const a = audioRef.current;
-    if (!a || !ownsSession() || typeof navigator.mediaSession.setPositionState !== 'function') return;
+    if (!a || !ownsSession()) return;
     const d = a.duration;
     if (!Number.isFinite(d) || d <= 0) return;
-    try {
-      navigator.mediaSession.setPositionState({
-        duration: d,
-        playbackRate: a.playbackRate > 0 ? a.playbackRate : 1,
-        position: Math.min(d, Math.max(0, a.currentTime)),
-      });
-    } catch { /* inconsistent state while loading */ }
+    setMediaPositionState(a, {
+      duration: d,
+      playbackRate: a.playbackRate > 0 ? a.playbackRate : 1,
+      position: Math.min(d, Math.max(0, a.currentTime)),
+    });
   }, [ownsSession]);
 
   const setPlayingState = useCallback((next: boolean) => {
     if (playingRef.current === next) return;
     playingRef.current = next;
     setPlaying(next);
-    propsRef.current.onPlayStateChange?.(next);
-    if (ownsSession()) {
-      try { navigator.mediaSession.playbackState = next ? 'playing' : 'paused'; } catch { /* ignore */ }
-    }
-  }, [ownsSession]);
+    propsRef.current.onPlayStateChange?.(next, episodeKeyRef.current);
+    const a = audioRef.current;
+    if (a) updateMediaSession(a, { playbackState: next ? 'playing' : 'paused' });
+  }, []);
 
   // ---- Transport -----------------------------------------------------------------------
   const currentTimeNow = useCallback(() => {
@@ -589,7 +645,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
       resumeRef.current = { time: target };
     } else if (!a || a.readyState === 0) {
       pendingSeekRef.current = target;
-      propsRef.current.onTimeUpdate?.(target);
+      propsRef.current.onTimeUpdate?.(target, episodeKeyRef.current);
     } else {
       try { a.currentTime = target; } catch { pendingSeekRef.current = target; }
     }
@@ -646,16 +702,17 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     wantPlayRef.current = true;
     if (refreshingRef.current) return; // resumes once the fresh source has loaded
     if (a.error && a.error.code !== 1) { await recover(true); return; }
+    const gen = srcGenRef.current;
     try {
       await a.play();
     } catch (e) {
       const name = (e as { name?: string } | null)?.name;
-      if (name === 'NotAllowedError') {
+      if (name === 'NotAllowedError' && gen === srcGenRef.current) {
         wantPlayRef.current = false;
         if (mountedRef.current) setNeedsGesture(true);
       }
       // AbortError: interrupted by pause() or a new source. NotSupportedError: the media
-      // `error` event drives the recovery.
+      // `error` event drives the recovery. A refusal for a previous source is stale.
     }
   }, [recover]);
 
@@ -672,35 +729,25 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     else pauseNow();
   }, [requestPlay, pauseNow]);
 
-  const claimMediaSession = useCallback(() => {
-    if (!hasMediaSession()) return;
-    mediaSessionOwner = ownerToken;
-    applyMetadata();
-    const session = navigator.mediaSession;
-    const handlers: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
-      ['play', () => { void requestPlay(); }],
-      ['pause', () => pauseNow()],
-      ['seekbackward', (d) => skip(-(d.seekOffset || SKIP_SEC))],
-      ['seekforward', (d) => skip(d.seekOffset || SKIP_SEC)],
-      ['seekto', (d) => { if (typeof d.seekTime === 'number') seekTo(d.seekTime); }],
-    ];
-    for (const [action, handler] of handlers) {
-      try { session.setActionHandler(action, handler); } catch { /* action not supported */ }
+  const mediaHandlers = useCallback((): MediaSessionHandlers => {
+    const extra = propsRef.current.extraMediaActions;
+    const handlers: MediaSessionHandlers = {
+      play: () => { void requestPlay(); },
+      pause: () => pauseNow(),
+      seekbackward: (d) => skip(-(d.seekOffset || SKIP_SEC)),
+      seekforward: (d) => skip(d.seekOffset || SKIP_SEC),
+      seekto: (d) => { if (typeof d.seekTime === 'number') seekTo(d.seekTime); },
+    };
+    for (const action of ['nexttrack', 'previoustrack', 'stop'] as const) {
+      if (extra?.[action]) handlers[action] = () => { propsRef.current.extraMediaActions?.[action]?.(); };
     }
-  }, [ownerToken, applyMetadata, requestPlay, pauseNow, skip, seekTo]);
+    return handlers;
+  }, [requestPlay, pauseNow, skip, seekTo]);
 
-  const releaseMediaSession = useCallback(() => {
-    if (mediaSessionOwner !== ownerToken || !hasMediaSession()) return;
-    mediaSessionOwner = null;
-    const session = navigator.mediaSession;
-    for (const action of MEDIA_ACTIONS) {
-      try { session.setActionHandler(action, null); } catch { /* ignore */ }
-    }
-    try {
-      session.metadata = null;
-      session.playbackState = 'none';
-    } catch { /* ignore */ }
-  }, [ownerToken]);
+  const claimSession = useCallback(() => {
+    const a = audioRef.current;
+    if (a) claimMediaSession(a, { metadata: sessionMetadata(), handlers: mediaHandlers(), playbackState: 'playing' });
+  }, [sessionMetadata, mediaHandlers]);
 
   useImperativeHandle(ref, () => ({
     play: () => requestPlay(),
@@ -711,9 +758,11 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   }), [requestPlay, pauseNow, seekTo, currentTimeNow]);
 
   // ---- Lifecycle -----------------------------------------------------------------------
-  // New source from the parent: reset position/state, apply `initialTime`, try autoplay.
+  // New source or episode from the parent: reset position/state, apply `initialTime`, try autoplay.
   useLayoutEffect(() => {
-    srcGenRef.current += 1;
+    const newEpisode = episodeKeyRef.current !== episodeKey;
+    episodeKeyRef.current = episodeKey;
+    srcGenRef.current += 1; // late async results of the previous source are dropped
     resumeRef.current = null;
     recoveringRef.current = false;
     refreshingRef.current = false;
@@ -726,15 +775,22 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     setErrorMsg(null);
     setNeedsGesture(false);
     setBuffering(false);
+    if (newEpisode) {
+      lastRefreshAtRef.current = 0;
+      scrubRef.current = null;
+      setScrubTime(null);
+      setAriaHeld(null);
+      setRefreshed(null);
+    }
     const a = audioRef.current;
     if (!src) {
       if (a) { a.pause(); a.load(); }
       return;
     }
     if (autoPlay) void requestPlay();
-    // Only a new `src` restarts the episode; `initialTime`/`autoPlay` are read at that moment.
+    // Only a new `src` / `episodeKey` restarts; `initialTime`/`autoPlay` are read at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, [src, episodeKey]);
 
   useEffect(() => {
     speedRef.current = speed;
@@ -744,7 +800,14 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     a.playbackRate = speed;
   }, [speed]);
 
-  useEffect(() => { applyMetadata(); }, [title, artist, coverUrl, applyMetadata]);
+  useEffect(() => { applyMetadata(); }, [title, artist, coverUrl, coverSizeNow, applyMetadata]);
+
+  // OS track buttons appear / disappear with the extra actions (only while this player owns them).
+  const extraKey = (['nexttrack', 'previoustrack', 'stop'] as const).filter((k) => !!extraMediaActions?.[k]).join(',');
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) updateMediaSession(a, { handlers: mediaHandlers() });
+  }, [extraKey, mediaHandlers]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -752,15 +815,15 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     return () => {
       mountedRef.current = false;
       a?.pause();
-      releaseMediaSession();
+      releaseMediaSession(a);
     };
-  }, [releaseMediaSession]);
+  }, []);
 
   // ---- Media element events --------------------------------------------------------------
   const onAudioPlay = () => {
     wantPlayRef.current = true;
     setNeedsGesture(false);
-    claimMediaSession();
+    claimSession();
     setPlayingState(true);
     updatePositionState();
   };
@@ -782,6 +845,8 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
       lastTimeRef.current = a.currentTime;
       setTime(a.currentTime);
     }
+    // Last: the parent may load the next episode synchronously (same task as `ended`).
+    propsRef.current.onEnded?.(episodeKeyRef.current);
   };
 
   const onAudioEmptied = () => {
@@ -795,7 +860,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     const t = a.currentTime;
     lastTimeRef.current = t;
     setTime(t);
-    propsRef.current.onTimeUpdate?.(t);
+    propsRef.current.onTimeUpdate?.(t, episodeKeyRef.current);
   };
 
   const onAudioSeek = () => {
@@ -892,7 +957,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   const ariaSource = playing && sliderFocused && ariaHeld != null && scrubTime == null ? ariaHeld : shownTime;
   const ariaNow = Math.min(ariaMax, Math.max(0, wholeSeconds(ariaSource)));
 
-  const state = !effectiveSrc ? 'unavailable'
+  const state: RadioState = !effectiveSrc ? 'unavailable'
     : errorMsg ? 'error'
       : refreshing ? 'refreshing'
         : needsGesture ? 'press-play'
@@ -915,6 +980,11 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     case 'paused': status = 'Paused'; break;
     default: status = 'Ready to play';
   }
+
+  const speakerName = speaking ? names[speaking] : null;
+  useEffect(() => {
+    propsRef.current.onStatusChange?.({ state, text: status, speaker: speakerName });
+  }, [state, status, speakerName]);
 
   // ---- Transcript auto-follow --------------------------------------------------------------
   const onCueSeek = useCallback((seconds: number) => {
@@ -1027,8 +1097,11 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     const v = Number(e.target.value);
     if (!SPEEDS.includes(v)) return;
     rememberedSpeed = v;
+    try { progressStore.setSpeed(v); } catch { /* storage failures are silent */ }
     setSpeed(v);
   };
+
+  const onCoverSize = useCallback((size: string | null) => setCoverSize({ for: coverUrl, size }), [coverUrl]);
 
   const retry = () => {
     wantPlayRef.current = true;
@@ -1053,6 +1126,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
         src={effectiveSrc || undefined}
         preload="metadata"
         data-testid="radio-audio"
+        data-oz-media="radio"
         onPlay={onAudioPlay}
         onPause={onAudioPause}
         onEnded={onAudioEnded}
@@ -1069,7 +1143,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
       />
 
       <div className="radio-player__head">
-        <CoverArt url={coverUrl} />
+        <CoverArt url={coverUrl} onNaturalSize={onCoverSize} />
         <div className="radio-player__meta">
           <p className="eyebrow radio-player__eyebrow"><Headphones aria-hidden />Podcast</p>
           <p className="radio-player__title">{title}</p>
@@ -1107,7 +1181,8 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
 
       {hasCues && (
         <div className="radio-player__caption">
-          <p className="radio-player__caption-live" aria-live="polite" aria-atomic="true" data-testid="radio-caption">
+          {/* Visible captions only: announcing them would talk over the audio (transcript on demand). */}
+          <p className="radio-player__caption-live" aria-live="off" data-testid="radio-caption">
             {captionCue && (
               <>
                 <span className="radio-player__caption-name">{names[captionCue.speaker]}:</span>
@@ -1120,84 +1195,87 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
         </div>
       )}
 
-      <div className="radio-player__seek">
-        <div
-          ref={waveRef}
-          className="radio-player__wave"
-          role="slider"
-          tabIndex={0}
-          aria-label="Seek"
-          aria-valuemin={0}
-          aria-valuemax={ariaMax}
-          aria-valuenow={ariaNow}
-          aria-valuetext={`${clock(ariaNow)} of ${clock(ariaMax)}`}
-          aria-disabled={canSeek ? undefined : true}
-          data-testid="radio-waveform"
-          onKeyDown={onSliderKeyDown}
-          onPointerDown={onWavePointerDown}
-          onPointerMove={onWavePointerMove}
-          onPointerUp={() => endScrub(true)}
-          onPointerCancel={() => endScrub(false)}
-          onLostPointerCapture={() => endScrub(true)}
-          onFocus={() => { setSliderFocused(true); setAriaHeld(currentTimeNow()); }}
-          onBlur={() => { setSliderFocused(false); setAriaHeld(null); }}
-        >
-          <WaveBars bars={bars} ticks={ticks} width={waveWidth} />
-          <WaveBars bars={bars} ticks={NO_TICKS} width={waveWidth} played />
-          <span className="radio-player__playhead" aria-hidden />
+      {/* Seek + transport: one block, the sticky thumb zone of the phone sheet (library.css). */}
+      <div className="radio-player__dock">
+        <div className="radio-player__seek">
+          <div
+            ref={waveRef}
+            className="radio-player__wave"
+            role="slider"
+            tabIndex={0}
+            aria-label="Seek"
+            aria-valuemin={0}
+            aria-valuemax={ariaMax}
+            aria-valuenow={ariaNow}
+            aria-valuetext={`${clock(ariaNow)} of ${clock(ariaMax)}`}
+            aria-disabled={canSeek ? undefined : true}
+            data-testid="radio-waveform"
+            onKeyDown={onSliderKeyDown}
+            onPointerDown={onWavePointerDown}
+            onPointerMove={onWavePointerMove}
+            onPointerUp={() => endScrub(true)}
+            onPointerCancel={() => endScrub(false)}
+            onLostPointerCapture={() => endScrub(true)}
+            onFocus={() => { setSliderFocused(true); setAriaHeld(currentTimeNow()); }}
+            onBlur={() => { setSliderFocused(false); setAriaHeld(null); }}
+          >
+            <WaveBars bars={bars} ticks={ticks} width={waveWidth} />
+            <WaveBars bars={bars} ticks={NO_TICKS} width={waveWidth} played />
+            <span className="radio-player__playhead" aria-hidden />
+          </div>
+          <div className="radio-player__timeline">
+            <span className="radio-player__time" data-testid="radio-time">{elapsedText} / {totalText}</span>
+            <span className={['radio-player__onair', playing && 'is-on'].filter(Boolean).join(' ')} aria-hidden={playing ? undefined : true}>
+              <Waveform active={playing && !reducedMotion} />
+              <LivePill idle={!playing}>Playing</LivePill>
+            </span>
+          </div>
         </div>
-        <div className="radio-player__timeline">
-          <span className="radio-player__time" data-testid="radio-time">{elapsedText} / {totalText}</span>
-          <span className={['radio-player__onair', playing && 'is-on'].filter(Boolean).join(' ')} aria-hidden={playing ? undefined : true}>
-            <Waveform active={playing && !reducedMotion} />
-            <LivePill idle={!playing}>Playing</LivePill>
-          </span>
-        </div>
-      </div>
 
-      <div className="radio-player__transport">
-        <div className="radio-player__buttons" role="group" aria-label="Playback">
-          <Button
-            className="radio-player__skip"
-            icon={RotateCcw}
-            aria-label={`Back ${SKIP_SEC} seconds`}
-            aria-keyshortcuts="J"
-            data-testid="radio-back"
-            disabled={disabled}
-            onClick={() => skip(-SKIP_SEC)}
-          >
-            {SKIP_SEC}
-          </Button>
-          <Button
-            variant="primary"
-            size="lg"
-            iconOnly
-            className={['radio-player__play', needsGesture && 'is-attention'].filter(Boolean).join(' ')}
-            icon={playing ? Pause : Play}
-            aria-label={playing ? 'Pause' : 'Play'}
-            aria-keyshortcuts="K"
-            data-testid="radio-play"
-            disabled={disabled}
-            onClick={togglePlay}
-          />
-          <Button
-            className="radio-player__skip"
-            iconRight={RotateCw}
-            aria-label={`Forward ${SKIP_SEC} seconds`}
-            aria-keyshortcuts="L"
-            data-testid="radio-forward"
-            disabled={disabled}
-            onClick={() => skip(SKIP_SEC)}
-          >
-            {SKIP_SEC}
-          </Button>
+        <div className="radio-player__transport">
+          <div className="radio-player__buttons" role="group" aria-label="Playback">
+            <Button
+              className="radio-player__skip"
+              icon={RotateCcw}
+              aria-label={`Back ${SKIP_SEC} seconds`}
+              aria-keyshortcuts="J"
+              data-testid="radio-back"
+              disabled={disabled}
+              onClick={() => skip(-SKIP_SEC)}
+            >
+              {SKIP_SEC}
+            </Button>
+            <Button
+              variant="primary"
+              size="lg"
+              iconOnly
+              className={['radio-player__play', needsGesture && 'is-attention'].filter(Boolean).join(' ')}
+              icon={playing ? Pause : Play}
+              aria-label={playing ? 'Pause' : 'Play'}
+              aria-keyshortcuts="K"
+              data-testid="radio-play"
+              disabled={disabled}
+              onClick={togglePlay}
+            />
+            <Button
+              className="radio-player__skip"
+              iconRight={RotateCw}
+              aria-label={`Forward ${SKIP_SEC} seconds`}
+              aria-keyshortcuts="L"
+              data-testid="radio-forward"
+              disabled={disabled}
+              onClick={() => skip(SKIP_SEC)}
+            >
+              {SKIP_SEC}
+            </Button>
+          </div>
+          <Field label="Speed" inline className="radio-player__speed">
+            <Select data-testid="radio-speed" value={String(speed)} onChange={onSpeedChange}>
+              {SPEEDS.map((s) => <option key={s} value={String(s)}>{`${s}×`}</option>)}
+            </Select>
+          </Field>
+          <p className="radio-player__note" data-testid="radio-ai-note"><Sparkles aria-hidden />AI-generated voices</p>
         </div>
-        <Field label="Speed" inline className="radio-player__speed">
-          <Select data-testid="radio-speed" value={String(speed)} onChange={onSpeedChange}>
-            {SPEEDS.map((s) => <option key={s} value={String(s)}>{`${s}×`}</option>)}
-          </Select>
-        </Field>
-        <p className="radio-player__note" data-testid="radio-ai-note"><Sparkles aria-hidden />AI-generated voices</p>
       </div>
 
       {errorMsg && (
