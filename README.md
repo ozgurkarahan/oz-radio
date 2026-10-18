@@ -29,7 +29,7 @@ Oz Radio bundles complementary features, each exposed as its own entry in the to
 | 🔎 **Search** | `/search` | Hybrid vector + keyword search across every deck (Azure AI Search when configured, otherwise the built-in local search used by the default deployment); the avatar presents the matching slide |
 | 📻 **Playlists** | `/playlists`, `/playlists/:playlistId` | Ordered multi-deck sequences with per-user progress, plus **AI playlist recommendation** (GPT-4.1 picks a coherent deck sequence for any topic) |
 | 🎬 **Video** | `/video` + `/video/library` | Automated pre-rendered narrated MP4 from a `.pptx` (slide-first pipeline + Batch Avatar). Outputs MP4 / MP3 / SRT / SCORM. [Design →](docs/video.md) |
-| 🎧 **Podcast** | `/podcast` + `/podcast/library` | Turn any document into a two-host podcast conversation with distinct AI avatars. Outputs MP4 / MP3 / SRT / SCORM. [Design →](docs/podcast.md) |
+| 🎧 **Podcast** | `/podcast` + `/podcast/library` | Turn any document into a two-host podcast: a two-avatar video **plus** a dedicated radio mix, or audio only. Outputs MP4 + radio MP3 + transcript (+ SRT / SCORM); the library offers **Watch** and **Listen** side by side. [Design →](docs/podcast.md) |
 
 Every nav link has a hover tooltip; links that require sign-in show a 🔒 for anonymous visitors.
 
@@ -39,7 +39,7 @@ Every nav link has a hover tooltip; links that require sign-in show a 🔒 for a
 - **🧑‍💼 Live AI Avatar** — A photorealistic avatar narrates each slide using Azure AI Speech (VoiceLive / WebRTC)
 - **📚 Decks, Search & Playlists** — Multi-deck catalog with Azure AI Search (hybrid vector + keyword), playlists (Cosmos-persisted multi-deck sequences with resume + per-user progress), AI playlist recommendation using GPT-4.1 JSON mode, zero-click avatar auto-start between playlist steps
 - **🎬 Narrated Video** — Automated narrated MP4 per `.pptx`, slide-first pipeline (one batch-avatar job per slide + ffmpeg compose), multilingual, voice-aware avatar selection, published library
-- **🎧 Two-Avatar Podcast** — Conversational podcast-style video from any document
+- **🎧 Two-Host Podcast** — Conversational podcast from any document, rendered as a two-avatar video (the listening host stays alive, with optional lip-synced backchannels) plus a radio mix (−16 LUFS MP3 with cover art, live transcript), or as audio only
 - **▶️ Live demo** — Optional, off by default: anonymous visitors can watch the live avatar *narrate* decks an admin published and marked **Live demo**, under hard server-side cost guardrails ([docs/live-demo.md](docs/live-demo.md))
 - **🌍 Multilingual TTS** — DragonHD voices across 10+ languages, Cosmos-cached translations via GPT-4.1
 - **❓ Slide Q&A** — RAG with in-memory vector search (numpy + embeddings)
@@ -90,7 +90,7 @@ The avatars shown are custom **photo avatars** (one portrait each, animated by A
 │  │                      │  │      │  │  qa, translation,      │  │      │  Azure Cosmos DB (Serverless)│
 │  │ Podcast (/podcast)   │  │      │  │  deck_search,          │  │      │   ├─ presentations           │
 │  │  Create + Library    │  │      │  │  video_* (×6),         │  │      │   │  (decks + playlists)     │
-│  └──────────────────────┘  │      │  │  podcast_* (×7),       │  │      │   └─ playlist_progress       │
+│  └──────────────────────┘  │      │  │  podcast_* (×13),      │  │      │   └─ playlist_progress       │
 │                            │      │  │  storage               │─────────▶│  Azure Blob Storage         │
 └───────────────────────────┘      │  └────────────────────────┘  │      │   └─ PPTX + slides + media   │
                                     │           │                  │      │                              │
@@ -110,12 +110,13 @@ The deployed app uses a **hybrid exposure** model, enforced by the backend (defa
 
 | Caller | Can do |
 |---|---|
-| **Anonymous** | Load the SPA, `GET /api/health`, `GET /api/me`, `GET /api/avatars`; list and play **published** videos and podcasts; view **published** decks (slide images + titles only — no speaker notes, body text or PPTX download); when enabled, watch the narration-only **live demo** on decks marked *Live demo* |
+| **Anonymous** | Load the SPA, `GET /api/health`, `GET /api/me`, `GET /api/avatars`; list and play **published** videos and podcasts (when `PODCAST_PUBLIC_AUDIO=true`, also stream a published podcast's radio audio and read its transcript); view **published** decks (slide images + titles only — no speaker notes, body text or PPTX download); when enabled, watch the narration-only **live demo** on decks marked *Live demo* |
 | **Signed-in + allowlisted** (admin) | Everything else: uploads, live avatar (`/ws/voice`), batch avatar renders, script generation, translation, agent chat, playlist recommendation, playlists/progress, publish/unpublish, live-demo flag, deletes, unpublished items and full details |
 
 - **Sign-in** is handled by **Microsoft Entra ID** through Azure Container Apps built-in authentication (**Easy Auth**). The backend trusts the `X-MS-CLIENT-PRINCIPAL*` headers injected by the platform only when `AUTH_MODE=easyauth`, checks the tenant (`AUTH_TENANT_ID`) and requires the caller's Entra **object ID** to be in `ALLOWED_OBJECT_IDS`.
 - Gated endpoints return **401** when anonymous and **403** when signed-in but not allowlisted. The live-avatar WebSocket is authorized (and its `Origin` checked) before the connection is accepted.
 - Nothing is public by default: generated videos, podcasts and decks start **unpublished**; an admin publishes them explicitly. Anonymous media links are read-only, blob-scoped SAS URLs that expire after 15 minutes.
+- **Public podcast audio (off by default):** with `PODCAST_PUBLIC_AUDIO=true`, anonymous visitors of a *published* podcast also get its radio MP3, cover art, host names and full transcript (live captions), and audio-only episodes are listed. Subtitle files, SCORM packages and scripts stay admin-only. Speech character names never appear in media, ID3 tags, manifests, logs or API payloads. See [docs/podcast.md](docs/podcast.md#61-public-access).
 - Abuse / cost guards: concurrent live-avatar sessions (`MAX_VOICE_SESSIONS`), per-session duration cap, per-user daily generation quota and a global render queue limit. The Azure Voice Live connection is closed as soon as the browser disconnects.
 - **Public live demo (off by default):** with `PUBLIC_DEMO_ENABLED=true`, anonymous visitors can watch the
   live avatar *narrate* decks an admin has published and marked **Live demo** (`/ws/voice/demo`). No free
@@ -142,7 +143,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting and the operator chec
 | **AI / Search**  | Azure AI Search (optional, not provisioned by `infra/`) — hybrid vector + keyword for the deck catalog (`decks` index); default deployment uses local search (`USE_LOCAL_SEARCH=true`) |
 | **AI / Agent**   | Function-calling agent (translate, Q&A, SSML generation)    |
 | **Slide Render** | LibreOffice Impress (headless) → PDF → pdf2image (Poppler)  |
-| **Video/Audio**  | ffmpeg + ffprobe — video slide compose, podcast compose, SRT generation |
+| **Video/Audio**  | ffmpeg + ffprobe — video slide compose, podcast compose and radio mix (two-pass loudnorm, MP3 + ID3), SRT generation |
 | **Vector Search**| Azure AI Search (deck catalog) + in-memory numpy cosine similarity (Live page Q&A) |
 | **Persistence**  | Azure Cosmos DB (Serverless) — `presentations` (`/id`) + `playlist_progress` (`/user_id`) — and Azure Blob Storage (SAS URLs) |
 | **Auth**         | Users: Microsoft Entra ID via Container Apps Easy Auth + object-ID allowlist · Services: Managed Identity (`DefaultAzureCredential`) |
@@ -256,6 +257,12 @@ Create a `.env` file in `demos/backend/` (see `.env.example`):
 | `MAX_VOICE_SESSION_SECONDS` | `900` | Hard cap per live-avatar session |
 | `DAILY_GENERATION_QUOTA` | `50` | Renders + uploads + chats per signed-in user per UTC day |
 | `MAX_PENDING_RENDERS` | `3` | Global queued/running render jobs |
+| `MAX_CONCURRENT_COMPOSES` | `1` | Podcast compose steps (ffmpeg) running at once |
+| `MAX_ACTIVE_BATCH_JOBS` / `SPEECH_BATCH_CREATE_PER_MIN` | `8` / `2` | Batch avatar jobs active at once (podcast turns + listener kits) / job creations per rolling minute (Speech quota ≈ 2) |
+| `PODCAST_PUBLIC_AUDIO` | `false` | Anonymous visitors of published podcasts can stream the radio audio (15-min SAS) and read the transcript; audio-only episodes become public |
+| `PODCAST_REACTIONS` | `false` | Kill switch for listener backchannels ("mm-hmm", "right") in new podcast renders |
+| `PODCAST_LISTENER_MODE` | `auto` | Listening host in video podcasts: `auto` / `idle_loop` (cached idle loop, else sway), `procedural` (sway on a still), `still` |
+| `PODCAST_LISTENER_TIMEOUT_SEC` | `900` | How long a video render waits for the listener kits before the fallback listener (min 30) |
 | `AZURE_SEARCH_KEY` | absent | Optional; when absent Azure AI Search uses `DefaultAzureCredential` (managed identity) |
 | `PUBLIC_DEMO_ENABLED` | `false` | Kill switch for the anonymous, narration-only live avatar demo (`/ws/voice/demo`) — see [docs/live-demo.md](docs/live-demo.md) |
 | `DEMO_MAX_CONCURRENT` | `1` | Concurrent anonymous demo sessions (global, separate from `MAX_VOICE_SESSIONS`) |
@@ -449,11 +456,11 @@ Unless marked 🌐 (anonymous), endpoints require a signed-in, allowlisted calle
 | `GET`  | `/api/video/library/{job_id}` 🌐              | Video with fresh SAS URLs (anonymous: MP4 + thumbnail only)                       |
 | `POST` | `/api/podcast/ingest`                         | Ingest a document into a podcast-ready Document                                   |
 | `POST` | `/api/podcast/script/stream`                  | SSE dialogue generation (2-speaker)                                               |
-| `POST` | `/api/podcast/render`                         | Start dual-avatar render job                                                      |
-| `GET`  | `/api/podcast/jobs/{job_id}`                  | Poll podcast job state                                                            |
-| `GET`  | `/api/podcast/jobs/{job_id}/file/{kind}`      | Local fallback download `mp4` / `mp3` / `srt` / `scorm`                            |
-| `GET`  | `/api/podcast/library` 🌐                     | Podcast library (anonymous: published only)                                       |
-| `GET`  | `/api/podcast/library/{job_id}` 🌐            | Podcast with fresh SAS URLs (anonymous: MP4 + thumbnail only)                     |
+| `POST` | `/api/podcast/render`                         | Start a render job — body adds `format` (`video` = MP4 + radio MP3, `audio` = radio MP3 only, no avatars) and `reactions` (backchannels, also gated by `PODCAST_REACTIONS`) |
+| `GET`  | `/api/podcast/jobs/{job_id}`                  | Poll podcast job state (stage, outputs, warning codes)                            |
+| `GET`  | `/api/podcast/jobs/{job_id}/file/{kind}`      | Local fallback download `mp4` / `mp3` / `srt` / `audio_srt` / `transcript` / `cover` / `scorm` (404 when the format has no such rendition) |
+| `GET`  | `/api/podcast/library` 🌐                     | Podcast library (anonymous: published only; audio-only episodes only with `PODCAST_PUBLIC_AUDIO=true`) |
+| `GET`  | `/api/podcast/library/{job_id}` 🌐            | Podcast with fresh SAS URLs + transcript (anonymous: MP4 + thumbnail; plus radio MP3, cover and transcript with `PODCAST_PUBLIC_AUDIO=true`) |
 | `GET`  | `/api/health` 🌐                              | Health check                                                                      |
 
 > Full interactive API documentation is available at `/docs` (Swagger UI) when the server is running.
@@ -500,6 +507,8 @@ python scripts/podcast_regen.py --no-delete --avatar-female photo_female --avata
 ```
 
 Renders are never auto-published — publish the items you want visitors to see from the library pages (or `POST /api/{video|podcast}/library/{job_id}/publish`).
+
+Inside the app container, the operator CLI `python -m maintenance.content` seeds the AI enablement catalog and renders **and publishes** its episodes with the app's managed identity (no HTTP, no sign-in): e.g. `render-podcast all --force [--format video|audio]`, `warm-listeners`, `publish --podcast-id <id> --off`, `purge`. See [docs/podcast.md §4.4](docs/podcast.md#44-operator-cli).
 
 Unit + Playwright suites:
 
@@ -554,6 +563,7 @@ oz-radio/
 │   │   ├── requirements.txt      # Python dependencies
 │   │   ├── .env.example          # Environment variable template
 │   │   ├── data/                 # Local dev: uploads/ + slides/
+│   │   ├── maintenance/          # Operator CLI (python -m maintenance.content): seed, render, warm-listeners, publish, purge
 │   │   ├── routers/              # Feature-scoped routers
 │   │   │   ├── decks.py          # Decks catalog — upload, publish, live demo, hybrid search
 │   │   │   ├── playlists.py      # Playlists CRUD + progress + AI recommend
@@ -567,7 +577,8 @@ oz-radio/
 │   │       ├── qa.py             # In-memory numpy RAG (Live page Q&A)
 │   │       ├── deck_search.py    # Azure AI Search client (hybrid vector + keyword)
 │   │       ├── video_*.py        # Video pipeline — ingest, script, render, compose, library, models
-│   │       ├── podcast_*.py      # Podcast pipeline — ingest, script, render, compose, library, models
+│   │       ├── podcast_*.py      # Podcast pipeline — ingest, script, batch avatar render, TTS, listener kits, reactions, compose, radio mix, cover, jingle, library, models
+│   │       ├── speech_rest.py    # Speech REST auth (Entra → STS) + shared retry policy (podcast engines)
 │   │       └── storage.py        # Cosmos DB (presentations + playlists + progress) + Blob Storage
 │   └── frontend/                 # React 19 SPA (Vite 8 + TypeScript)
 │       ├── src/
@@ -579,7 +590,8 @@ oz-radio/
 │       │   │   ├── LanguageSelector.tsx   # Language picker (variant dark/light)
 │       │   │   ├── PptUpload.tsx          # File upload UI
 │       │   │   ├── PresentationList.tsx   # Saved presentations (CRUD)
-│       │   │   └── QaChat.tsx             # Q&A chat interface
+│       │   │   ├── QaChat.tsx             # Q&A chat interface
+│       │   │   └── RadioPlayer.tsx        # Podcast "Listen" player (cover, hosts, live captions, waveform)
 │       │   ├── pages/
 │       │   │   ├── HomePage.tsx           # Landing page
 │       │   │   ├── LivePage.tsx           # Single-deck live presenter (Teams theme support)
@@ -631,7 +643,7 @@ oz-radio/
 │   ├── decks-search-playlists.md # Decks + search + playlists + AI recommend design
 │   ├── live-demo.md              # Public live avatar demo — guardrails & cost
 │   ├── video.md                  # Video slide-first pipeline design
-│   ├── podcast.md                # Two-avatar podcast design
+│   ├── podcast.md                # Two-host podcast design (video + radio, listener, public listening)
 │   ├── deep-dive-azure.md        # Full Azure deep-dive (Bicep, RBAC, security, CI/CD)
 │   ├── teams-integration.md      # Teams embedding feasibility & options
 │   ├── deploy-copilot.md         # Parallel instance (pointer to provisioning.md)
@@ -660,7 +672,7 @@ Detailed technical documentation is available in the [`docs/`](docs/) directory 
 | [Decks, Search & Playlists](docs/decks-search-playlists.md) | Deck catalog, hybrid search, playlists, AI playlist recommendation, playlist player auto-start |
 | [Public live demo](docs/live-demo.md) | Anonymous narration-only live avatar: guardrails, threat model, cost ceiling |
 | [Video](docs/video.md) | Slide-first pipeline, voice→avatar matching, Blob-backed media/SCORM library, deployment, storage-network gotchas on policy-managed enterprise subscriptions |
-| [Podcast](docs/podcast.md) | Two-avatar podcast generator with Blob-backed media/SCORM library |
+| [Podcast](docs/podcast.md) | Two-host podcast generator: video + radio renditions, alive listener and backchannels, Blob-backed media/SCORM library, public listening |
 | [Provisioning runbook](docs/provisioning.md) | Components, prerequisites, Entra app registration, azd variables, deploy, smoke test, troubleshooting, teardown |
 | [BOOTSTRAP.md](BOOTSTRAP.md) | Ordered deployment steps for coding agents, with human checkpoints |
 | [Deep Dive: Azure Deployment](docs/deep-dive-azure.md) | Full technical walkthrough — infrastructure, Bicep modules, security, CI/CD |

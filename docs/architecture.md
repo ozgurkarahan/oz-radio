@@ -118,7 +118,7 @@ Oz Radio is a web-based application that allows users to upload PowerPoint prese
 | **Decks, Search & Playlists** — multi-deck catalog + AI deck selection | `/decks`, `/search`, `/playlists` — Azure AI Search hybrid, playlists (Cosmos), AI playlist recommendation (GPT-4.1 JSON mode) | ✅ Implemented |
 | **Public live demo** — anonymous, narration-only | `/ws/voice/demo` with server-side guardrails (see [live-demo.md](live-demo.md)) | ✅ Implemented (off by default) |
 | **Video** — narrated batch video | Slide-first pipeline (`/video`) — Batch Avatar per slide + ffmpeg compose | ✅ Implemented |
-| **Podcast** — two-avatar video | Two-avatar podcast (`/podcast`) — GPT-4.1 dialogue + parallel TTS + ffmpeg compose | ✅ Implemented |
+| **Podcast** — two-host video + radio | Two-host podcast (`/podcast`) — GPT-4.1 dialogue → Batch Avatar talking turns with a cached, alive listening loop and optional backchannels + ffmpeg compose, plus a radio mix (DragonHD TTS, sonic logo, −16 LUFS MP3 + transcript); *Audio only* format skips the avatars | ✅ Implemented |
 | **Multilingual** | 10 languages (6 native DragonHD + 4 multilingual fallback) | ✅ Implemented |
 | **LMS/SCORM export** | Video and podcast render jobs generate SCORM ZIPs and persist them with library assets in Blob Storage | ✅ Implemented |
 | **M365 Copilot / Teams integration** | Agent Framework + Teams Static Tab | ✅ Partial |

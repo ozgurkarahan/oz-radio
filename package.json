@@ -10,7 +10,7 @@
   "scripts": {
     "test:ui": "playwright test --project=chromium",
     "test:ui:playlists": "playwright test tests/playlists.spec.ts --project=chromium",
-    "test:regression": "playwright test tests/regression.spec.ts --project=chromium"
+    "test:regression": "playwright test tests/regression.spec.ts tests/podcast-listen.spec.ts tests/podcast-studio.spec.ts --project=chromium"
   },
   "repository": {
     "type": "git",

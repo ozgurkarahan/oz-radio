@@ -11,7 +11,7 @@ The repo covers complementary avatar features in a single app:
 - **Live** at `/live` — upload one deck and let the live avatar present it, with slide Q&A
 - **Decks / Search / Playlists** at `/decks`, `/search`, `/playlists` — deck catalog + hybrid Azure AI Search + playlists + AI playlist recommendation
 - **Video** at `/video` — batch avatar MP4 pipeline
-- **Podcast** at `/podcast` — two-avatar conversational format
+- **Podcast** at `/podcast` — two-host conversation rendered as a two-avatar video plus a radio mix, or audio only (library: Watch / Listen)
 - **Public live demo** (off by default) — anonymous, narration-only live avatar on decks an admin marked *Live demo* (`/ws/voice/demo`, see `docs/live-demo.md`)
 
 ## Features
@@ -32,11 +32,11 @@ The repo covers complementary avatar features in a single app:
 
 ### Video (`/video`) & Podcast (`/podcast`)
 9. **Video**: Slide-first render pipeline (1 batch-avatar job per slide → ffmpeg compose → MP4 + SRT + SCORM)
-10. **Podcast**: Document → GPT-4.1 two-speaker dialogue → parallel TTS → ffmpeg compose → MP3/MP4
+10. **Podcast**: Document → GPT-4.1 two-speaker dialogue → batch avatar clips per turn (video) and DragonHD TTS turns (radio) → ffmpeg compose + radio mix → MP4 + radio MP3 + transcript + cover (+ SRT/SCORM); format `video` or `audio`; cached alive listener and optional backchannels
 
 ## Security model
 
-Hybrid exposure: anonymous visitors may load the SPA and view **published** videos, podcasts and decks (slide images + titles only), and — only when `PUBLIC_DEMO_ENABLED=true` — watch the narration-only live demo on decks marked *Live demo*. Everything else requires a Microsoft Entra ID sign-in (Container Apps Easy Auth) whose object ID is in `ALLOWED_OBJECT_IDS` — default deny. Local dev uses `AUTH_MODE=disabled` (every caller is admin); never deploy that setting. See `README.md` → *Security model*, `SECURITY.md` and `docs/live-demo.md`.
+Hybrid exposure: anonymous visitors may load the SPA and view **published** videos, podcasts and decks (slide images + titles only), and — only when `PUBLIC_DEMO_ENABLED=true` — watch the narration-only live demo on decks marked *Live demo*; only when `PODCAST_PUBLIC_AUDIO=true` can they also stream a published podcast's radio audio and read its transcript. Everything else requires a Microsoft Entra ID sign-in (Container Apps Easy Auth) whose object ID is in `ALLOWED_OBJECT_IDS` — default deny. Local dev uses `AUTH_MODE=disabled` (every caller is admin); never deploy that setting. Speech character names never leave the server (no blob names, sidecars, logs, ID3 tags or payloads). See `README.md` → *Security model*, `SECURITY.md`, `docs/live-demo.md` and `docs/podcast.md`.
 
 ## Deployment
 
@@ -52,7 +52,7 @@ To provision or deploy to Azure, follow [`BOOTSTRAP.md`](BOOTSTRAP.md). It gives
 | Azure Blob Storage | Slide images, PPTX source files, rendered media |
 | LibreOffice (headless) | PPTX → PDF conversion for slide image rendering |
 | Poppler (pdf2image) | PDF → PNG conversion for individual slide images |
-| ffmpeg | Video/audio compose for the video and podcast generators |
+| ffmpeg | Video/audio compose for the video and podcast generators; podcast radio mix (two-pass loudnorm, MP3 + ID3), listener-kit keying (VP9 + alpha) |
 | python-pptx | Extract slide text, titles, speaker notes |
 | FastAPI + Uvicorn | Backend REST API + WebSocket proxy |
 | **Teams SDK** | `@microsoft/teams-js` — context detection, theme adaptation    |
@@ -65,7 +65,16 @@ To provision or deploy to Azure, follow [`BOOTSTRAP.md`](BOOTSTRAP.md). It gives
 | `demos/backend/` | FastAPI backend — app.py, config.py, services/, routers/, Dockerfile |
 | `demos/backend/routers/decks.py` | Decks API (upload, list, publish, live demo, delete, search via Azure AI Search) |
 | `demos/backend/routers/playlists.py` | Playlists CRUD + progress + AI `POST /recommend` (GPT-4.1 JSON mode) |
-| `demos/backend/routers/podcast.py` | Two-avatar podcast (ingest, script stream SSE, render, library) |
+| `demos/backend/routers/podcast.py` | Two-host podcast (ingest, script stream SSE, render `video`\|`audio`, job files, library + public DTO) |
+| `demos/backend/services/podcast_models.py` · `podcast_media.py` | Podcast HTTP/JSON contracts (render request, job, transcript, library DTOs) · internal engine contracts, stable warning codes, `PODCAST_*` env flags |
+| `demos/backend/services/podcast_render.py` · `speech_rest.py` | Batch avatar job per turn (admission `MAX_ACTIVE_BATCH_JOBS`, creation pacing `SPEECH_BATCH_CREATE_PER_MIN`, deadlines) · Speech REST auth (Entra → STS) + shared retry policy |
+| `demos/backend/services/podcast_tts.py` | DragonHD TTS turns for the radio mix and audio-only renders (zero avatar calls) + cached reaction audio |
+| `demos/backend/services/podcast_listener.py` | Cached listener kits per (avatar, voice, language): silent idle loop + lip-synced backchannel clips; never raises (fallback listener) |
+| `demos/backend/services/podcast_reactions.py` | Backchannel planning on the script text (pauses) and placement in the measured pauses |
+| `demos/backend/services/podcast_compose.py` | ffmpeg video compose (geometry contract, live listener, reactions, 160 ms dissolves) |
+| `demos/backend/services/podcast_radio.py` · `podcast_cover.py` · `podcast_jingle.py` | Radio mix (gaps, −16 LUFS, CBR MP3 + allow-listed ID3, `transcript.json`, radio SRT) · 1400 px cover art · procedural sonic logo |
+| `demos/backend/services/podcast_library.py` | Blob library, manifest v2 (v1 read-compatible), public audio policy |
+| `demos/backend/maintenance/content.py` | Operator CLI in the container (`python -m maintenance.content`): seed, render-podcast `--format`, warm-listeners, publish `--off`, purge |
 | `demos/backend/routers/video.py` | Batch-avatar MP4 (ingest, script stream NDJSON, render, library) |
 | `demos/backend/services/deck_search.py` | Azure AI Search client for the deck catalog (hybrid vector + keyword) |
 | `demos/backend/services/pptx_parser.py` | PPT parsing + LibreOffice → PDF → PNG image rendering |
@@ -73,13 +82,14 @@ To provision or deploy to Azure, follow [`BOOTSTRAP.md`](BOOTSTRAP.md). It gives
 | `demos/backend/services/voice_questions.py` | Raise-hand voice Q&A over both voice WebSockets (`qa.*` protocol, audio validation, Speech STT, admin/demo limits) |
 | `demos/backend/services/deck_qa.py` | Deck-grounded answer to an audience question (GPT-4.1 JSON mode, no tools/history) |
 | `demos/backend/services/avatar_registry.py` | Avatar catalog: stock avatars, `CUSTOM_AVATARS_JSON`, `HIDE_STOCK_AVATARS`, podcast crops |
-| `demos/backend/security.py` | Quotas and guardrails (`DAILY_GENERATION_QUOTA`, `DEMO_*`, `DEMO_QA_*`; durable demo quota in Cosmos) |
+| `demos/backend/security.py` | Quotas and guardrails (`DAILY_GENERATION_QUOTA`, `MAX_PENDING_RENDERS`, the podcast compose slot `MAX_CONCURRENT_COMPOSES`, `DEMO_*`, `DEMO_QA_*`; durable demo quota in Cosmos) |
 | `demos/backend/services/qa.py` | In-memory numpy vector search for slide Q&A (Live page) |
 | `demos/backend/services/storage.py` | PresentationStore (Cosmos containers `presentations` + `playlist_progress`) |
 | `demos/frontend/` | React frontend |
 | `demos/frontend/src/main.tsx` | Router — `/`, `/live`, `/decks*`, `/search`, `/playlists*`, `/video*`, `/podcast*` |
 | `demos/frontend/src/pages/` | `HomePage`, `LivePage`, `DecksPage`, `DeckPresentPage`, `SearchPage`, `PlaylistsPage`, `PlaylistPlayerPage`, `Video*`, `Podcast*` |
 | `demos/frontend/src/components/AvatarPanel.tsx` | WebRTC avatar panel — supports `autoStart` prop for playlist player zero-click between decks |
+| `demos/frontend/src/components/RadioPlayer.tsx` | Podcast "Listen" player: cover, hosts lit from the transcript, live captions, waveform slider, speed, SAS-expiry recovery |
 | `demos/frontend/src/components/RaiseHandPanel.tsx` | Raise-hand Q&A controls (rendered in `AvatarPanel`); mic capture in `src/services/voiceCapture.ts` |
 | `demos/frontend/src/components/LanguageSelector.tsx` | Language picker with `variant: 'dark' \| 'light'` (dark = gradient banners, light = white cards) |
 | `demos/frontend/src/services/decksApi.ts` | Decks API client (decks, search, playlists, recommend) |

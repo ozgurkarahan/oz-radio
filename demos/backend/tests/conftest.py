@@ -52,6 +52,14 @@ _OFFLINE_ENV = {
     "DEMO_QA_DAILY_PER_IP": "6",
     # A developer .env (loaded with override=True) must not hide stock avatars in tests.
     "HIDE_STOCK_AVATARS": "",
+    # Podcast radio + live listener: private audio, no backchannels, no listener
+    # synthesis (plain still), small budgets.
+    "PODCAST_PUBLIC_AUDIO": "false",
+    "PODCAST_REACTIONS": "false",
+    "PODCAST_LISTENER_MODE": "still",
+    "PODCAST_LISTENER_TIMEOUT_SEC": "60",
+    "MAX_CONCURRENT_COMPOSES": "1",
+    "MAX_ACTIVE_BATCH_JOBS": "4",
 }
 os.environ.update(_OFFLINE_ENV)
 

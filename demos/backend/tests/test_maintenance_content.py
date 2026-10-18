@@ -878,3 +878,226 @@ def test_cli_rebrand_decks_dry_run_single_deck(env, monkeypatch, tmp_path, capsy
     out = capsys.readouterr().out
     assert "would rebrand" in out and out.count('"deck_id"') == 1 and env.store.blobs == {}
 
+
+# ---------------------------------------------------------------------------
+# Podcast formats (video | audio), listener warm-up, publish/unpublish
+# ---------------------------------------------------------------------------
+def test_render_podcast_defaults_to_video_with_reactions_and_reports_warnings(env, monkeypatch):
+    from routers import podcast as pr
+
+    seen = _fake_podcast_pipeline(monkeypatch, env)
+    inner = pr._render_job_body
+
+    async def render_with_warnings(job_id, cfg):
+        await inner(job_id, cfg)
+        pr.JOBS[job_id].warnings = ["listener_static"]
+        pr.JOBS[job_id].listener_mode = "idle_loop"
+
+    monkeypatch.setattr(pr, "_render_job_body", render_with_warnings)
+    out = asyncio.run(mc.render_podcast(env.cfg, "practitioner"))
+    job = seen["job"]
+    assert job.format == "video" and job.reactions is True
+    assert out["format"] == "video" and out["action"] == "rendered"
+    assert out["warnings"] == ["listener_static"] and out["listener_mode"] == "idle_loop"
+
+
+def test_render_podcast_audio_format(env, monkeypatch):
+    seen = _fake_podcast_pipeline(monkeypatch, env)
+    out = asyncio.run(mc.render_podcast(env.cfg, "demo-fr", fmt="audio"))
+    job = seen["job"]
+    assert job.format == "audio" and job.reactions is True
+    # The cast keeps its avatars: they become the radio cover/player portraits.
+    assert job.roles.interviewer.avatar == "photo_female" and job.roles.expert.avatar == "photo_male"
+    assert job.roles.interviewer.voice.startswith("fr-FR-Vivienne")
+    assert out["format"] == "audio" and env.plib.items[out["job_id"]]["published"] is True
+
+
+def test_render_podcast_spec_format_is_the_default(env, monkeypatch):
+    seen = _fake_podcast_pipeline(monkeypatch, env)
+    spec = mc.PODCASTS["beginner"]
+    monkeypatch.setitem(mc.PODCASTS, "beginner", mc.PodcastSpec(
+        spec.deck, spec.language, spec.style, spec.audience_level, format="audio"))
+    assert asyncio.run(mc.render_podcast(env.cfg, "beginner"))["format"] == "audio"
+    assert seen["job"].format == "audio"
+    assert asyncio.run(mc.render_podcast(env.cfg, "beginner", fmt="video", force=True))["format"] == "video"
+    assert seen["job"].format == "video"
+
+
+def test_render_podcast_existing_item_matches_title_and_format(env, monkeypatch):
+    seen = _fake_podcast_pipeline(monkeypatch, env)
+    title = mc.PODCASTS["expert"].title
+    env.plib.add("job-0000000a", title)  # manifest v1 summary: no "format" key = video
+    assert asyncio.run(mc.render_podcast(env.cfg, "expert", dry_run=True))["action"] == "exists"
+    plan = asyncio.run(mc.render_podcast(env.cfg, "expert", dry_run=True, fmt="audio"))
+    assert plan["action"] == "would render" and "job" not in seen
+    env.plib.add("job-0000000b", title, format="audio")
+    again = asyncio.run(mc.render_podcast(env.cfg, "expert", dry_run=True, fmt="audio"))
+    assert again["action"] == "exists" and again["job_id"] == "job-0000000b"
+
+
+def test_render_podcast_rejects_unknown_format(env, monkeypatch):
+    _fake_podcast_pipeline(monkeypatch, env)
+    with pytest.raises(mc.MaintenanceError, match="format"):
+        asyncio.run(mc.render_podcast(env.cfg, "beginner", fmt="radio"))
+    assert env.plib.items == {}
+
+
+def test_cli_render_podcast_format_flag():
+    parse = mc.build_parser().parse_args
+    assert parse(["render-podcast", "all"]).fmt is None
+    assert parse(["render-podcast", "beginner", "--format", "audio", "--force"]).fmt == "audio"
+    with pytest.raises(SystemExit):
+        parse(["render-podcast", "beginner", "--format", "radio"])
+
+
+def test_specs_default_to_video():
+    assert {s.format for s in mc.PODCASTS.values()} == {"video"}
+    assert mc.PODCAST_FORMATS == ("video", "audio")
+
+
+def _fake_kit(avatar_id, voice, *, fallback=False):
+    from pathlib import Path
+
+    from services.podcast_media import IdleLoop, ListenerKit, ReactionClip
+
+    if fallback:
+        return ListenerKit(avatar_id=avatar_id, voice=voice, mode="procedural", idle=None, reactions={},
+                           warnings=("listener_fallback", "reactions_skipped"))
+    kit_dir = Path("data/podcast/listener_kit/0123456789abcdef01234567")
+    idle = IdleLoop(path=kit_dir / "aaaaaaaaaaaaaaaaaaaa.webm", duration_sec=6.123, has_alpha=True,
+                    signature_path=kit_dir / "bbbbbbbbbbbbbbbbbbbb.npz", motion_score=0.41234, static=False)
+    clip = ReactionClip(reaction_id="ack", text="Mm-hmm.", audio_path=kit_dir / "c.wav",
+                        video_path=kit_dir / "d.webm", duration_sec=0.53, has_alpha=True)
+    return ListenerKit(avatar_id=avatar_id, voice=voice, mode="idle_loop", idle=idle,
+                       reactions={"ack": clip, "right": clip}, warnings=())
+
+
+def _fake_listener(monkeypatch, *, fallback_for=()):
+    from services import podcast_listener
+
+    calls: list[dict] = []
+
+    def fake_ensure(cfg, avatar_id, voice, language, *, want_reactions, deadline=None):
+        calls.append({"avatar_id": avatar_id, "voice": voice, "language": language,
+                      "want_reactions": want_reactions, "deadline": deadline})
+        return _fake_kit(avatar_id, voice, fallback=(avatar_id, language) in fallback_for)
+
+    monkeypatch.setattr(podcast_listener, "ensure_listener_kit", fake_ensure)
+    return calls
+
+
+def test_warm_listeners_ensures_each_cast_kit(env, monkeypatch):
+    import time
+
+    calls = _fake_listener(monkeypatch)
+    before = time.monotonic()
+    report = mc.warm_listeners(env.cfg)
+    assert [(c["avatar_id"], c["voice"], c["language"]) for c in calls] == [
+        ("photo_female", mc.VOICES["en-US"]["female"], "en-US"),
+        ("photo_male", mc.VOICES["en-US"]["male"], "en-US"),
+        ("photo_female", mc.VOICES["fr-FR"]["female"], "fr-FR"),
+        ("photo_male", mc.VOICES["fr-FR"]["male"], "fr-FR"),
+    ]
+    assert all(c["want_reactions"] is True for c in calls)
+    # Default budget per kit = PODCAST_LISTENER_TIMEOUT_SEC (60 s in the offline test env).
+    assert report["timeout_sec"] == 60 and all(before + 59 < c["deadline"] < time.monotonic() + 61 for c in calls)
+    assert report["errors"] == [] and report["listener_mode"] == "still"
+    kit = report["kits"][0]
+    assert kit["ok"] is True and kit["mode"] == "idle_loop" and kit["reactions"] == ["ack", "right"]
+    assert kit["idle"] == {"duration_sec": 6.12, "motion_score": 0.412, "static": False}
+    text = json.dumps(report)
+    # Registry ids and voices only: no Speech character names, no cache paths.
+    assert "F_char" not in text and "M_char" not in text and "listener_kit" not in text
+
+
+def test_warm_listeners_reports_fallback_kits(env, monkeypatch, capsys):
+    _fake_listener(monkeypatch, fallback_for={("photo_male", "fr-FR")})
+    monkeypatch.setattr(mc, "_cfg", lambda: env.cfg)
+    assert mc.main(["warm-listeners", "--language", "fr-FR", "--timeout", "120"]) == 1
+    out = capsys.readouterr().out
+    report = json.loads(out[out.index("{"):out.rindex("}") + 1])
+    assert [k["ok"] for k in report["kits"]] == [True, False]
+    assert report["timeout_sec"] == 120
+    assert report["errors"] == [{"item": "listener kit photo_male (fr-FR)",
+                                 "error": "listener_fallback, reactions_skipped"}]
+    assert "F_char" not in out and "M_char" not in out
+
+
+def test_warm_listeners_dry_run_builds_nothing(env, monkeypatch):
+    from services import podcast_listener
+
+    def boom(*a, **k):
+        raise AssertionError("dry run must not build kits")
+
+    monkeypatch.setattr(podcast_listener, "ensure_listener_kit", boom)
+    report = mc.warm_listeners(env.cfg, languages=["en-US"], dry_run=True)
+    assert [(k["avatar_id"], k["language"], k["action"]) for k in report["kits"]] == [
+        ("photo_female", "en-US", "would warm"), ("photo_male", "en-US", "would warm")]
+
+
+def test_warm_listeners_requires_the_registered_cast(env, monkeypatch):
+    calls = _fake_listener(monkeypatch)
+    avatar_registry.reload("")
+    with pytest.raises(mc.MaintenanceError, match="photo_female"):
+        mc.warm_listeners(env.cfg)
+    with pytest.raises(mc.MaintenanceError, match="positive"):
+        mc.warm_listeners(env.cfg, timeout_sec=0)
+    assert calls == []
+
+
+def _two_copies(env):
+    """A superseded item and its re-render, both published under the same title."""
+    title = mc.PODCASTS["beginner"].title
+    env.plib.add("job-0000aaa1", title, format="video")
+    env.plib.add("job-0000bbb2", title, format="video")
+    return title
+
+
+def test_publish_off_hides_superseded_items_and_warns_on_the_last_copy(env):
+    _two_copies(env)
+    report = mc.publish_podcasts(env.cfg, ["job-0000aaa1"], published=False)
+    assert report["errors"] == []
+    assert report["podcasts"] == [{"job_id": "job-0000aaa1", "title": mc.PODCASTS["beginner"].title,
+                                   "format": "video", "action": "unpublished", "published": False}]
+    assert env.plib.items["job-0000aaa1"]["published"] is False
+    assert "job-0000aaa1" in env.plib.items  # hidden, never deleted
+
+    last = mc.publish_podcasts(env.cfg, ["job-0000bbb2"], published=False)
+    assert last["podcasts"][0]["warning"] == "no published item left with this title"
+    again = mc.publish_podcasts(env.cfg, ["job-0000bbb2"], published=False)
+    assert again["podcasts"][0]["action"] == "already"
+
+
+def test_publish_on_warns_about_duplicate_titles(env):
+    _two_copies(env)
+    env.plib.items["job-0000aaa1"]["published"] = False
+    report = mc.publish_podcasts(env.cfg, ["job-0000aaa1"])
+    entry = report["podcasts"][0]
+    assert entry["action"] == "published" and entry["published"] is True
+    assert entry["warning"] == "also published with this title: ['job-0000bbb2']"
+
+
+def test_publish_dry_run_and_invalid_ids(env):
+    _two_copies(env)
+    before = json.dumps(env.plib.items, sort_keys=True)
+    report = mc.publish_podcasts(env.cfg, ["job-0000aaa1", "job-0000bbb2"], published=False, dry_run=True)
+    assert [e["action"] for e in report["podcasts"]] == ["would unpublish", "would unpublish"]
+    assert report["podcasts"][1]["warning"] == "no published item left with this title"
+    assert json.dumps(env.plib.items, sort_keys=True) == before
+    with pytest.raises(mc.MaintenanceError, match="invalid podcast ids"):
+        mc.publish_podcasts(env.cfg, ["sv-0000aaa1"])
+
+
+def test_cli_publish_off_and_not_found(env, monkeypatch, capsys):
+    _two_copies(env)
+    monkeypatch.setattr(mc, "_cfg", lambda: env.cfg)
+    assert mc.main(["publish", "--podcast-id", "job-0000aaa1", "--off"]) == 0
+    out = capsys.readouterr().out
+    assert '"unpublished"' in out and "sig=" not in out and "_url" not in out
+    assert env.plib.items["job-0000aaa1"]["published"] is False
+    assert mc.main(["publish", "--podcast-id", "job-deadbeef"]) == 1
+    assert '"not found"' in capsys.readouterr().out
+    assert mc.main(["publish", "--podcast-id", "nope"]) == 2
+    with pytest.raises(SystemExit):
+        mc.build_parser().parse_args(["publish"])
+

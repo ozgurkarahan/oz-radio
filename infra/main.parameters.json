@@ -50,6 +50,27 @@
     "maxPendingRenders": {
       "value": "${MAX_PENDING_RENDERS=3}"
     },
+    "maxConcurrentComposes": {
+      "value": "${MAX_CONCURRENT_COMPOSES=1}"
+    },
+    "maxActiveBatchJobs": {
+      "value": "${MAX_ACTIVE_BATCH_JOBS=8}"
+    },
+    "speechBatchCreatePerMin": {
+      "value": "${SPEECH_BATCH_CREATE_PER_MIN=2}"
+    },
+    "podcastPublicAudio": {
+      "value": "${PODCAST_PUBLIC_AUDIO=false}"
+    },
+    "podcastReactions": {
+      "value": "${PODCAST_REACTIONS=false}"
+    },
+    "podcastListenerMode": {
+      "value": "${PODCAST_LISTENER_MODE=auto}"
+    },
+    "podcastListenerTimeoutSec": {
+      "value": "${PODCAST_LISTENER_TIMEOUT_SEC=900}"
+    },
     "publicDemoEnabled": {
       "value": "${PUBLIC_DEMO_ENABLED=false}"
     },

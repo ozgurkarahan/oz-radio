@@ -62,6 +62,33 @@ param dailyGenerationQuota string = '50'
 @description('Global queued/running render jobs')
 param maxPendingRenders string = '3'
 
+@description('Podcast compose steps (ffmpeg video compose) running at once on the replica')
+param maxConcurrentComposes string = '1'
+
+@description('Batch avatar synthesis jobs active at once on the replica (podcast talking turns + listener kits)')
+param maxActiveBatchJobs string = '8'
+
+@description('Batch avatar job creations per rolling minute (the Speech service allows about 2)')
+param speechBatchCreatePerMin string = '2'
+
+@description('Kill switch: anonymous visitors of published podcasts can stream the audio (15-min SAS) and read the transcript (true/false)')
+param podcastPublicAudio string = 'false'
+
+@description('Kill switch for podcast listener backchannels ("mm-hmm", "right") in new renders (true/false)')
+param podcastReactions string = 'false'
+
+@allowed([
+  'auto'
+  'idle_loop'
+  'procedural'
+  'still'
+])
+@description('Podcast listener rendering: auto (cached idle loop, else procedural sway), idle_loop, procedural or still')
+param podcastListenerMode string = 'auto'
+
+@description('Seconds a podcast render waits for the listener kits before using the fallback listener (minimum 30)')
+param podcastListenerTimeoutSec string = '900'
+
 @description('Kill switch for the anonymous narration-only live avatar demo (true/false)')
 param publicDemoEnabled string = 'false'
 
@@ -305,6 +332,13 @@ module containerapp 'modules/containerapp.bicep' = {
     maxVoiceSessionSeconds: maxVoiceSessionSeconds
     dailyGenerationQuota: dailyGenerationQuota
     maxPendingRenders: maxPendingRenders
+    maxConcurrentComposes: maxConcurrentComposes
+    maxActiveBatchJobs: maxActiveBatchJobs
+    speechBatchCreatePerMin: speechBatchCreatePerMin
+    podcastPublicAudio: podcastPublicAudio
+    podcastReactions: podcastReactions
+    podcastListenerMode: podcastListenerMode
+    podcastListenerTimeoutSec: podcastListenerTimeoutSec
     publicDemoEnabled: publicDemoEnabled
     demoMaxConcurrent: demoMaxConcurrent
     demoSessionSeconds: demoSessionSeconds

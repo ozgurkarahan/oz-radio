@@ -50,6 +50,12 @@ allowlist is forced empty, so nobody can act as admin.
 | `ENABLE_URL_INGEST` | `false` | Allow podcast URL ingestion. |
 | `MAX_VOICE_SESSIONS` / `MAX_VOICE_SESSION_SECONDS` | `2` / `900` | Live avatar limits. |
 | `DAILY_GENERATION_QUOTA` / `MAX_PENDING_RENDERS` | `50` / `3` | Cost guardrails. |
+| `MAX_CONCURRENT_COMPOSES` | `1` | Podcast compose steps (ffmpeg) running at once on the replica (2 vCPU); other renders wait for the slot. |
+| `MAX_ACTIVE_BATCH_JOBS` / `SPEECH_BATCH_CREATE_PER_MIN` | `8` / `2` | Batch avatar jobs active at once (podcast talking turns and listener kits) and job creations per rolling 60 s. The Speech batch avatar API accepts about 2 creations per minute (then HTTP 429 with `Retry-After`); raise the second value only if your resource has a higher quota. |
+| `PODCAST_PUBLIC_AUDIO` | `false` | Kill switch for public listening. `true`: anonymous visitors of **published** podcasts get the radio MP3 (15-minute SAS), cover art, host names and the full transcript, and audio-only episodes appear in the public library. `false`: video and thumbnail only; audio-only episodes are hidden (their detail returns 404). Subtitle files, SCORM packages and scripts are never public. See [`docs/podcast.md`](../docs/podcast.md#61-public-access). |
+| `PODCAST_REACTIONS` | `false` | Kill switch for listener backchannels ("mm-hmm", "right", …) in new renders, video and audio alike. A render's `reactions` option only takes effect when this is `true`. Existing episodes are not changed. |
+| `PODCAST_LISTENER_MODE` | `auto` | How the non-speaking host is drawn in video podcasts: `auto` / `idle_loop` (cached silent "listening" loop when available, else a procedural sway), `procedural` (sway on a still frame) or `still`. `procedural` and `still` skip listener-kit synthesis unless reactions need the clips. |
+| `PODCAST_LISTENER_TIMEOUT_SEC` | `900` | How long a video render waits for the listener kits (minimum 30). Past it the render uses the fallback listener and records the `listener_timeout` warning. Pre-build kits with `python -m maintenance.content warm-listeners`. |
 | `PUBLIC_DEMO_ENABLED` | `false` | Kill switch for the anonymous, narration-only live avatar demo (`/ws/voice/demo`). Only decks an admin marked *Live demo* can be narrated. See [`docs/live-demo.md`](../docs/live-demo.md). |
 | `DEMO_MAX_CONCURRENT` / `DEMO_SESSION_SECONDS` | `1` / `180` | Concurrent anonymous demo sessions (separate from `MAX_VOICE_SESSIONS`) and hard cap per session. |
 | `DEMO_DAILY_SESSIONS` / `DEMO_DAILY_SESSIONS_PER_IP` | `20` / `3` | Demo sessions per UTC day, globally and per client IP. Worst case avatar minutes/day = `DEMO_DAILY_SESSIONS` × `DEMO_SESSION_SECONDS` / 60 (60 min with defaults). |
@@ -79,6 +85,31 @@ are durable in Cosmos (`demo-quota-<day>`), survive restarts and scale-to-zero, 
 Per-IP counting uses the rightmost `X-Forwarded-For` entry, which is the one
 the Container Apps ingress appends; put no other proxy in front without
 revisiting that assumption.
+
+### Podcast radio and listener flags (staged rollout)
+
+Change a flag with `azd env set <NAME> <value>` then `azd provision`: the app
+gets a new revision with the same image. Recommended order when enabling the
+radio rendition, the live listener and public listening on an existing
+deployment:
+
+1. Deploy with `PODCAST_PUBLIC_AUDIO=false`, `MAX_PENDING_RENDERS=1` at first,
+   and `PODCAST_REACTIONS=true` once a sample render with reactions has been
+   reviewed. Check the logs.
+2. In the container (`az containerapp exec`), run
+   `python -m maintenance.content warm-listeners`, re-render the episodes
+   (`render-podcast all --force`), review them as an admin, then hide the
+   superseded items with `publish --podcast-id <old id> --off` (kept for rollback).
+3. Set `PODCAST_PUBLIC_AUDIO=true` and check the public library anonymously.
+4. Only then delete the superseded items with
+   `purge --podcast-id <old id> --record deleted.json`.
+
+Rollback before step 4: set `PODCAST_PUBLIC_AUDIO=false` (and, if needed,
+`PODCAST_REACTIONS=false` or `PODCAST_LISTENER_MODE=still`), republish the old
+items (`publish --podcast-id <old id>`) and hide the new ones (`--off`).
+`PODCAST_REACTIONS` and `PODCAST_LISTENER_MODE` only affect new renders:
+episodes already rendered keep their backchannels and listener. See
+[`docs/podcast.md`](../docs/podcast.md#44-operator-cli) for the CLI.
 
 ## Not provisioned
 

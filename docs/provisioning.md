@@ -208,6 +208,10 @@ Values live in `.azure/<env>/.env`. That folder is git-ignored and **holds the c
 | `ENABLE_URL_INGEST` | | `false` | Podcast URL ingestion |
 | `MAX_VOICE_SESSIONS` / `MAX_VOICE_SESSION_SECONDS` | | `2` / `900` | Admin live-avatar limits |
 | `DAILY_GENERATION_QUOTA` / `MAX_PENDING_RENDERS` | | `50` / `3` | Per-user daily renders, uploads and chats / global render queue |
+| `PODCAST_PUBLIC_AUDIO` | | `false` | Anonymous visitors can stream **published** podcast audio and read its transcript (*Listen*). See [podcast.md](podcast.md) |
+| `PODCAST_REACTIONS` | | `false` | Hard kill switch for listener backchannels ("mm-hmm", "right") in podcast video and radio |
+| `PODCAST_LISTENER_MODE` / `PODCAST_LISTENER_TIMEOUT_SEC` | | `auto` / `900` | Listener look (`auto`, `idle_loop`, `procedural`, `still`) / max wait for the cached listener kits |
+| `MAX_CONCURRENT_COMPOSES` / `MAX_ACTIVE_BATCH_JOBS` / `SPEECH_BATCH_CREATE_PER_MIN` | | `1` / `8` / `2` | ffmpeg video composes at a time / batch avatar jobs in flight / batch job creations per minute (Speech quota) |
 | `PUBLIC_DEMO_ENABLED` | | `false` | Kill switch for the anonymous narration-only demo ([live-demo.md](live-demo.md)) |
 | `DEMO_MAX_CONCURRENT` / `DEMO_SESSION_SECONDS` | | `1` / `180` | Demo concurrency / per-session cap |
 | `DEMO_DAILY_SESSIONS` / `DEMO_DAILY_SESSIONS_PER_IP` / `DEMO_DAILY_MINUTES` | | `20` / `3` / `60` | Demo daily caps (durable in Cosmos) |
@@ -419,7 +423,10 @@ Run this in a **real browser** (Edge/Chrome) on the network your users are on.
       answer appear, the avatar speaks the answer, and the **deck resumes** with the next slide.
 - [ ] Generate a short **video** (`/video`) **or podcast** (`/podcast`) from a small file. The job completes and plays from the library.
 - [ ] In a rendered **podcast** (layout with slides), both avatars are head-and-shoulders tiles **across the top** and the slide
-      below keeps its aspect ratio (**not stretched or cropped**; 4:3 slides are pillar-boxed).
+      below keeps its aspect ratio (**not stretched or cropped**; 4:3 slides are pillar-boxed). The listening host stays
+      **in full colour and visibly alive** (blinks, slight head motion) while the other speaks.
+- [ ] The podcast library shows **Watch** and **Listen** side by side; *Listen* plays the radio version with live captions.
+      An *Audio only* render (`/podcast`, format picker) completes in about a minute and appears with *Listen* only.
 - [ ] Publish an item. In a private window (anonymous) it's visible and plays. Unpublished items aren't listed.
 - [ ] No startup warnings in the logs: no `AUTH_MODE=disabled`, no `ALLOWED_OBJECT_IDS is empty`, no `AUTH_TENANT_ID is not set`:
       ```bash
