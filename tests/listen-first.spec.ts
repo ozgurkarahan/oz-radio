@@ -104,7 +104,7 @@ const decodesRadio = (page: Page) => page.evaluate(() => new Promise<boolean>((r
   probe.src = '/media/decode-probe.mp3';
   probe.load();
 }));
-const NO_DECODER = 'this browser build cannot decode the media fixtures (Playwright WebKit on Windows)';
+const NO_DECODER = 'mocked media cannot play in this browser build (Playwright WebKit on Windows loads media outside page.route)';
 
 test.describe('Phones lead with Listen', () => {
   test.use(PHONE);

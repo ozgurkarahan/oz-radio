@@ -1,5 +1,5 @@
 import { test, expect as baseExpect, type Locator, type Page } from '@playwright/test';
-import { POD_AUDIO, POD_VIDEO, mockApi, type MockApiOptions, type Role } from './support/mock-api';
+import { MOCKED_MEDIA_REASON, POD_AUDIO, POD_VIDEO, mockApi, mockedMediaUnavailable, type MockApiOptions, type Role } from './support/mock-api';
 
 /**
  * App-wide playback engine (src/playback): one persistent radio for the whole visit.
@@ -17,6 +17,8 @@ test.describe.configure({ timeout: 90_000 });
 const VIDEO_TITLE = 'Agents on air';
 const AUDIO_TITLE = 'Safety minute';
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true };
+/** Desktop-only behaviour (the scrim exists only around the desktop dialog), also under phone projects. */
+const DESKTOP = { viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false };
 
 async function open(page: Page, path = '/podcast/library', role: Role = 'visitor', opts: MockApiOptions = {}) {
   const errors: string[] = [];
@@ -68,43 +70,49 @@ async function box(locator: Locator) {
 }
 
 test.describe('Playback engine — Listen outlives the dialog', () => {
-  test('Back, the scrim, the minimise button and Escape keep the audio playing in the mini-player', async ({ page }) => {
-    const errors = await open(page);
-    await listen(page);
-    await tagAudio(page);
-    // While the sheet shows the player, the mini-player stays out of the way.
-    await expect(mini(page)).toBeHidden();
-    await expect(dialog(page).getByRole('button', { name: 'Minimise player' })).toBeVisible();
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
 
-    await page.goBack();
-    await expect(page).toHaveURL(/\/podcast\/library$/);
-    await expectMiniPlaying(page);
-    expect(await isTagged(page)).toBe(true);
-    await expect(mini(page).getByTestId('mini-player-status')).toHaveText(/is speaking|left$/);
+  test.describe('desktop dialog', () => {
+    test.use(DESKTOP);
 
-    const reopen = async () => {
-      await mini(page).getByRole('button', { name: `Open now playing: ${VIDEO_TITLE}` }).click();
-      await expect(page).toHaveURL(/\?episode=pod-2&mode=listen$/);
-      await expect(dialog(page).getByTestId('radio-player')).toHaveAttribute('data-state', 'playing');
+    test('Back, the scrim, the minimise button and Escape keep the audio playing in the mini-player', async ({ page }) => {
+      const errors = await open(page);
+      await listen(page);
+      await tagAudio(page);
+      // While the sheet shows the player, the mini-player stays out of the way.
       await expect(mini(page)).toBeHidden();
+      await expect(dialog(page).getByRole('button', { name: 'Minimise player' })).toBeVisible();
+
+      await page.goBack();
+      await expect(page).toHaveURL(/\/podcast\/library$/);
+      await expectMiniPlaying(page);
       expect(await isTagged(page)).toBe(true);
-    };
+      await expect(mini(page).getByTestId('mini-player-status')).toHaveText(/is speaking|left$/);
 
-    // Scrim (outside the centred panel).
-    await reopen();
-    await page.mouse.click(12, 360);
-    await expectMiniPlaying(page);
+      const reopen = async () => {
+        await mini(page).getByRole('button', { name: `Open now playing: ${VIDEO_TITLE}` }).click();
+        await expect(page).toHaveURL(/\?episode=pod-2&mode=listen$/);
+        await expect(dialog(page).getByTestId('radio-player')).toHaveAttribute('data-state', 'playing');
+        await expect(mini(page)).toBeHidden();
+        expect(await isTagged(page)).toBe(true);
+      };
 
-    await reopen();
-    await dialog(page).getByRole('button', { name: 'Minimise player' }).click();
-    await expectMiniPlaying(page);
+      // Scrim (outside the centred panel).
+      await reopen();
+      await page.mouse.click(12, 360);
+      await expectMiniPlaying(page);
 
-    await reopen();
-    await page.keyboard.press('Escape');
-    await expectMiniPlaying(page);
-    await expect(page).toHaveURL(/\/podcast\/library$/);
-    expect(await isTagged(page)).toBe(true);
-    expect(errors).toEqual([]);
+      await reopen();
+      await dialog(page).getByRole('button', { name: 'Minimise player' }).click();
+      await expectMiniPlaying(page);
+
+      await reopen();
+      await page.keyboard.press('Escape');
+      await expectMiniPlaying(page);
+      await expect(page).toHaveURL(/\/podcast\/library$/);
+      expect(await isTagged(page)).toBe(true);
+      expect(errors).toEqual([]);
+    });
   });
 
   test('the radio keeps playing across routes; the mini-player reopens the same player and returns', async ({ page }) => {
@@ -195,7 +203,9 @@ test.describe('Playback engine — Listen outlives the dialog', () => {
 });
 
 test.describe('Playback engine — one medium at a time', () => {
-  test('the Media Session follows the radio: claimed on play, released on takeover and on Stop', async ({ page }) => {
+  test('the Media Session follows the radio: claimed on play, released on takeover and on Stop', async ({ page, browserName }) => {
+    test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
+    test.skip(!(await page.evaluate(() => 'mediaSession' in navigator)), 'No Media Session API in this browser build');
     const errors = await open(page);
     await listen(page);
     const sessionTitle = () => page.evaluate(() => navigator.mediaSession.metadata?.title ?? null);
@@ -224,7 +234,8 @@ test.describe('Playback engine — one medium at a time', () => {
     expect(errors).toEqual([]);
   });
 
-  test('opening Watch on another episode pauses the radio; closing shows it paused', async ({ page }) => {
+  test('opening Watch on another episode pauses the radio; closing shows it paused', async ({ page, browserName }) => {
+    test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
     const errors = await open(page);
     await listen(page, AUDIO_TITLE);
     await page.keyboard.press('Escape');
@@ -245,7 +256,8 @@ test.describe('Playback engine — one medium at a time', () => {
     expect(errors).toEqual([]);
   });
 
-  test('another audible medium pauses the radio; a muted one does not', async ({ page }) => {
+  test('another audible medium pauses the radio; a muted one does not', async ({ page, browserName }) => {
+    test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
     const errors = await open(page);
     await listen(page);
     await page.keyboard.press('Escape');
@@ -270,7 +282,8 @@ test.describe('Playback engine — one medium at a time', () => {
     expect(errors).toEqual([]);
   });
 
-  test('the creator page keeps its own single radio player and pauses the app radio when it plays', async ({ page }) => {
+  test('the creator page keeps its own single radio player and pauses the app radio when it plays', async ({ page, browserName }) => {
+    test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
     const errors = await open(page, '/podcast/library', 'admin', { jobAdvance: 'poll' });
     await listen(page);
     await page.keyboard.press('Escape');
@@ -313,6 +326,8 @@ test.describe('Playback engine — one medium at a time', () => {
 });
 
 test.describe('Playback engine — one tap, continuity', () => {
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
+
   /** Counts GET /api/podcast/library/<id> requests. */
   function countDetails(page: Page, id: string) {
     const seen = { count: 0 };
@@ -395,6 +410,8 @@ test.describe('Playback engine — one tap, continuity', () => {
 });
 
 test.describe('Playback engine — accessibility', () => {
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
+
   test('captions stay visible but are not announced', async ({ page }) => {
     const errors = await open(page);
     const player = await listen(page);
@@ -406,12 +423,16 @@ test.describe('Playback engine — accessibility', () => {
 });
 
 test.describe('Playback engine — deep links', () => {
-  test('desktop: an episode link without a mode opens Watch', async ({ page }) => {
-    const errors = await open(page, `/podcast/library?episode=${POD_VIDEO.job_id}`);
-    await expect(dialog(page)).toHaveAttribute('data-mode', 'watch');
-    await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
-    await expect(radioAudio(page)).toHaveCount(0);
-    expect(errors).toEqual([]);
+  test.describe('desktop', () => {
+    test.use(DESKTOP);
+
+    test('an episode link without a mode opens Watch', async ({ page }) => {
+      const errors = await open(page, `/podcast/library?episode=${POD_VIDEO.job_id}`);
+      await expect(dialog(page)).toHaveAttribute('data-mode', 'watch');
+      await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
+      await expect(radioAudio(page)).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
   });
 
   test.describe('phone', () => {
@@ -441,7 +462,11 @@ test.describe('Playback engine — phone layout', () => {
     const player = await listen(page, VIDEO_TITLE, true);
     const d = dialog(page);
     const sheet = await box(d);
-    expect(sheet).toEqual({ x: 0, y: 0, width: 390, height: 844 });
+    // Sub-pixel layout (WebKit reports 843.984375): compare to the pixel.
+    expect(sheet.x).toBeCloseTo(0, 0);
+    expect(sheet.y).toBeCloseTo(0, 0);
+    expect(sheet.width).toBeCloseTo(390, 0);
+    expect(sheet.height).toBeCloseTo(844, 0);
     await expect(d.getByRole('button', { name: 'Minimise player' })).toBeVisible();
 
     const play = await box(player.getByTestId('radio-play'));

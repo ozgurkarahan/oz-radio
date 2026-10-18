@@ -10,7 +10,9 @@
   "scripts": {
     "test:ui": "playwright test --project=chromium",
     "test:ui:playlists": "playwright test tests/playlists.spec.ts --project=chromium",
-    "test:regression": "playwright test tests/regression.spec.ts tests/podcast-listen.spec.ts tests/podcast-studio.spec.ts --project=chromium"
+    "test:regression": "playwright test tests/regression.spec.ts tests/podcast-listen.spec.ts tests/podcast-studio.spec.ts tests/playback-engine.spec.ts tests/playback-resume.spec.ts tests/playback-continuity.spec.ts tests/mobile-platform.spec.ts tests/player-debug.spec.ts tests/listen-first.spec.ts tests/mobile-a11y.spec.ts --project=chromium",
+    "test:mobile": "playwright test --project=mobile-webkit --project=mobile-chromium",
+    "test:prod-smoke": "playwright test tests/prod-smoke.spec.ts --project=mobile-chromium --reporter=list"
   },
   "repository": {
     "type": "git",
@@ -25,6 +27,7 @@
   },
   "homepage": "https://github.com/ozgurkarahan/oz-radio#readme",
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.59.1",
     "@types/node": "^25.5.2"
   }

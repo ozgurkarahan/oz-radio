@@ -662,3 +662,14 @@ export const avatar = {
     }, itemId);
   },
 };
+
+/**
+ * Playwright's WebKit on Windows fetches <audio>/<video> media through Media Foundation, outside the
+ * page's network stack: `page.route` media mocks never apply there (the dev server answers with
+ * index.html), so specs that need mocked playback skip on that platform only. WebKit on macOS/Linux,
+ * Chromium and real devices still run them. Use at describe level:
+ * `test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON)`, or in a test with its `browserName`.
+ */
+export const MOCKED_MEDIA_REASON = 'Playwright WebKit on Windows loads media outside page.route: mocked playback cannot run';
+export const mockedMediaUnavailable = ({ browserName }: { browserName: string }): boolean =>
+  browserName === 'webkit' && process.platform === 'win32';

@@ -1,5 +1,5 @@
 import { test, expect as baseExpect, type Page, type Route } from '@playwright/test';
-import { RADIO_TRANSCRIPT, SHORT_TRANSCRIPT, mockApi } from './support/mock-api';
+import { MOCKED_MEDIA_REASON, RADIO_TRANSCRIPT, SHORT_TRANSCRIPT, mockApi, mockedMediaUnavailable } from './support/mock-api';
 
 /**
  * Continuity (src/playback/queue.ts): which episode plays next, and the engine's auto-next.
@@ -329,6 +329,7 @@ async function expectPlaying(page: Page, e: Episode) {
 
 test.describe('Continuity — auto-next on a phone', () => {
   test.use(PHONE);
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
 
   test('when an episode ends, the next of the series starts on the same <audio>, prepared at ≥ 75 %', async ({ page }) => {
     // The library prefetches its first rows on load: fail episode 2's details until episode 1
@@ -459,6 +460,7 @@ test.describe('Continuity — auto-next on a phone', () => {
 
 test.describe('Continuity — resilience (screen locked, flaky network)', () => {
   test.use(PHONE);
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
 
   const nextDetails = (e: Episode) => (j: JournalEntry) => j.kind === 'fetch' && j.path === `${LIBRARY_API}/${e.id}`;
   const endedOf = (journal: JournalEntry[], e: Episode) => journal.findIndex((j) => j.kind === 'ended' && j.src === srcOf(e));

@@ -1,5 +1,5 @@
 import { test, expect as baseExpect, type Page } from '@playwright/test';
-import { POD_VIDEO, mockApi, podcastLibraryItem } from './support/mock-api';
+import { MOCKED_MEDIA_REASON, POD_VIDEO, mockApi, mockedMediaUnavailable, podcastLibraryItem } from './support/mock-api';
 
 /**
  * Opt-in on-device playback log (`?debug=player`, demos/frontend/src/debug).
@@ -50,7 +50,8 @@ function expectNoSas(label: string, text: string) {
   for (const marker of SAS_MARKERS) expect(text, `${label} leaks "${marker}"`).not.toContain(marker);
 }
 
-test('off by default: no toggle, native play(), nothing recorded or loaded', async ({ page }) => {
+test('off by default: no toggle, native play(), nothing recorded or loaded', async ({ page, browserName }) => {
+  test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
   const errors = trackErrors(page);
   const debugAssets: string[] = [];
   page.on('request', (r) => { if (/PlayerDebugPanel|player-debug\.css/.test(r.url())) debugAssets.push(r.url()); });
@@ -68,7 +69,8 @@ test('off by default: no toggle, native play(), nothing recorded or loaded', asy
   expect(errors).toEqual([]);
 });
 
-test('?debug=player logs Listen playback without SAS query strings; Copy, Share and Clear work', async ({ page }) => {
+test('?debug=player logs Listen playback without SAS query strings; Copy, Share and Clear work', async ({ page, browserName }) => {
+  test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
   await page.addInitScript(() => {
     const w = window as unknown as Record<string, unknown>;
     const copied: string[] = [];
@@ -201,7 +203,8 @@ test('?debug=player logs Listen playback without SAS query strings; Copy, Share 
   expect(errors).toEqual([]);
 });
 
-test('the flag survives navigation and reloads; ?debug=off and Turn off clear it', async ({ page }) => {
+test('the flag survives navigation and reloads; ?debug=off and Turn off clear it', async ({ page, browserName }) => {
+  test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
   const errors = trackErrors(page);
   await mockApi(page, 'visitor', { podcastV2: true });
   await page.goto('/podcast/library?debug=player');
@@ -245,7 +248,8 @@ test('the flag survives navigation and reloads; ?debug=off and Turn off clear it
   expect(errors).toEqual([]);
 });
 
-test('registerMediaElement logs a detached element once per event, attached or not', async ({ page }) => {
+test('registerMediaElement logs a detached element once per event, attached or not', async ({ page, browserName }) => {
+  test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON);
   const errors = trackErrors(page);
   await mockApi(page, 'visitor', { podcastV2: true });
   await page.goto('/?debug=player');

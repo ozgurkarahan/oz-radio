@@ -9,6 +9,18 @@ import { defineConfig, devices } from '@playwright/test';
 // dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 /**
+ * The phone listening suites (persistent player, mini-player, Now Playing sheet, resume,
+ * auto-next, listen-first rows, phone platform, accessibility, ?debug=player) that the
+ * mobile-* projects run on emulated phones.
+ */
+const PHONE_LISTENING_SPECS = [
+  '**/playback-*.spec.ts',
+  '**/mobile-*.spec.ts',
+  '**/listen-first.spec.ts',
+  '**/player-debug.spec.ts',
+];
+
+/**
  * See https://playwright.dev/docs/test-configuration.
  */
 export default defineConfig({
@@ -47,15 +59,31 @@ export default defineConfig({
       use: { ...devices['Desktop Safari'] },
     },
 
-    /* Test against mobile viewports. */
-    // {
-    //   name: 'Mobile Chrome',
-    //   use: { ...devices['Pixel 5'] },
-    // },
-    // {
-    //   name: 'Mobile Safari',
-    //   use: { ...devices['iPhone 12'] },
-    // },
+    /*
+     * Phones (npm run test:mobile): the phone listening specs on an emulated iPhone (WebKit,
+     * Safari's engine) and Android phone (Chromium) — mobile user agent, device pixel ratio,
+     * meta viewport, touch and (hover: none) / (pointer: coarse).
+     * Emulation does NOT reproduce iOS autoplay rules (the one-tap user-activation budget),
+     * the lock screen / Control Center / Android media notification, background audio with
+     * the screen off, AirPods or call interruptions, or Safari's dynamic toolbars: real
+     * devices do (device script with ?debug=player).
+     * A spec's own test.use({ viewport, isMobile, hasTouch }) still wins over the device's
+     * (e.g. the desktop checks in mobile-platform.spec.ts); engine-specific checks skip
+     * themselves per browser with a reason (e.g. CDP safe-area emulation is Chromium only).
+     * On Windows, Playwright's WebKit decodes media with Media Foundation, which downloads media
+     * URLs itself, outside page.route(): the mocked /media fixtures cannot play there (README › Testing).
+     */
+    {
+      name: 'mobile-webkit',
+      testMatch: PHONE_LISTENING_SPECS,
+      use: { ...devices['iPhone 15'] },
+    },
+    {
+      name: 'mobile-chromium',
+      // + the read-only production smoke (npm run test:prod-smoke), skipped unless OZ_RADIO_PROD_SMOKE=1.
+      testMatch: [...PHONE_LISTENING_SPECS, '**/prod-smoke.spec.ts'],
+      use: { ...devices['Pixel 7'] },
+    },
 
     /* Test against branded browsers. */
     // {

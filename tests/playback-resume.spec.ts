@@ -1,5 +1,5 @@
 import { test, expect as baseExpect, type Locator, type Page } from '@playwright/test';
-import { POD_VIDEO, mockApi, podcastLibraryItem } from './support/mock-api';
+import { MOCKED_MEDIA_REASON, POD_VIDEO, mockApi, mockedMediaUnavailable, podcastLibraryItem } from './support/mock-api';
 
 /**
  * Resume points and the preferred speed (src/playback/progress.ts).
@@ -111,6 +111,7 @@ async function radioEvent(page: Page, type: RadioEvent['type'], n = 0): Promise<
 
 test.describe('Resume — on the phone', () => {
   test.use(PHONE);
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
 
   test('pause → reload → Listen resumes at the bookmark; a shared link opened cold lands there too', async ({ page }) => {
     const errors = await open(page);
@@ -249,6 +250,8 @@ test.describe('Resume — on the phone', () => {
 });
 
 test.describe('Resume — storage failures', () => {
+  test.skip(mockedMediaUnavailable, MOCKED_MEDIA_REASON);
+
   test('corrupted values: the page and the player work (from 0, at 1×) and the next save repairs the store', async ({ page }) => {
     await page.addInitScript(([progressKey, speedKey]) => {
       localStorage.setItem(progressKey, '{not json');
