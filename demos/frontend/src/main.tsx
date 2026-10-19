@@ -1,25 +1,17 @@
 import './styles/index.css';
-import React from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import LivePage from './pages/LivePage';
-import PodcastPage from './pages/PodcastPage';
-import PodcastLibraryPage from './pages/PodcastLibraryPage';
-import VideoPage from './pages/VideoPage';
-import VideoLibraryPage from './pages/VideoLibraryPage';
+import { BrowserRouter, Navigate, Routes, Route, matchPath, useLocation, useNavigationType } from 'react-router-dom';
+import { Headphones, Layers, Play } from 'lucide-react';
 import HomePage from './pages/HomePage';
-import SearchPage from './pages/SearchPage';
-import DecksPage from './pages/DecksPage';
-import DeckPresentPage from './pages/DeckPresentPage';
-import PlaylistsPage from './pages/PlaylistsPage';
-import PlaylistPlayerPage from './pages/PlaylistPlayerPage';
 import TopNav from './components/TopNav';
 import AuthToast from './components/AuthToast';
-import ErrorBoundary from './components/ErrorBoundary';
+import ErrorBoundary, { liveDemoHref } from './components/ErrorBoundary';
 import { AuthProvider, installAuthErrorInterceptor } from './services/auth';
 import { installPlayerDebug, isPlayerDebugEnabled } from './debug/playerDebug';
 import { PlaybackProvider } from './playback/PlaybackProvider';
 import { MiniPlayer } from './playback/MiniPlayer';
+import { ButtonLink, Spinner } from './ui';
 
 installAuthErrorInterceptor();
 
@@ -30,41 +22,153 @@ const PlayerDebugPanel = playerDebug
   ? React.lazy<React.ComponentType>(() => import('./debug/PlayerDebugPanel').catch(() => ({ default: () => null })))
   : null;
 
+const HOME_TITLE = 'Oz Radio — AI hosts explain slide decks';
+const NOT_FOUND_TITLE = 'Page not found · Oz Radio';
+
+type PageModule = { default: React.ComponentType };
+
+/** Every page except Home is its own chunk, downloaded the first time its route is visited. */
+function lazyRoute(path: string, title: string, load: () => Promise<PageModule>) {
+  return { path, title, load, Page: React.lazy(load) };
+}
+
+const ROUTES = [
+  lazyRoute('/live', 'Live presentation · Oz Radio', () => import('./pages/LivePage')),
+  lazyRoute('/decks', 'Decks · Oz Radio', () => import('./pages/DecksPage')),
+  lazyRoute('/decks/:deckId/present', 'Live demo · Oz Radio', () => import('./pages/DeckPresentPage')),
+  lazyRoute('/search', 'Search · Oz Radio', () => import('./pages/SearchPage')),
+  lazyRoute('/playlists', 'Playlists · Oz Radio', () => import('./pages/PlaylistsPage')),
+  lazyRoute('/playlists/:playlistId', 'Playlist · Oz Radio', () => import('./pages/PlaylistPlayerPage')),
+  lazyRoute('/podcast', 'Create a podcast · Oz Radio', () => import('./pages/PodcastPage')),
+  lazyRoute('/podcast/library', 'Podcasts · Oz Radio', () => import('./pages/PodcastLibraryPage')),
+  lazyRoute('/video', 'Create a video · Oz Radio', () => import('./pages/VideoPage')),
+  lazyRoute('/video/library', 'Videos · Oz Radio', () => import('./pages/VideoLibraryPage')),
+];
+
+/** The document title of a route: what a tab, the history and a screen reader announce after a navigation. */
+function titleFor(pathname: string): string {
+  if (pathname === '/' || pathname === '/index.html') return HOME_TITLE;
+  return ROUTES.find((route) => matchPath({ path: route.path, end: true }, pathname))?.title ?? NOT_FOUND_TITLE;
+}
+
+/**
+ * True while nothing has claimed focus: it is on the page itself or on nothing (the link that was clicked is gone), not on a
+ * control of the new page, not in a dialog or the mini-player, and no modal is open — an open modal owns focus, and a Listen
+ * sheet opened from the mini-player has to keep the mini-player as its opener, or closing the sheet would return focus to #main.
+ */
+function focusIsUnclaimed(): boolean {
+  if (document.querySelector('[aria-modal="true"]')) return false;
+  const active = document.activeElement;
+  if (!active || active === document.body || active === document.documentElement) return true;
+  if (document.getElementById('main')?.contains(active)) return false;
+  return !active.closest('[role="dialog"], [role="alertdialog"], .mini-player');
+}
+
 function RoutedContent({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
+  const navigationType = useNavigationType();
+  const shownPath = useRef(pathname);
+
+  // Layout effects run before every passive effect of the commit: a page that sets its own title (or refines it once its
+  // data is there) wins over this generic one, and it is never overwritten later.
+  useLayoutEffect(() => { document.title = titleFor(pathname); }, [pathname]);
+
+  // After a change of pathname (never the first load, never a search, hash or state-only navigation such as
+  // `?episode=…&mode=…`, not a redirect) focus goes to #main — but only once the new route has painted (two animation
+  // frames: every effect of the commit and the retries of a closing dialog have had their say) and only if nobody claimed it
+  // meanwhile. The next Tab then starts on the new page and a screen reader hears the change.
+  useEffect(() => {
+    if (shownPath.current === pathname) return undefined;
+    shownPath.current = pathname;
+    if (navigationType === 'REPLACE') return undefined;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (focusIsUnclaimed()) document.getElementById('main')?.focus({ preventScroll: true });
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+    // Only a change of pathname re-runs this; it reads the navigation type of the render that changed it.
+  }, [pathname]);
+
   return (
     <main id="main" tabIndex={-1} style={{ flex: 1, display: 'flex', flexDirection: 'column', outline: 'none' }}>
-      <ErrorBoundary resetKey={pathname}>{children}</ErrorBoundary>
+      <ErrorBoundary scope="page" resetKey={pathname}>
+        <React.Suspense fallback={<RouteFallback />}>{children}</React.Suspense>
+      </ErrorBoundary>
     </main>
   );
 }
 
+/** The main area while a page chunk arrives: same height as the page, so nothing collapses or jumps. */
+function RouteFallback() {
+  return (
+    <div className="route-fallback" data-testid="route-fallback">
+      <Spinner label="Loading…" />
+    </div>
+  );
+}
+
+function NotFound() {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    document.title = NOT_FOUND_TITLE;
+    heading.current?.focus();
+  }, []);
+  return (
+    <section className="container page not-found" aria-labelledby="not-found-title" data-testid="not-found">
+      <p className="eyebrow">Error 404</p>
+      <h1 id="not-found-title" ref={heading} tabIndex={-1} className="not-found__title">Page not found</h1>
+      <p className="lead">This link may be out of date or mistyped. Here is where you can go from here:</p>
+      <div className="next-steps">
+        <ButtonLink to="/">Home</ButtonLink>
+        <ButtonLink to={liveDemoHref()} variant="primary" icon={Play}>Start the live demo</ButtonLink>
+        <ButtonLink to="/podcast/library" icon={Headphones}>Listen to an episode</ButtonLink>
+        <ButtonLink to="/decks" icon={Layers}>Browse decks</ButtonLink>
+      </div>
+    </section>
+  );
+}
+
+/** Starts downloading a page's chunk when the visitor shows intent (hover, focus, touch), so the click finds it ready. */
+function prefetchPagesOnIntent() {
+  const requested = new Set<string>();
+  const onIntent = (event: Event) => {
+    const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    const href = link?.getAttribute('href');
+    if (!href || !href.startsWith('/') || href.startsWith('//')) return;
+    const pathname = href.split(/[?#]/)[0];
+    if (requested.has(pathname)) return;
+    requested.add(pathname);
+    ROUTES.find((route) => matchPath({ path: route.path, end: true }, pathname))?.load().catch(() => requested.delete(pathname));
+  };
+  for (const type of ['pointerover', 'touchstart', 'focusin']) {
+    document.addEventListener(type, onIntent, { capture: true, passive: true });
+  }
+}
+prefetchPagesOnIntent();
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <AuthProvider>
-    <BrowserRouter>
-      <PlaybackProvider>
-      <TopNav />
-      <AuthToast />
-      <RoutedContent>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/live" element={<LivePage />} />
-        <Route path="/decks" element={<DecksPage />} />
-        <Route path="/decks/:deckId/present" element={<DeckPresentPage />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/playlists" element={<PlaylistsPage />} />
-        <Route path="/playlists/:playlistId" element={<PlaylistPlayerPage />} />
-        <Route path="/podcast" element={<PodcastPage />} />
-        <Route path="/podcast/library" element={<PodcastLibraryPage />} />
-        <Route path="/video" element={<VideoPage />} />
-        <Route path="/video/library" element={<VideoLibraryPage />} />
-      </Routes>
-      </RoutedContent>
-      <MiniPlayer />
-      </PlaybackProvider>
-    </BrowserRouter>
-    </AuthProvider>
-    {PlayerDebugPanel && <React.Suspense fallback={null}><PlayerDebugPanel /></React.Suspense>}
+    {/* A crash in a provider, the masthead or the mini-player lands here instead of a blank page. */}
+    <ErrorBoundary scope="app">
+      <AuthProvider>
+        <BrowserRouter>
+          <PlaybackProvider>
+            <TopNav />
+            <AuthToast />
+            <RoutedContent>
+              <Routes>
+                <Route path="/" element={<HomePage />} />
+                {ROUTES.map(({ path, Page }) => <Route key={path} path={path} element={<Page />} />)}
+                <Route path="/index.html" element={<Navigate to="/" replace />} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </RoutedContent>
+            <MiniPlayer />
+          </PlaybackProvider>
+        </BrowserRouter>
+      </AuthProvider>
+      {PlayerDebugPanel && <React.Suspense fallback={null}><PlayerDebugPanel /></React.Suspense>}
+    </ErrorBoundary>
   </React.StrictMode>
 );

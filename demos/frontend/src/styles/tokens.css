@@ -3,6 +3,64 @@
  * Single source of truth for colour, type, space, shape and motion.
  * Components must reference these variables; never hard-code hex values.
  */
+
+/*
+ * Metric-matched fallback faces. While a web font loads (font-display: swap) text is set in a local font whose widths and
+ * vertical metrics are adjusted to the real font's, so the swap does not re-wrap lines or move the page (lab CLS ≤ 0.1).
+ * Measured in Chromium (Windows) against the shipped latin subsets (headings and sentences of the UI at the design sizes):
+ *   Newsreader      unitsPerEm 2000, hhea/typo 1470 / -530 / 0   → ascent 0.735 em, descent 0.265 em, line gap 0
+ *   Hanken Grotesk  unitsPerEm 1000, hhea/typo 1000 / -303 / 0   → ascent 1.000 em, descent 0.303 em, line gap 0
+ *   Newsreader ÷ Georgia width: 0.91 (18 px), 0.93 (30 px), 0.96 (44 px), 0.98 (56 px), 1.01 (72 px); italic ÷ Georgia Italic 0.83 … 0.91.
+ *     96 % (roman) and 89 % (italic) give the best title wrapping over 320–1600 px (the Home title and the page titles wrap
+ *     like the real font in 97 % of the viewport widths tried; 92 % or 100 % wrap differently far more often).
+ *   Hanken Grotesk ÷ Arial width: 1.002 (400), 1.007 (500) → 100.4 %; ÷ Arial Bold 0.941 (600), 0.945 (700) → 94.3 %.
+ * ascent/descent-override are relative to the size-adjusted size: override = metric ÷ size-adjust. The line gap is 0 in both.
+ * Without a local match (Android has neither Georgia nor Arial) the face is skipped and the stack falls through as before.
+ */
+@font-face {
+  font-family: 'Newsreader Fallback';
+  font-style: normal;
+  font-weight: 400;
+  src: local('Georgia'), local('Gelasio');
+  size-adjust: 96%;
+  ascent-override: 76.56%;
+  descent-override: 27.6%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Newsreader Fallback';
+  font-style: italic;
+  font-weight: 400;
+  src: local('Georgia Italic'), local('Georgia-Italic'), local('Gelasio Italic');
+  size-adjust: 89%;
+  ascent-override: 82.58%;
+  descent-override: 29.78%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Hanken Grotesk Fallback';
+  font-style: normal;
+  font-weight: 100 500;
+  src: local('Arial'), local('Helvetica'), local('Arimo'), local('Liberation Sans');
+  size-adjust: 100.4%;
+  ascent-override: 99.6%;
+  descent-override: 30.18%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Hanken Grotesk Fallback';
+  font-style: normal;
+  font-weight: 600 900;
+  src: local('Arial Bold'), local('Arial-BoldMT'), local('Helvetica Bold'), local('Helvetica-Bold'), local('Arimo Bold'), local('Liberation Sans Bold');
+  size-adjust: 94.3%;
+  ascent-override: 106.04%;
+  descent-override: 32.13%;
+  line-gap-override: 0%;
+}
+
 :root {
   /* Surfaces */
   --c-bg: #F6F1E8;          /* cream page */
@@ -36,8 +94,8 @@
   --c-scrim: rgba(28, 25, 23, 0.72);
 
   /* Type */
-  --font-display: 'Newsreader Variable', Newsreader, Georgia, 'Times New Roman', serif;
-  --font-ui: 'Hanken Grotesk Variable', 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Newsreader Variable', 'Newsreader Fallback', Newsreader, Georgia, 'Times New Roman', serif;
+  --font-ui: 'Hanken Grotesk Variable', 'Hanken Grotesk Fallback', 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 
   --fs-display: clamp(2.75rem, 1.6rem + 3.6vw, 5rem);    /* 44 → 80 */

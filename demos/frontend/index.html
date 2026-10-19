@@ -4,13 +4,111 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="description" content="Oz Radio — AI avatars that present, narrate and podcast your decks." />
+    <meta name="description" content="Oz Radio — AI hosts explain slide decks and discuss them as podcasts. Try a short live avatar demo, or listen to and watch published episodes." />
     <meta name="theme-color" content="#F6F1E8" />
-    <title>Oz Radio</title>
+    <title>Oz Radio — AI hosts explain slide decks</title>
+    <!--
+      Static shell: what a visitor sees from the first byte until React renders (cold start, slow network, failed bundle).
+      System fonts and literal colours only (the bundle's tokens and web fonts are not loaded yet). The shell reserves
+      the masthead's height, so React's first render replaces it without moving the page.
+    -->
+    <style>
+      html, body { margin: 0; background: #F6F1E8; }
+      .oz-shell { box-sizing: border-box; display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; background: #F6F1E8; color: #1C1917; font: 400 0.9375rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; -webkit-text-size-adjust: 100%; }
+      .oz-shell *, .oz-shell *::before, .oz-shell *::after { box-sizing: border-box; }
+      .oz-shell__bar { padding-top: env(safe-area-inset-top, 0px); border-bottom: 1px solid #1C1917; }
+      .oz-shell__in, .oz-shell__body { width: 100%; max-width: calc(1280px + 2 * clamp(16px, 5vw, 80px)); margin: 0 auto; padding-left: max(clamp(16px, 5vw, 80px), env(safe-area-inset-left, 0px)); padding-right: max(clamp(16px, 5vw, 80px), env(safe-area-inset-right, 0px)); }
+      .oz-shell__in { display: flex; align-items: center; min-height: 72px; }
+      .oz-shell__brand { margin: 0; font: 400 1.875rem/1 Georgia, "Times New Roman", serif; letter-spacing: -0.01em; white-space: nowrap; }
+      .oz-shell__brand em { font-style: italic; color: #A63D17; }
+      .oz-shell__body { flex: 1; padding-top: 48px; padding-bottom: 64px; }
+      .oz-shell__title { margin: 0; font: 400 clamp(2.25rem, 1.2rem + 3.4vw, 4rem)/1.04 Georgia, "Times New Roman", serif; letter-spacing: -0.02em; }
+      .oz-shell__lead { max-width: 680px; margin: 16px 0 0; font-size: 1.15625rem; line-height: 1.6; color: #3B3631; }
+      .oz-shell__wave { display: flex; align-items: center; gap: 3px; height: 20px; margin-top: 24px; }
+      .oz-shell__wave i { width: 3px; height: 100%; border-radius: 2px; background: #B8461E; transform-origin: center; animation: oz-shell-wave 1s ease-in-out infinite; }
+      .oz-shell__wave i:nth-child(2) { animation-delay: 0.15s; }
+      .oz-shell__wave i:nth-child(3) { animation-delay: 0.3s; }
+      .oz-shell__wave i:nth-child(4) { animation-delay: 0.45s; }
+      .oz-shell__wave i:nth-child(5) { animation-delay: 0.6s; }
+      .oz-shell__note, .oz-shell__fail { max-width: 680px; margin: 24px 0 0; }
+      .oz-shell__note { color: #6B645D; }
+      .oz-shell__fail { font: 400 clamp(1.5rem, 1rem + 1.6vw, 2rem)/1.2 Georgia, "Times New Roman", serif; }
+      .oz-shell__note:empty, .oz-shell__fail:empty { display: none; }
+      .oz-shell__reload { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; margin-top: 16px; padding: 0 20px; border: 1px solid #B8461E; border-radius: 999px; background: #B8461E; color: #FFFFFF; font: 600 0.9375rem/1 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; cursor: pointer; }
+      .oz-shell__reload:hover { background: #A63D17; border-color: #A63D17; }
+      .oz-shell__reload:focus-visible { outline: 2px solid #A63D17; outline-offset: 3px; }
+      .oz-shell__reload[hidden] { display: none; }
+      .oz-shell[data-state="failed"] .oz-shell__title, .oz-shell[data-state="failed"] .oz-shell__wave { display: none; }
+      @keyframes oz-shell-wave { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+      @media (max-width: 480px) { .oz-shell__brand { font-size: 1.625rem; } }
+      @media (prefers-reduced-motion: reduce) { .oz-shell__wave i { animation: none; transform: scaleY(0.6); } }
+    </style>
+    <noscript><style>.oz-shell__js { display: none; }</style></noscript>
+    <script>
+      // Guard for the time before React renders. React replaces the whole shell on its first render, so once
+      // #oz-shell is gone the app is running and every branch below does nothing.
+      (function () {
+        var SLOW_AFTER_MS = 10000;
+        var shell = function () {
+          var el = document.getElementById('oz-shell');
+          return el && el.isConnected ? el : null;
+        };
+        var show = function (state, text) {
+          var el = shell();
+          if (!el || el.getAttribute('data-state') === 'failed') return;
+          el.setAttribute('data-state', state);
+          var target = document.getElementById(state === 'failed' ? 'oz-shell-fail' : 'oz-shell-note');
+          if (target) target.textContent = text;
+          if (state === 'failed') document.getElementById('oz-shell-note').textContent = '';
+          var reload = document.getElementById('oz-shell-reload');
+          if (reload) reload.hidden = false;
+        };
+        var timer = setTimeout(function () { show('slow', 'This is taking longer than expected.'); }, SLOW_AFTER_MS);
+        var failed = function () {
+          clearTimeout(timer);
+          show('failed', "Oz Radio couldn't load. Check your connection.");
+        };
+        // A script that cannot be fetched fires `error` on its own element; it does not bubble, so listen while capturing.
+        // An uncaught error of our own code before the first render ends up here too.
+        window.addEventListener('error', function (event) {
+          var target = event.target;
+          if (target && target !== window) {
+            if (target.tagName === 'SCRIPT') failed();
+          } else if (event.filename && event.filename.indexOf(location.origin) === 0) {
+            failed();
+          }
+        }, true);
+        window.addEventListener('vite:preloadError', failed);
+        document.addEventListener('click', function (event) {
+          if (event.target && event.target.id === 'oz-shell-reload') location.reload();
+        });
+      })();
+    </script>
     <!--OZ_BOOT-->
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="oz-shell" class="oz-shell" data-state="loading">
+        <header class="oz-shell__bar">
+          <div class="oz-shell__in"><p class="oz-shell__brand">Oz <em>Radio</em></p></div>
+        </header>
+        <main class="oz-shell__body">
+          <div class="oz-shell__js">
+            <h1 class="oz-shell__title">Opening Oz Radio…</h1>
+            <p class="oz-shell__lead">AI hosts explain slide decks and discuss them as podcasts.</p>
+            <div class="oz-shell__wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+          <p id="oz-shell-note" class="oz-shell__note" role="status"></p>
+          <p id="oz-shell-fail" class="oz-shell__fail" role="alert"></p>
+          <button id="oz-shell-reload" class="oz-shell__reload" type="button" hidden>Reload</button>
+          <noscript>
+            <h1 class="oz-shell__title">Oz Radio</h1>
+            <p class="oz-shell__lead">Oz Radio is a site where AI hosts explain slide decks and discuss documents as podcasts. You can try a short live avatar demo, listen to published podcast episodes and watch narrated videos.</p>
+            <p class="oz-shell__lead"><strong>JavaScript is required.</strong> Turn on JavaScript in your browser, then reload this page.</p>
+          </noscript>
+        </main>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
