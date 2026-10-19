@@ -1,4 +1,5 @@
 import { test, expect as baseExpect, devices, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import {
   DEMO_QA_CONFIG, calls, mockApi, mockBoot, type ApiFailure, type BootMode, type MockApiOptions, type Role,
 } from './support/mock-api';
@@ -13,6 +14,7 @@ test.describe.configure({ timeout: 90_000 });
  *   [T1-03]  the live-demo CTA is final at the first paint (boot block) and never changes afterwards
  *   [T1-04] [T1-05] [T1-07a] [T1-07b]  failed ≠ empty: friendly cause, "Try again", the public actions stay
  *   [T1-10a…e] [T1-12] [T1-13]  gate pages: honest cause, public primary actions, "Owner sign-in" as a text link
+ *   [T1-13]  "Owner sign-in" opens the in-app explainer (/sign-in): the public actions first, then "Continue to Microsoft sign-in"
  *   [T1-11]  owner tools are grouped and marked "Sign-in required"
  *   [T3-01] [T3-03]  demo off / allowance spent → "Watch a recorded demo"; N left → status beside the unchanged CTA
  *   P1-3 / P2-4 / P2-5  the modal phone sheet, the sticky masthead and the Create disclosure (keyboard)
@@ -587,7 +589,7 @@ test.describe('gate pages', () => {
       await expect(notice).toContainText('Sign in to ');
       const signIn = notice.getByRole('link', { name: 'Owner sign-in' });
       await expect(signIn).toBeVisible();
-      await expect(signIn).toHaveAttribute('href', /^\/\.auth\/login\/aad\?post_login_redirect_uri=/);
+      await expect(signIn).toHaveAttribute('href', `/sign-in?next=${encodeURIComponent(route)}`);
       await expect(signIn).toHaveAccessibleDescription('For the site owner and invited users.');
       await expect(panel.getByRole('button', { name: /sign in/i })).toHaveCount(0);
     });
@@ -651,6 +653,7 @@ test.describe('gate pages', () => {
       const masthead = page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' });
       await expect(masthead, path).toBeVisible();
       await expect(masthead, path).toHaveAccessibleDescription('For the site owner and invited users.');
+      await expect(masthead, path).toHaveAttribute('href', `/sign-in?next=${encodeURIComponent(path)}`);
       await expect(masthead, path).not.toHaveClass(/btn/);
       await expect(page.getByRole('button', { name: /sign in/i }), path).toHaveCount(0);
       await expect(page.locator('.btn--primary', { hasText: /sign in/i }), path).toHaveCount(0);
@@ -667,6 +670,375 @@ test.describe('gate pages', () => {
     await admin.goto('/');
     await expect(admin.getByTestId('auth-controls').getByRole('link', { name: 'Sign out' })).toBeVisible();
     await expect(admin.getByRole('link', { name: /owner sign-in/i })).toHaveCount(0);
+  });
+});
+
+// ── [T1-13] the "Owner sign-in" explainer ───────────────────────────────────────────────────────
+// A visitor cannot sign in (the Entra app is single-tenant), so "Owner sign-in" opens /sign-in first: the public actions
+// come first there, and only "Continue to Microsoft sign-in" leaves for Easy Auth. Easy Auth is answered locally.
+const SIGN_IN_TITLE = 'Owner sign-in · Oz Radio';
+const SIGN_IN_LEAD = 'Signing in is only for the site owner and the people they have invited; everything public on Oz Radio works without an account.';
+const MICROSOFT_NOTE = "If your Microsoft account isn't invited, Microsoft shows an error page. Use your browser's Back button to return here.";
+const explainerUrl = (next: string) => `/sign-in?next=${encodeURIComponent(next)}`;
+const microsoftUrl = (next: string) => `/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(next)}`;
+
+/**
+ * Answers Easy Auth's endpoints with a page of their own and records the requests: nothing leaves the machine. Register it
+ * after `setup`: the boot-block route of `mockBoot` also matches a navigation to `/.auth/…`, and the later route wins.
+ */
+async function mockEasyAuth(page: Page) {
+  const requests: string[] = [];
+  await page.route('**/.auth/**', (route) => {
+    requests.push(route.request().url());
+    return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Microsoft sign-in (mock)</title><p>Microsoft</p>' });
+  });
+  return requests;
+}
+
+/** A visitor (or `opts.role`) on `path`, with the boot block and Easy Auth mocked. */
+async function visit(page: Page, path: string, opts: Opts = {}) {
+  const ctx = await setup(page, { boot: {}, ...opts });
+  const easyAuth = await mockEasyAuth(page);
+  await page.goto(path);
+  return { ...ctx, easyAuth };
+}
+
+/** The explainer is up for `next`: URL, document title, and — after a click inside the app — focus on its heading. */
+async function expectExplainer(page: Page, next: string) {
+  await expect(page).toHaveURL(explainerUrl(next));
+  await expect(page).toHaveTitle(SIGN_IN_TITLE);
+  const heading = page.getByRole('heading', { level: 1, name: 'Owner sign-in' });
+  await expect(heading).toBeVisible();
+  await expect(heading, 'a click inside the app puts focus on the heading').toBeFocused();
+}
+
+const markPageLoad = (page: Page) => page.evaluate(() => { (window as unknown as { __kept?: boolean }).__kept = true; });
+const stillSamePageLoad = (page: Page) => page.evaluate(() => (window as unknown as { __kept?: boolean }).__kept === true);
+const activeTestId = (page: Page) => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName ?? '');
+
+test.describe('[T1-13] the "Owner sign-in" explainer', () => {
+  test('[T1-13] the masthead, a gate and the 401 toast lead to the explainer inside the app, which remembers where the visitor was', async ({ page }) => {
+    const { easyAuth, errors } = await visit(page, '/decks?level=beginner');
+    const here = '/decks?level=beginner';
+    await expect(page.getByTestId('auth-gate')).toBeVisible();
+    await markPageLoad(page);
+
+    // the masthead
+    const masthead = page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' });
+    await expect(masthead).toHaveAttribute('href', explainerUrl(here));
+    await masthead.click();
+    await expectExplainer(page, here);
+    expect(await stillSamePageLoad(page), 'a route change, not a page load').toBe(true);
+
+    // "Back to where you were" returns to the page, with its search string
+    await page.getByTestId('sign-in-back').click();
+    await expect(page).toHaveURL(here);
+    await expect(page.getByTestId('auth-gate')).toBeVisible();
+
+    // a gate on the page
+    const gate = page.getByTestId('auth-gate').getByRole('link', { name: 'Owner sign-in' });
+    await expect(gate).toHaveAttribute('href', explainerUrl(here));
+    await gate.click();
+    await expectExplainer(page, here);
+    await page.goBack();
+    await expect(page).toHaveURL(here);
+
+    // the 401 banner
+    await page.evaluate(() => window.dispatchEvent(
+      new CustomEvent('app:auth-error', { detail: { status: 401, url: '/api/podcast/render' } }),
+    ));
+    const toast = page.getByTestId('auth-toast').getByRole('link', { name: 'Owner sign-in' });
+    await expect(toast).toHaveAttribute('href', explainerUrl(here));
+    await toast.click();
+    await expectExplainer(page, here);
+
+    expect(await stillSamePageLoad(page), 'three clicks, no page load').toBe(true);
+    expect(easyAuth, 'nothing went to Easy Auth: only "Continue to Microsoft sign-in" does').toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('[T1-13] on the explainer the masthead link keeps the `next` it has, never nesting a second one', async ({ page }) => {
+    await visit(page, explainerUrl('/decks?level=beginner'));
+    const masthead = page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' });
+    await expect(masthead).toHaveAttribute('href', explainerUrl('/decks?level=beginner'));
+    // without a usable `next` it points at Home: the explainer itself is never a destination
+    await page.goto('/sign-in');
+    await expect(page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' })).toHaveAttribute('href', explainerUrl('/'));
+    await expect(page.getByTestId('sign-in-back')).toHaveAttribute('href', '/');
+  });
+
+  test('[T1-13] it is a real link: a new tab opens the explainer, and the page the visitor was on stays put', async ({ page }) => {
+    const { easyAuth } = await visit(page, '/search');
+    // A new tab has none of this page's mocks: a failing /api/me reads as a visitor there.
+    await page.context().route('**/api/**', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"detail":"mock"}' }));
+    const link = page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' });
+    await expect(link).toHaveAttribute('href', explainerUrl('/search'));
+    const [tab] = await Promise.all([page.context().waitForEvent('page'), link.click({ button: 'middle' })]);
+    await tab.waitForURL(/\/sign-in\?next=%2Fsearch$/);
+    await expect(tab.getByRole('heading', { level: 1, name: 'Owner sign-in' })).toBeVisible();
+    await expect(tab).toHaveTitle(SIGN_IN_TITLE);
+    await tab.close();
+    expect(page.url()).toMatch(/\/search$/);
+    await expect(page.getByTestId('gated-panel')).toBeVisible();
+    expect(easyAuth).toEqual([]);
+  });
+
+  test('[T1-13] the explainer: who may sign in, the public actions first (in the page and in the tab order), the owner\'s own way in second', async ({ page }, testInfo) => {
+    await visit(page, '/search');
+    await page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' }).click();
+    await expectExplainer(page, '/search');
+    await page.screenshot({ path: testInfo.outputPath('sign-in-desktop.png') });
+    const root = page.getByTestId('sign-in-page');
+    await expect(root.getByRole('heading', { level: 1 })).toHaveText('Owner sign-in');
+    await expect(root.locator('.page-header__lead')).toHaveText(SIGN_IN_LEAD);
+
+    const demo = root.getByTestId('sign-in-demo-action');
+    await expect(demo).toHaveText('Start the live demo');
+    await expect(demo).toHaveAttribute('href', '/decks/deck-live/present');
+    const listen = root.getByTestId('sign-in-listen-action');
+    await expect(listen).toHaveText('Listen to an episode');
+    await expect(listen).toHaveAttribute('href', '/podcast/library');
+    const back = root.getByTestId('sign-in-back');
+    await expect(back).toHaveText('Back to where you were');
+    await expect(back).toHaveAttribute('href', '/search');
+    const owner = root.getByRole('region', { name: 'For the site owner' });
+    await expect(owner.getByRole('heading', { level: 2 })).toHaveText('For the site owner');
+    const next = owner.getByTestId('sign-in-continue');
+    await expect(next).toHaveText('Continue to Microsoft sign-in');
+    await expect(next).toHaveAttribute('href', microsoftUrl('/search'));
+    await expect(owner).toContainText(MICROSOFT_NOTE);
+
+    // the public actions are the primary ones; the owner's button is secondary; a visitor never meets a sign-in button
+    await expect(demo).toHaveClass(/btn--primary/);
+    await expect(next).not.toHaveClass(/btn--primary/);
+    await expect(root.getByRole('button', { name: /sign in/i })).toHaveCount(0);
+    await expect(root.getByRole('link', { name: /owner sign-in/i })).toHaveCount(0);
+    for (const name of ['Start the live demo', 'Listen to an episode']) await expect(page.getByRole('link', { name }), name).toHaveCount(1);
+
+    // DOM order, then the order on the screen, then the tab order: demo, listen, back, and only then Microsoft
+    const order = await root.evaluate((el) => {
+      const ids = ['sign-in-demo-action', 'sign-in-listen-action', 'sign-in-back', 'sign-in-continue'];
+      const nodes = ids.map((id) => el.querySelector(`[data-testid=${id}]`)!);
+      return {
+        dom: nodes.slice(1).every((node, i) => !!(nodes[i].compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        tops: nodes.map((node) => Math.round(node.getBoundingClientRect().top)),
+      };
+    });
+    expect(order.dom, 'DOM order').toBe(true);
+    expect([...order.tops].sort((a, b) => a - b), 'the same order on the screen').toEqual(order.tops);
+    const tabs: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      await page.keyboard.press('Tab');
+      tabs.push(await activeTestId(page));
+    }
+    expect(tabs, 'tab order from the heading').toEqual(['sign-in-demo-action', 'sign-in-listen-action', 'sign-in-back', 'sign-in-continue']);
+  });
+
+  test('[T1-13] when the live demo is off the explainer offers the recording instead, as Home does', async ({ page }) => {
+    await visit(page, explainerUrl('/'), { demoEnabled: false });
+    const demo = page.getByTestId('sign-in-demo-action');
+    await expect(demo).toHaveText('Watch a recorded demo');
+    await expect(demo).toHaveAttribute('href', '/video/library');
+    await expect(page.getByTestId('sign-in-listen-action')).toHaveAttribute('href', '/podcast/library');
+  });
+
+  test('[T1-13] the explainer is its own chunk: Home does not load it, and showing intent on the link fetches it, so the click finds it ready', async ({ page }) => {
+    const modules: string[] = [];
+    page.on('request', (request) => {
+      const match = new URL(request.url()).pathname.match(/\/src\/pages\/(\w+)\.tsx$/);
+      if (match) modules.push(match[1]);
+    });
+    await visit(page, '/');
+    await expect(page.getByTestId('home-try-live-demo')).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    expect(modules, 'Home does not download the explainer').not.toContain('SignInPage');
+    const requested = page.waitForRequest((request) => /\/src\/pages\/SignInPage\.tsx/.test(request.url()));
+    await page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' }).hover();
+    await requested;
+  });
+
+  test('[T1-13] a first load sets the title and does not move focus (only a click inside the app puts it on the heading)', async ({ page }) => {
+    await visit(page, explainerUrl('/decks'));
+    await expect(page.getByRole('heading', { level: 1, name: 'Owner sign-in' })).toBeVisible();
+    await expect(page).toHaveTitle(SIGN_IN_TITLE);
+    expect(await page.evaluate(() => document.activeElement === document.body), 'a first load never moves focus').toBe(true);
+  });
+
+  test('[T1-13] "Continue to Microsoft sign-in" is the only way out: a page load of Easy Auth, back to the page the visitor was on', async ({ page }) => {
+    const { easyAuth } = await visit(page, explainerUrl('/decks?x=1'));
+    await expect(page.getByTestId('sign-in-page')).toBeVisible();
+    expect(easyAuth, 'nothing goes to Easy Auth before the owner asks').toEqual([]);
+
+    await page.getByRole('link', { name: 'Continue to Microsoft sign-in' }).click();
+    await expect(page).toHaveTitle('Microsoft sign-in (mock)');
+    const url = new URL(page.url());
+    expect(url.pathname).toBe('/.auth/login/aad');
+    expect(url.search).toBe('?post_login_redirect_uri=%2Fdecks%3Fx%3D1');
+    expect(easyAuth).toHaveLength(1);
+
+    // the browser's Back returns to the explainer: it is the page the single-tenant error page leads back to
+    await page.goBack();
+    await expect(page).toHaveURL(explainerUrl('/decks?x=1'));
+    await expect(page.getByRole('heading', { level: 1, name: 'Owner sign-in' })).toBeVisible();
+  });
+
+  test('[T1-13] `next` is sanitised: one in-app path survives; an external address, a look-alike or the explainer itself becomes Home', async ({ page }) => {
+    const { easyAuth } = await visit(page, '/');
+    const long = (n: number) => `/${'a'.repeat(n - 1)}`;
+    const cases: [input: unknown, expected: string][] = [
+      ['/decks?x=1', '/decks?x=1'],
+      ['/podcast/library?episode=pod-2&mode=listen', '/podcast/library?episode=pod-2&mode=listen'],
+      ['/decks#top', '/decks#top'],
+      ['/', '/'],
+      [long(2048), long(2048)],
+      ['/%5Cevil.example', '/%5Cevil.example'],
+      ['//evil.example', '/'],
+      ['https://evil.example', '/'],
+      ['/\\evil.example', '/'],
+      ['\\/evil', '/'],
+      ['\\\\evil.example', '/'],
+      ['javascript:alert(1)', '/'],
+      ['data:text/html,x', '/'],
+      ['/\t/evil.example', '/'],
+      ['/\n/evil.example', '/'],
+      ['/\u0000decks', '/'],
+      [' /decks', '/'],
+      ['/de cks', '/'],
+      ['/sign-in', '/'],
+      ['/sign-in?next=/x', '/'],
+      ['/sign-in/', '/'],
+      ['/Sign-In#x', '/'],
+      ['/sign%2Din', '/'],
+      [long(3000), '/'],
+      [long(2049), '/'],
+      ['', '/'],
+      [null, '/'],
+      [42, '/'],
+    ];
+    // `new Function` keeps the dynamic import out of the spec's CommonJS transform: it runs in the page, on the dev server's module.
+    const results = await page.evaluate(async (inputs) => {
+      const load = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<Record<string, any>>;
+      const auth = await load('/src/services/auth.tsx');
+      return {
+        safe: inputs.map((input) => auth.safeNextPath(input)),
+        onExplainer: auth.ownerSignInPath({ pathname: '/sign-in', search: '?next=%2Fdecks%3Fx%3D1' }),
+        onExplainerHostile: auth.ownerSignInPath({ pathname: '/sign-in', search: '?next=%2F%2Fevil.example' }),
+        onPage: auth.ownerSignInPath({ pathname: '/decks', search: '?x=1' }),
+        microsoft: auth.microsoftSignInUrl('/decks?x=1'),
+        legacy: (() => { history.replaceState(null, '', '/podcast/library?episode=pod-2'); return auth.signInUrl(); })(),
+      };
+    }, cases.map(([input]) => input));
+    expect(results.safe).toEqual(cases.map(([, expected]) => expected));
+    expect(results.onExplainer).toBe(explainerUrl('/decks?x=1'));
+    expect(results.onExplainerHostile).toBe(explainerUrl('/'));
+    expect(results.onPage).toBe(explainerUrl('/decks?x=1'));
+    expect(results.microsoft).toBe(microsoftUrl('/decks?x=1'));
+    expect(results.legacy, 'signIn() keeps the URL it always built (the expired-session button)').toBe(microsoftUrl('/podcast/library?episode=pod-2'));
+
+    // and on the page itself: a hostile `next` never reaches a link
+    for (const hostile of ['//evil.example', 'https://evil.example', '/\\evil.example', '/sign-in?next=/x']) {
+      await page.goto(explainerUrl(hostile));
+      await expect(page.getByTestId('sign-in-page')).toBeVisible();
+      await expect(page.getByTestId('sign-in-back'), hostile).toHaveAttribute('href', '/');
+      await expect(page.getByTestId('sign-in-continue'), hostile).toHaveAttribute('href', microsoftUrl('/'));
+      await expect(page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' }), hostile).toHaveAttribute('href', explainerUrl('/'));
+    }
+    const hrefs = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]'), (a) => a.getAttribute('href')));
+    expect(hrefs.filter((href) => /evil/.test(href ?? ''))).toEqual([]);
+    expect(easyAuth).toEqual([]);
+  });
+
+  test('[T1-13] signed in: the owner is told so and sent back; with sign-in switched off or an account that is not enabled it says that instead', async ({ page }) => {
+    const { api } = await visit(page, explainerUrl('/decks'), { role: 'admin' });
+    const root = page.getByTestId('sign-in-page');
+    const lead = root.locator('.page-header__lead');
+
+    await test.step('the owner', async () => {
+      await expect(root.getByRole('heading', { level: 1 })).toHaveText('Owner sign-in');
+      await expect(lead).toHaveText("You're signed in.");
+      await expect(root.getByTestId('sign-in-back')).toHaveAttribute('href', '/decks');
+      await expect(root.getByTestId('sign-in-continue'), 'no second sign-in').toHaveCount(0);
+      await expect(page.getByRole('link', { name: /owner sign-in/i }), 'the masthead offers Sign out, not sign-in').toHaveCount(0);
+      await expect(page.getByTestId('auth-controls').getByRole('link', { name: 'Sign out' })).toBeVisible();
+    });
+
+    await test.step('sign-in switched off (local development)', async () => {
+      Object.assign(api.me, { auth_mode: 'disabled' });
+      await page.goto(explainerUrl('/decks'));
+      await expect(lead).toHaveText("Sign-in isn't used in this environment.");
+      await expect(root.getByTestId('sign-in-back')).toHaveAttribute('href', '/decks');
+      await expect(root.getByTestId('sign-in-continue')).toHaveCount(0);
+    });
+
+    await test.step('signed in, but the account is not enabled', async () => {
+      Object.assign(api.me, { auth_mode: 'easyauth', is_admin: false, name: 'Guest Visitor' });
+      await page.goto(explainerUrl('/decks'));
+      await expect(lead).toHaveText("You're signed in, but your account isn't enabled for this demo.");
+      await expect(root.getByTestId('sign-in-demo-action')).toHaveAttribute('href', '/decks/deck-live/present');
+      await expect(root.getByTestId('sign-in-listen-action')).toHaveAttribute('href', '/podcast/library');
+      await expect(root.getByTestId('sign-in-back')).toHaveAttribute('href', '/decks');
+      await expect(root.getByTestId('sign-in-continue'), 'already signed in').toHaveCount(0);
+      await expect(root.getByTestId('sign-in-sign-out')).toHaveAttribute('href', '/.auth/logout?post_logout_redirect_uri=/');
+    });
+  });
+
+  test('[T1-13] it fits a 360 px phone: nothing scrolls sideways and every action is inside the screen', async ({ page }) => {
+    const variants: [string, Opts][] = [
+      ['live demo', {}],
+      ['recorded demo', { demoEnabled: false }],
+      ['signed in, not enabled', { me: { authenticated: true, name: 'Guest Visitor' } }],
+    ];
+    for (const [name, opts] of variants) {
+      const phone = await page.context().newPage();
+      await phone.setViewportSize({ width: 360, height: 740 });
+      await visit(phone, explainerUrl('/decks?level=beginner'), opts);
+      await expect(phone.getByTestId('sign-in-demo-action'), name).toBeVisible();
+      const fit = await phone.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        outside: Array.from(document.querySelectorAll('main a[href], main button, main h1, main p'))
+          .map((el) => ({ text: (el.textContent ?? '').trim().slice(0, 40), right: el.getBoundingClientRect().right, left: el.getBoundingClientRect().left }))
+          .filter((box) => box.right > document.documentElement.clientWidth + 0.5 || box.left < -0.5),
+      }));
+      expect(fit.scrollWidth, `${name}: no horizontal scroll`).toBeLessThanOrEqual(fit.clientWidth);
+      expect(fit.outside, `${name}: nothing outside the screen`).toEqual([]);
+      await phone.close();
+    }
+  });
+
+  test('[T1-13] an expired session keeps its own "Sign in" button: straight to Microsoft, back to the same page', async ({ page }) => {
+    const { easyAuth } = await visit(page, '/decks?level=beginner', { role: 'admin' });
+    await expect(page.getByTestId('auth-controls').getByRole('link', { name: 'Sign out' })).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(
+      new CustomEvent('app:auth-error', { detail: { status: 401, url: '/api/podcast/render' } }),
+    ));
+    const toast = page.getByTestId('auth-toast');
+    await expect(toast).toContainText('Your session has expired. Please sign in again.');
+    expect(easyAuth).toEqual([]);
+    await toast.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveTitle('Microsoft sign-in (mock)');
+    const url = new URL(page.url());
+    expect(`${url.pathname}${url.search}`).toBe(microsoftUrl('/decks?level=beginner'));
+  });
+
+  test('[T1-13] no serious or critical axe violation (colour contrast included) in the explainer, for a visitor and for a guest', async ({ page }, testInfo) => {
+    const { api } = await visit(page, explainerUrl('/search'));
+    await expect(page.getByTestId('sign-in-demo-action')).toBeVisible();
+    for (const [name, me] of [['visitor', null], ['not enabled', { authenticated: true, name: 'Guest Visitor' }]] as const) {
+      if (me) {
+        Object.assign(api.me, me);
+        await page.goto(explainerUrl('/search'));
+        await expect(page.getByTestId('sign-in-sign-out')).toBeVisible();
+      }
+      const results = await new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+        .include('[data-testid=sign-in-page]')
+        .analyze();
+      await testInfo.attach(`axe-${name}.json`, { body: JSON.stringify(results.violations, null, 2), contentType: 'application/json' });
+      expect(results.passes.map((rule) => rule.id), `${name}: the colour contrast was measured`).toContain('color-contrast');
+      const blocking = results.violations.filter((v) => ['serious', 'critical'].includes(v.impact ?? ''));
+      expect(blocking.map((v) => `${v.id} [${v.impact}]`), `${name}: ${JSON.stringify(blocking.map((v) => v.nodes.map((n) => n.html.slice(0, 120))))}`).toEqual([]);
+    }
   });
 });
 
@@ -939,6 +1311,19 @@ test.describe('phone (Pixel 7 viewport)', () => {
     await expect(page.locator('main')).not.toHaveAttribute('inert', /.*/);
     await expect(page.getByTestId('home-try-live-demo')).toBeVisible();
   });
+
+  test('[T1-13] the explainer on a phone: a tap on "Owner sign-in" lands on the public actions, first on the screen, and nothing scrolls sideways', async ({ page }, testInfo) => {
+    await open(page, '/decks?level=beginner', { catalog: 'demo', boot: {} });
+    await page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' }).tap();
+    await expect(page).toHaveURL(explainerUrl('/decks?level=beginner'));
+    await expect(page.getByRole('heading', { level: 1, name: 'Owner sign-in' })).toBeFocused();
+    for (const id of ['sign-in-demo-action', 'sign-in-listen-action', 'sign-in-back']) {
+      await expect(page.getByTestId(id), `${id} is on the first screen`).toBeInViewport({ ratio: 1 });
+    }
+    await expect(page.getByTestId('sign-in-continue')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('sign-in-phone.png') }); // viewport only: fullPage drops touch emulation
+  });
 });
 
 // ── wiring sanity ───────────────────────────────────────────────────────────────────────────────
@@ -962,7 +1347,7 @@ test.describe('Home basics', () => {
       }
     });
     await setup(page, { catalog: 'demo', boot: {} });
-    for (const path of ['/', '/decks', '/search']) {
+    for (const path of ['/', '/decks', '/search', explainerUrl('/decks')]) {
       await page.goto(path);
       await page.waitForLoadState('networkidle');
     }

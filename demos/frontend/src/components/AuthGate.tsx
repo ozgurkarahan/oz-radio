@@ -1,9 +1,10 @@
 import React, { useEffect, useId, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import {
   ArrowRight, Ban, CircleCheck, CircleDashed, Clapperboard, Eye, EyeOff, Film, GraduationCap,
   Headphones, ListVideo, Lock, Mic, Play, Presentation, Radio, type LucideIcon,
 } from 'lucide-react';
-import { SIGN_OUT_URL, signIn, signInUrl, useAuth } from '../services/auth';
+import { SIGN_OUT_URL, ownerSignInPath, useAuth } from '../services/auth';
 import { type BootBlock, fetchBootFallback, pickDemoDeck, readBoot } from '../services/boot';
 import { demoDeckPath } from '../services/demoProtocol';
 import { Button, ButtonLink, Chip, buttonClass } from '../ui';
@@ -147,21 +148,23 @@ export function DemoActionLink({ entry, size = 'md', variant = 'primary', classN
 
 /**
  * "Owner sign-in": the text link that replaces the filled "Sign in" button — only the site owner and invited users can
- * sign in, so it never competes with the public actions. The hint is read aloud as its description.
+ * sign in, so it never competes with the public actions. The hint is read aloud as its description. It opens the in-app
+ * explainer (`/sign-in?next=…`), not Microsoft's page: a visitor whose account is not invited would meet a single-tenant
+ * error page with nothing but the browser's Back. A real `href`, so a new tab or a copied link works too.
  */
 export function OwnerSignInLink({ className, visibleHint = false }: { className?: string; visibleHint?: boolean }) {
   const hintId = useId();
+  const here = useLocation();
   return (
     <>
-      <a
-        href={signInUrl()}
-        onClick={(e) => { e.preventDefault(); signIn(); }}
+      <Link
+        to={ownerSignInPath(here)}
         className={className}
         title="For the site owner and invited users"
         aria-describedby={hintId}
       >
         Owner sign-in
-      </a>
+      </Link>
       <span id={hintId} className={visibleHint ? 'gate-notice__hint' : 'sr-only'}>{OWNER_SIGN_IN_HINT}</span>
     </>
   );

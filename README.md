@@ -31,7 +31,7 @@ Oz Radio bundles complementary features, each exposed as its own entry in the to
 | 🎬 **Video** | `/video` + `/video/library` | Automated pre-rendered narrated MP4 from a `.pptx` (slide-first pipeline + Batch Avatar). Outputs MP4 / MP3 / SRT / SCORM. [Design →](docs/video.md) |
 | 🎧 **Podcast** | `/podcast` + `/podcast/library` | Turn any document into a two-host podcast: a two-avatar video **plus** a dedicated radio mix, or audio only. Outputs MP4 + radio MP3 + transcript (+ SRT / SCORM); the library offers **Watch** and **Listen** side by side. [Design →](docs/podcast.md) |
 
-Owner tools sit together in one menu (*Owner tools* for visitors, *Create* for the owner) and are marked *Sign-in required* for anonymous visitors; visitors sign in only through the **Owner sign-in** text link.
+Owner tools sit together in one menu (*Owner tools* for visitors, *Create* for the owner) and are marked *Sign-in required* for anonymous visitors; visitors sign in only through the **Owner sign-in** text link, which opens a short explainer (`/sign-in`): the public actions first, then **Continue to Microsoft sign-in** for the site owner and invited users.
 
 ## ✨ Features
 

@@ -46,6 +46,7 @@ const ROUTES = [
   lazyRoute('/podcast/library', 'Podcasts · Oz Radio', () => import('./pages/PodcastLibraryPage')),
   lazyRoute('/video', 'Create a video · Oz Radio', () => import('./pages/VideoPage')),
   lazyRoute('/video/library', 'Videos · Oz Radio', () => import('./pages/VideoLibraryPage')),
+  lazyRoute('/sign-in', 'Owner sign-in · Oz Radio', () => import('./pages/SignInPage')),
 ];
 
 /** The document title of a route: what a tab, the history and a screen reader announce after a navigation. */

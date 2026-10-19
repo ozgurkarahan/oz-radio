@@ -198,6 +198,13 @@
   text-align: center;
 }
 
+/* On a touch screen the Close button is the full tap target (`--sp-3` from the top, `--tap` high): start below it. */
+@media (pointer: coarse) {
+  .library-player__problem {
+    padding-top: var(--sp-8);
+  }
+}
+
 .library-player__problem-alert {
   max-width: 36rem;
   text-align: left;

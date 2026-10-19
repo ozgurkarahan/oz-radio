@@ -48,6 +48,7 @@ const ROUTE_TEMPLATES: readonly (readonly [RegExp, string])[] = [
   [/^\/podcast\/library$/, '/podcast/library'],
   [/^\/video$/, '/video'],
   [/^\/video\/library$/, '/video/library'],
+  [/^\/sign-in$/, '/sign-in'],
 ];
 export const OTHER_ROUTE = 'other';
 export const TELEMETRY_ROUTES: readonly string[] = [...ROUTE_TEMPLATES.map(([, template]) => template), OTHER_ROUTE];

@@ -424,8 +424,9 @@
   margin-top: var(--sp-1);
 }
 
-/* Recording titles are long ("Watch … · Language · 3:12"): let them wrap instead of overflowing. */
-.demo-outcome__actions .btn {
+/* Recording titles are long ("Watch … · Language · 3:12"): let them wrap instead of overflowing the card. */
+.demo-outcome__actions .btn,
+.demo-done__actions .btn {
   height: auto;
   padding-block: 10px;
   max-width: 100%;
