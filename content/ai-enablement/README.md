@@ -120,33 +120,61 @@ video rendering, publish/unpublish, the staged switch below, purge).
 #### Re-render podcasts and videos (staged rollout)
 
 A re-render (for example after better scripts) is a **visibility change, not a
-replacement**: render the new items privately, check them, then switch visitors
-over. The old items are only unpublished, so a rollback is one command.
-**Never purge during the rollout.**
+replacement**: script each item and read the text first, render exactly that
+text privately, check the renders, then switch visitors over. The old items are
+only unpublished, so a rollback is one command. **Never purge during the
+rollout.**
 
 ```bash
 python -m maintenance.content inventory --json /tmp/before.json    # record the current items
 python -m maintenance.content warm-listeners                       # build the cached listener kits first
 
-# 1. Render privately: the new items are archived unpublished. One detached job at a time.
-python -m maintenance.content --background /tmp/podcasts.log render-podcast all --force --unpublished
-python -m maintenance.content logtail /tmp/podcasts.log -n 40      # progress; RENDERED podcast <name> job-... = new ids
-grep '^RENDERED ' /tmp/podcasts.log                                # just the new ids (ids only, never URLs)
-python -m maintenance.content --background /tmp/videos.log render-video all --force --unpublished
-python -m maintenance.content logtail /tmp/videos.log -n 40        # RENDERED video <name> sv-... = new ids
+# 1. Script each item and read it BEFORE paying for a render: one model call, no render,
+#    no library access, nothing published. Podcasts: beginner practitioner expert demo-fr;
+#    videos: demo-en demo-fr practitioner.
+python -m maintenance.content script-podcast expert --out /tmp/scripts/podcast-expert.json
+python -m maintenance.content script-video demo-en --out /tmp/scripts/video-demo-en.json
+#    Not good? Generate again to a new --out path (a script is never overwritten).
 
-# 2. Inspect every new item as an admin (admins see unpublished items with their published flag).
+# 2. Render exactly the reviewed text, privately. One detached job at a time.
+python -m maintenance.content --background /tmp/r-expert.log render-podcast expert --from-script /tmp/scripts/podcast-expert.json --force --unpublished
+python -m maintenance.content logtail /tmp/r-expert.log -n 40      # progress; RENDERED podcast expert job-... = the new id
+python -m maintenance.content --background /tmp/r-demo-en.log render-video demo-en --from-script /tmp/scripts/video-demo-en.json --force --unpublished
+grep '^RENDERED ' /tmp/r-demo-en.log                               # just the new id (ids only, never URLs)
 
-# 3. Plan, preview, switch.
+# 3. Inspect every new item as an admin (admins see unpublished items with their published flag).
+
+# 4. Plan, preview, switch.
 python -m maintenance.content plan-switch --out /tmp/switch.json   # published item -> its newer private re-render
 python -m maintenance.content switch --manifest /tmp/switch.json --dry-run
 python -m maintenance.content switch --manifest /tmp/switch.json   # per pair: publish new, then unpublish old
 
-# 4. If something is wrong: publish each old item again, then unpublish each new one.
+# 5. If something is wrong: publish each old item again, then unpublish each new one.
 python -m maintenance.content rollback --manifest /tmp/switch.json --dry-run
 python -m maintenance.content rollback --manifest /tmp/switch.json
 ```
 
+- **`script-podcast` / `script-video`** run the render's own ingest and script
+  generation (same spec inputs and prompts) and stop there: no render, no
+  library access, nothing published. They write the script as JSON (`kind`,
+  `key`, language, audience level, the model's `turns` or `narrations`,
+  `generated_at`, the deck's SHA-256 and a `content_sha256` of the lines), print
+  a compact transcript (`<turn> s<slide> <speaker> <text>`, where `[+id@n]` is a
+  listener reaction after sentence n; for a video `slide <n> (<style>): <text>`)
+  and a `SCRIPTED <kind> <name> <sha256> <file>` line. A script costs one model
+  call, so a plain exec is enough (`--background LOG` works too). They never
+  overwrite a file; `--dry-run` makes no model call and writes nothing. Under
+  `PYTHONIOENCODING=ascii:backslashreplace` non-ASCII characters print as `\xNN`
+  escapes (the file keeps the real text).
+- **`--from-script FILE`** (one episode, not `all`) renders exactly the turns or
+  narrations of that file and skips script generation; it combines with
+  `--unpublished`, `--force`, `--format` and `--background`. The file is
+  validated before any ingest, model call or library access: size cap, JSON,
+  exact schema, same kind and key, the spec's language, style and audience (and
+  voice), the deck unchanged since the script was written, the lines matching
+  `content_sha256` (a file edited after it was generated is refused: generate it
+  again) and the routers' limits. It prints
+  `USING_SCRIPT <kind> <name> <sha256> <file>`, the digest the review printed.
 - **`--unpublished`** archives the render with `published: false`, never
   publishes it and prints one `RENDERED <podcast|video> <name> <job id>` line
   as soon as it is archived (ids only, never URLs). Pass `--force` as well for
@@ -155,7 +183,9 @@ python -m maintenance.content rollback --manifest /tmp/switch.json
   `RENDERED` line and no item appears in the library. Run the renders one
   after the other, and when nobody renders from the studio (the CLI process
   does not share the server's render limits or batch-job pacing);
-  `--format audio` renders a radio-only episode.
+  `--format audio` renders a radio-only episode. Without the review step,
+  `render-podcast all --force --unpublished` (and `render-video all ...`)
+  generate and render every item in one go.
 - **`plan-switch`** pairs each published item with the single newer
   unpublished item of the same kind, title, format and language, and writes the
   manifest. Published items without a re-render are listed as `unmatched`.

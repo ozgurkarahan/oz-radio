@@ -6,16 +6,20 @@ render workers are replaced with in-memory fakes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
 import json
 import re
+import sys
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from maintenance import content as mc
 from services import avatar_registry
-from services.podcast_models import DialogueTurn
+from services.podcast_models import DialogueTurn, ReactionHint
 from services.video_models import SlideNarration
 
 CUSTOM = json.dumps([
@@ -220,7 +224,7 @@ def test_seed_dry_run_writes_nothing(env):
     assert report["playlist"]["action"] == "would create"
 
 
-def _fake_podcast_pipeline(monkeypatch, env, *, fail=False):
+def _fake_podcast_pipeline(monkeypatch, env, *, fail=False, turns=None):
     from routers import podcast as pr
     from services import podcast_ingest, podcast_script
     from services.podcast_models import Document, JobState
@@ -228,10 +232,16 @@ def _fake_podcast_pipeline(monkeypatch, env, *, fail=False):
     seen: dict = {}
 
     def fake_ingest_file(path, lo):
-        return Document(id=str(uuid.uuid4()), title="tmp", source_kind="pptx", slide_images=["a.png"])
+        seen["ingested"] = seen.get("ingested", 0) + 1
+        return Document(id=str(uuid.uuid4()), title="tmp", source_kind="pptx", slide_images=["a.png"],
+                        slide_titles=["One", "Two", "Three"])
 
     async def fake_script(cfg, doc, req):
         seen["req"] = req
+        if turns is not None:
+            for t in turns:
+                yield t.model_copy(deep=True)
+            return
         for i in range(4):
             yield DialogueTurn(idx=i, speaker="interviewer" if i % 2 == 0 else "expert", text=f"line {i}",
                                slide_idx=0)
@@ -239,6 +249,8 @@ def _fake_podcast_pipeline(monkeypatch, env, *, fail=False):
     async def fake_render(job_id, cfg):
         job = pr.JOBS[job_id]
         seen["job"] = job
+        seen["script"] = pr.SCRIPTS[job.script_id]
+        seen["turns"] = list(seen["script"].turns)
         seen["doc_title"] = pr.DOCUMENTS[pr.SCRIPTS[job.script_id].document_id].title
         if fail:
             job.state = JobState.failed
@@ -294,7 +306,7 @@ def test_render_podcast_requires_photo_avatars(env, monkeypatch):
         asyncio.run(mc.render_podcast(env.cfg, "beginner"))
 
 
-def _fake_video_pipeline(monkeypatch, env):
+def _fake_video_pipeline(monkeypatch, env, *, slides=1, reverse=False, narrations=None):
     from routers import video as vr
     from services import video_ingest, video_script
     from services.video_models import JobState, SlideRef, VideoDocument
@@ -302,16 +314,28 @@ def _fake_video_pipeline(monkeypatch, env):
     seen: dict = {}
 
     def fake_ingest(path, original_name=None):
-        return VideoDocument(doc_id=str(uuid.uuid4()), title=original_name.rsplit(".", 1)[0], source_kind="pptx",
-                             slides=[SlideRef(index=0, image_ref="a.png")])
+        seen["ingested"] = seen.get("ingested", 0) + 1
+        doc_id = str(uuid.uuid4())
+        return VideoDocument(doc_id=doc_id, title=original_name.rsplit(".", 1)[0], source_kind="pptx",
+                             slides=[SlideRef(index=i, image_ref=f"{doc_id}/slide-{i}.png", title=f"Slide {i}")
+                                     for i in range(slides)])
 
     async def fake_script(cfg, doc, req):
         seen["req"] = req
-        yield SlideNarration(slide_index=0, slide_image_ref="a.png", narration="hello", voice=req.voice)
+        if narrations is not None:
+            for n in narrations(doc, req):
+                yield n
+            return
+        for sl in (reversed(doc.slides) if reverse else doc.slides):
+            yield SlideNarration(slide_index=sl.index, slide_image_ref=sl.image_ref, title=sl.title,
+                                 narration=f"hello {sl.index}", voice=req.voice,
+                                 speaking_style="calm" if sl.index == 0 else None,
+                                 duration_hint_s=4.5 if sl.index == 0 else None)
 
     async def fake_render(job_id, cfg):
         job = vr.JOBS[job_id]
         seen["script"] = vr.SCRIPTS[job.doc_id]
+        seen["doc"] = vr.DOCUMENTS[job.doc_id]
         env.vlib.add(job_id, vr.DOCUMENTS[job.doc_id].title, published=False)
         job.archive_state = "published"
         job.state = JobState.done
@@ -1847,8 +1871,10 @@ def test_cli_plan_switch_then_switch_then_rollback(env, monkeypatch, tmp_path, c
 
 
 @pytest.mark.parametrize("cmd, flags", [
-    ("render-podcast", ["--unpublished", "--force", "--format"]),
-    ("render-video", ["--unpublished", "--force"]),
+    ("render-podcast", ["--unpublished", "--force", "--format", "--from-script"]),
+    ("render-video", ["--unpublished", "--force", "--from-script"]),
+    ("script-podcast", ["--out", "--dry-run"]),
+    ("script-video", ["--out", "--dry-run"]),
     ("publish", ["--podcast-id", "--video-id", "--off"]),
     ("unpublish", ["--podcast-id", "--video-id", "--dry-run"]),
     ("plan-switch", ["--out", "--dry-run"]),
@@ -1871,6 +1897,553 @@ def test_module_usage_documents_the_staged_commands():
     doc = mc.__doc__
     for token in ("--unpublished", "--video-id", "RENDERED <podcast|video> <name> <job id>",
                   "unpublish [--podcast-id", "plan-switch --out", "switch --manifest", "rollback --manifest",
-                  '"pairs"', "never a gap"):
+                  '"pairs"', "never a gap", "script-podcast", "script-video", "--from-script",
+                  "SCRIPTED <kind> <name> <sha256> <file>", "USING_SCRIPT <kind> <name> <sha256> <file>",
+                  "content_sha256"):
         assert token in doc, token
+
+
+# ---------------------------------------------------------------------------
+# Reviewed scripts: script-podcast / script-video, then render --from-script
+# ---------------------------------------------------------------------------
+TURN_TEXTS = (
+    "Welcome to the show — what is a “model”, café-style?",
+    "A model is a function learned from data. It predicts the next word.",
+    "And what is an agent?",
+    "An agent loops: it plans, calls a tool and looks at the result.",
+)
+SCRIPT_TURNS = [
+    DialogueTurn(idx=0, speaker="interviewer", text=TURN_TEXTS[0], slide_idx=0),
+    DialogueTurn(idx=1, speaker="expert", text=TURN_TEXTS[1], slide_idx=0,
+                 reaction=ReactionHint(after_sentence=1, reaction_id="ack")),
+    DialogueTurn(idx=2, speaker="interviewer", text=TURN_TEXTS[2], slide_idx=None),
+    DialogueTurn(idx=3, speaker="expert", text=TURN_TEXTS[3], slide_idx=2),
+]
+SCRIPT_LINES = [  # what the file holds for SCRIPT_TURNS, written out by hand
+    {"idx": 0, "speaker": "interviewer", "text": TURN_TEXTS[0], "slide_idx": 0, "reaction": None},
+    {"idx": 1, "speaker": "expert", "text": TURN_TEXTS[1], "slide_idx": 0,
+     "reaction": {"after_sentence": 1, "reaction_id": "ack"}},
+    {"idx": 2, "speaker": "interviewer", "text": TURN_TEXTS[2], "slide_idx": None, "reaction": None},
+    {"idx": 3, "speaker": "expert", "text": TURN_TEXTS[3], "slide_idx": 2, "reaction": None},
+]
+TURN_ROW = re.compile(r"^\s*(\d+) s(\d+|-)\s+(interviewer|expert)\s+(.*)$", re.MULTILINE)
+SLIDE_ROW = re.compile(r"^slide\s+(\d+)(?: \((.+?)\))?: (.*)$", re.MULTILINE)
+
+
+def _no_library(monkeypatch):
+    from routers import podcast as pr
+    from routers import video as vr
+
+    def boom(cfg):
+        raise AssertionError("a script must be produced without touching the library")
+
+    monkeypatch.setattr(pr, "_get_library", boom)
+    monkeypatch.setattr(vr, "_get_library", boom)
+
+
+def _no_render(monkeypatch):
+    from routers import podcast as pr
+    from routers import video as vr
+
+    async def boom(job_id, cfg):
+        raise AssertionError("a script must be produced without rendering")
+
+    monkeypatch.setattr(pr, "_render_job_body", boom)
+    monkeypatch.setattr(vr, "_render_job_body", boom)
+
+
+def _no_generation(monkeypatch):
+    from services import podcast_script, video_script
+
+    async def boom(cfg, doc, req):
+        raise AssertionError("the reviewed script must not be generated again")
+        yield  # makes this an async generator
+
+    monkeypatch.setattr(podcast_script, "generate_script_stream", boom)
+    monkeypatch.setattr(video_script, "generate_script_stream", boom)
+
+
+def _digest(lines):
+    return hashlib.sha256(json.dumps(lines, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _script_podcast(env, monkeypatch, tmp_path, name="expert", turns=SCRIPT_TURNS):
+    seen = _fake_podcast_pipeline(monkeypatch, env, turns=turns)
+    out = tmp_path / f"podcast-{name}.json"
+    return seen, out, asyncio.run(mc.script_podcast(env.cfg, name, out=out))
+
+
+def _script_video(env, monkeypatch, tmp_path, name="demo-en", **pipeline):
+    seen = _fake_video_pipeline(monkeypatch, env, **pipeline)
+    out = tmp_path / f"video-{name}.json"
+    return seen, out, asyncio.run(mc.script_video(env.cfg, name, out=out))
+
+
+def _tamper(path, mutate, *, rehash=False):
+    """Edit a script file; ``rehash`` keeps content_sha256 valid so a check other than the digest is hit."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    mutate(data)
+    if rehash:
+        data["content_sha256"] = _digest(data["turns" if data.get("kind") == "podcast" else "narrations"])
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+# --- script-podcast / script-video ------------------------------------------
+def test_script_podcast_writes_the_script_and_never_touches_the_library(env, monkeypatch, tmp_path, capsys):
+    seen = _fake_podcast_pipeline(monkeypatch, env, turns=SCRIPT_TURNS)
+    from routers import podcast as pr
+
+    stores = (dict(pr.SCRIPTS), dict(pr.JOBS), dict(pr.DOCUMENTS))
+    _no_library(monkeypatch)
+    _no_render(monkeypatch)
+    out = tmp_path / "scripts" / "podcast-expert.json"
+    result = asyncio.run(mc.script_podcast(env.cfg, "expert", out=out))
+    spec = mc.PODCASTS["expert"]
+    text = out.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert set(data) == mc.SCRIPT_KEYS["podcast"]
+    assert (data["schema_version"], data["kind"], data["key"], data["title"]) == (1, "podcast", "expert", spec.title)
+    assert (data["deck"], data["language"], data["style"], data["audience_level"]) == (
+        spec.deck, "en-US", "debate", "expert")
+    assert data["deck_sha256"] == hashlib.sha256(mc._deck_path(spec.deck).read_bytes()).hexdigest()
+    assert datetime.fromisoformat(data["generated_at"]).tzinfo is not None
+    assert data["turns"] == SCRIPT_LINES and "word_timings" not in text  # what the model wrote, nothing of the render
+    assert data["content_sha256"] == _digest(SCRIPT_LINES)
+    req = seen["req"]  # the very request the render sends
+    assert (req.language, req.style, req.audience_level, req.length, req.num_turns) == (
+        "en-US", "debate", "expert", "medium", 8)
+    assert (result["action"], result["turns"], result["content_sha256"]) == ("scripted", 4, data["content_sha256"])
+    assert (dict(pr.SCRIPTS), dict(pr.JOBS), dict(pr.DOCUMENTS)) == stores  # no router state either
+
+    stdout = capsys.readouterr().out
+    rows = TURN_ROW.findall(stdout)
+    assert [(int(i), s, who) for i, s, who, _ in rows] == [(0, "0", "interviewer"), (1, "0", "expert"),
+                                                          (2, "-", "interviewer"), (3, "2", "expert")]
+    assert [row[3] for row in rows] == [TURN_TEXTS[0], TURN_TEXTS[1] + "  [+ack@1]", TURN_TEXTS[2], TURN_TEXTS[3]]
+    words = sum(len(t.split()) for t in TURN_TEXTS)
+    assert f"== 4 turns, {words} words, slides referenced 2/3, sha256 {data['content_sha256'][:12]} ==" in stdout
+    assert f"== podcast expert: {spec.title} | en-US | debate | expert ==" in stdout
+    assert f"SCRIPTED podcast expert {data['content_sha256']} {out}" in stdout.splitlines()
+    assert "://" not in stdout and "sig=" not in stdout
+
+
+def test_script_video_writes_the_script_and_never_touches_the_library(env, monkeypatch, tmp_path, capsys):
+    seen = _fake_video_pipeline(monkeypatch, env, slides=3, reverse=True)  # the model answers out of order
+    _no_library(monkeypatch)
+    _no_render(monkeypatch)
+    out = tmp_path / "video-demo-fr.json"
+    result = asyncio.run(mc.script_video(env.cfg, "demo-fr", out=out))
+    spec = mc.VIDEOS["demo-fr"]
+    text = out.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert set(data) == mc.SCRIPT_KEYS["video"]
+    assert (data["kind"], data["key"], data["title"], data["deck"]) == ("video", "demo-fr", spec.title, spec.deck)
+    assert (data["language"], data["style"], data["audience_level"], data["voice"]) == (
+        "fr-FR", "explainer", "beginner", spec.voice)
+    assert data["deck_sha256"] == hashlib.sha256(mc._deck_path(spec.deck).read_bytes()).hexdigest()
+    narrations = [{"slide_index": 0, "narration": "hello 0", "speaking_style": "calm", "duration_hint_s": 4.5},
+                  {"slide_index": 1, "narration": "hello 1", "speaking_style": None, "duration_hint_s": None},
+                  {"slide_index": 2, "narration": "hello 2", "speaking_style": None, "duration_hint_s": None}]
+    assert data["narrations"] == narrations  # sorted by slide, as the render consumes them
+    assert data["content_sha256"] == _digest(narrations)
+    assert "slide_image_ref" not in text and "slide-0.png" not in text  # paths of this ingest are not stored
+    req = seen["req"]
+    assert (req.language, req.style, req.audience_level, req.voice) == ("fr-FR", "explainer", "beginner", spec.voice)
+    assert (result["action"], result["narrations"]) == ("scripted", 3)
+
+    stdout = capsys.readouterr().out
+    assert SLIDE_ROW.findall(stdout) == [("0", "calm", "hello 0"), ("1", "", "hello 1"), ("2", "", "hello 2")]
+    assert (f"== 3 narrations, 6 words, slides without narration: none, sha256 {data['content_sha256'][:12]} =="
+            in stdout)
+    assert f"SCRIPTED video demo-fr {data['content_sha256']} {out}" in stdout.splitlines()
+    assert "://" not in stdout
+
+
+def test_script_video_reports_slides_without_a_narration(env, monkeypatch, tmp_path, capsys):
+    def only_first(doc, req):
+        return [SlideNarration(slide_index=0, slide_image_ref="", narration="just one", voice=req.voice)]
+
+    _script_video(env, monkeypatch, tmp_path, slides=3, narrations=only_first)
+    assert "slides without narration: [1, 2]" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("kind, name", [("podcast", "beginner"), ("video", "demo-en")])
+def test_script_commands_refuse_to_overwrite_and_dry_run_calls_no_model(env, monkeypatch, tmp_path, kind, name):
+    seen = (_fake_podcast_pipeline if kind == "podcast" else _fake_video_pipeline)(monkeypatch, env)
+    run = mc.script_podcast if kind == "podcast" else mc.script_video
+    _no_library(monkeypatch)
+    _no_render(monkeypatch)
+    out = tmp_path / "s.json"
+    plan = asyncio.run(run(env.cfg, name, out=out, dry_run=True))
+    assert (plan["action"], plan["kind"], plan["name"], plan["out"]) == ("would generate", kind, name, str(out))
+    assert seen == {} and not out.exists()  # no ingest, no model call, nothing written
+
+    out.write_text("precious", encoding="utf-8")
+    for dry_run in (False, True):
+        with pytest.raises(mc.MaintenanceError, match="refusing to overwrite"):
+            asyncio.run(run(env.cfg, name, out=out, dry_run=dry_run))
+    assert out.read_text(encoding="utf-8") == "precious" and seen == {}
+    with pytest.raises(mc.MaintenanceError, match="refusing to overwrite"):  # also when it appears mid-run
+        mc._write_script(out, {"x": 1})
+    assert out.read_text(encoding="utf-8") == "precious"
+
+
+def test_a_failed_generation_writes_no_script(env, monkeypatch, tmp_path):
+    from services import podcast_script
+
+    _fake_podcast_pipeline(monkeypatch, env)
+
+    async def boom(cfg, doc, req):
+        raise RuntimeError("model unavailable")
+        yield
+
+    monkeypatch.setattr(podcast_script, "generate_script_stream", boom)
+    out = tmp_path / "s.json"
+    with pytest.raises(RuntimeError, match="model unavailable"):
+        asyncio.run(mc.script_podcast(env.cfg, "beginner", out=out))
+    assert not out.exists() and not list(tmp_path.glob("*.json")) and not list(tmp_path.glob("*.tmp"))
+
+
+def _line(i, **extra):
+    return DialogueTurn(idx=i, speaker="interviewer" if i % 2 == 0 else "expert", text=f"line {i}", **extra)
+
+
+@pytest.mark.parametrize("turns, match", [
+    ([_line(0), DialogueTurn(idx=1, speaker="expert", text="  ")], "non-empty text"),
+    ([_line(0), _line(0)], "appears twice"),
+    ([_line(i) for i in range(41)], "Too many turns"),
+    ([_line(0), DialogueTurn(idx=1, speaker="expert", text="x" * 3001)], "too long"),
+], ids=["empty line", "duplicate idx", "too many turns", "line too long"])
+def test_script_podcast_refuses_a_script_the_render_would_refuse(env, monkeypatch, tmp_path, turns, match):
+    _fake_podcast_pipeline(monkeypatch, env, turns=turns)
+    out = tmp_path / "s.json"
+    with pytest.raises(mc.MaintenanceError, match=match):
+        asyncio.run(mc.script_podcast(env.cfg, "beginner", out=out))
+    assert not out.exists()
+
+
+def test_script_video_refuses_a_script_the_render_would_refuse(env, monkeypatch, tmp_path):
+    def narrations(lines):
+        return lambda doc, req: [SlideNarration(slide_index=i, slide_image_ref="", narration=text, voice=req.voice)
+                                 for i, text in lines]
+
+    out = tmp_path / "s.json"
+    for lines, slides, match in (([(0, "ok"), (1, "x" * 3001)], 2, "narration too long"),
+                                 ([(i, "ok") for i in range(61)], 61, "too many slides"),
+                                 ([(0, "ok"), (5, "no such slide")], 3, "the deck has no slide"),
+                                 ([(0, "ok"), (1, "  ")], 2, "non-empty text"),
+                                 ([(0, "ok"), (0, "again")], 2, "appears twice")):
+        _fake_video_pipeline(monkeypatch, env, slides=slides, narrations=narrations(lines))
+        with pytest.raises(mc.MaintenanceError, match=match):
+            asyncio.run(mc.script_video(env.cfg, "demo-en", out=out))
+        assert not out.exists()
+
+
+def test_output_survives_an_ascii_only_console(env, monkeypatch, tmp_path):
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="ascii", errors="strict", write_through=True))
+    mc._out("café – “déjà vu” · fin")
+    mc._print({"title": "AI, demystified · Beginner"})
+    text = raw.getvalue().decode("ascii")
+    assert "caf\\xe9 \\u2013 \\u201cd\\xe9j\\xe0 vu\\u201d \\xb7 fin" in text
+    assert "AI, demystified \\xb7 Beginner" in text
+
+    # End to end: the transcript prints (as escapes) while the file keeps the real characters.
+    _fake_podcast_pipeline(monkeypatch, env, turns=SCRIPT_TURNS)
+    monkeypatch.setattr(mc, "_cfg", lambda: env.cfg)
+    raw.seek(0)
+    raw.truncate()
+    out = tmp_path / "s.json"
+    assert mc.main(["script-podcast", "expert", "--out", str(out)]) == 0
+    printed = raw.getvalue().decode("ascii")
+    assert "welcome to the show".lower() in printed.lower() and "\\u201cmodel\\u201d" in printed
+    assert "“model”" in out.read_text(encoding="utf-8")
+    raw.seek(0)
+    raw.truncate()
+    assert mc.main(["script-podcast", "beginner", "--out", str(tmp_path / "dry.json"), "--dry-run"]) == 0
+    assert '"action": "would generate"' in raw.getvalue().decode("ascii") and not (tmp_path / "dry.json").exists()
+
+
+# --- render --from-script ---------------------------------------------------
+def test_render_podcast_from_script_renders_exactly_the_reviewed_turns(env, monkeypatch, tmp_path, capsys):
+    seen, out, scripted = _script_podcast(env, monkeypatch, tmp_path)
+    digest = scripted["content_sha256"]
+    reviewed = capsys.readouterr().out
+    assert f"SCRIPTED podcast expert {digest} {out}" in reviewed.splitlines()
+    before = out.read_bytes()
+    seen.clear()
+    _no_generation(monkeypatch)  # the model must not be asked again
+    result = asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, force=True, unpublished=True))
+    stdout = capsys.readouterr().out
+    spec = mc.PODCASTS["expert"]
+    assert result["action"] == "rendered" and result["published"] is False and seen["ingested"] == 1
+    assert result["script"] == {"file": str(out), "turns": 4, "content_sha256": digest,
+                                "generated_at": scripted["generated_at"]}
+    assert seen["turns"] == SCRIPT_TURNS  # the render worker got the reviewed turns, unchanged
+    assert [t.model_dump(exclude={"word_timings"}) for t in seen["turns"]] == SCRIPT_LINES
+    script = seen["script"]
+    assert (script.language, script.style, script.length, script.audience_level) == ("en-US", "debate", "medium",
+                                                                                        "expert")
+    assert seen["doc_title"] == spec.title and seen["job"].format == "video"
+    assert f"USING_SCRIPT podcast expert {digest} {out}" in stdout.splitlines()  # the digest the review saw
+    assert RENDERED_LINE.findall(stdout) == [("podcast", "expert", result["job_id"])]
+    assert env.plib.items[result["job_id"]]["published"] is False and out.read_bytes() == before
+
+
+def test_render_podcast_from_script_without_unpublished_publishes_and_audio_still_works(env, monkeypatch, tmp_path):
+    seen, out, _ = _script_podcast(env, monkeypatch, tmp_path)
+    seen.clear()
+    _no_generation(monkeypatch)
+    result = asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, fmt="audio"))
+    assert result["published"] is True and env.plib.items[result["job_id"]]["published"] is True
+    assert seen["job"].format == "audio" and seen["turns"] == SCRIPT_TURNS
+
+
+def test_render_video_from_script_renders_exactly_the_reviewed_narrations(env, monkeypatch, tmp_path, capsys):
+    seen, out, scripted = _script_video(env, monkeypatch, tmp_path, slides=3, reverse=True)
+    generation_doc = seen["req"]  # noqa: F841 - the script was generated from a different ingest
+    digest = scripted["content_sha256"]
+    capsys.readouterr()
+    seen.clear()
+    _no_generation(monkeypatch)
+    result = asyncio.run(mc.render_video(env.cfg, "demo-en", from_script=out, force=True, unpublished=True))
+    stdout = capsys.readouterr().out
+    spec = mc.VIDEOS["demo-en"]
+    expected = json.loads(out.read_text(encoding="utf-8"))["narrations"]
+    script, doc = seen["script"], seen["doc"]
+    assert result["action"] == "rendered" and result["published"] is False and seen["ingested"] == 1
+    assert result["script"]["content_sha256"] == digest and result["script"]["narrations"] == 3
+    assert [(n.slide_index, n.narration, n.speaking_style, n.duration_hint_s) for n in script.narrations] == [
+        (e["slide_index"], e["narration"], e["speaking_style"], e["duration_hint_s"]) for e in expected]
+    # Slide images and titles come from the deck ingested for THIS render, not from the script.
+    assert [n.slide_image_ref for n in script.narrations] == [s.image_ref for s in doc.slides]
+    assert all(n.slide_image_ref.startswith(doc.doc_id) for n in script.narrations)
+    assert [n.title for n in script.narrations] == ["Slide 0", "Slide 1", "Slide 2"]
+    assert all(n.voice == spec.voice for n in script.narrations) and script.voice == spec.voice
+    assert (script.language, script.style, script.audience_level) == ("en-US", "explainer", "beginner")
+    assert f"USING_SCRIPT video demo-en {digest} {out}" in stdout.splitlines()
+    assert RENDERED_LINE.findall(stdout) == [("video", "demo-en", result["job_id"])]
+    assert env.vlib.items[result["job_id"]]["published"] is False
+
+
+def test_render_from_script_dry_run_validates_without_any_work(env, monkeypatch, tmp_path, capsys):
+    seen, out, scripted = _script_podcast(env, monkeypatch, tmp_path)
+    capsys.readouterr()
+    seen.clear()
+    plan = asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, dry_run=True, force=True))
+    assert plan["action"] == "would render" and plan["script"]["content_sha256"] == scripted["content_sha256"]
+    assert seen == {} and "USING_SCRIPT" not in capsys.readouterr().out
+    _tamper(out, lambda d: d["turns"][0].update(text="edited"))
+    with pytest.raises(mc.MaintenanceError, match="edited after it was generated"):
+        asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, dry_run=True))
+
+
+def test_render_from_script_leaves_an_existing_item_alone_without_force(env, monkeypatch, tmp_path, capsys):
+    seen, out, _ = _script_podcast(env, monkeypatch, tmp_path)
+    env.plib.add("job-0000aa01", mc.PODCASTS["expert"].title, published=True, format="video")
+    capsys.readouterr()
+    seen.clear()
+    plan = asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, unpublished=True))
+    assert plan["action"] == "exists" and seen == {} and len(env.plib.items) == 1
+    assert "USING_SCRIPT" not in capsys.readouterr().out
+
+
+def test_a_reformatted_script_file_is_still_the_same_script(env, monkeypatch, tmp_path):
+    seen, out, scripted = _script_podcast(env, monkeypatch, tmp_path)
+    data = json.loads(out.read_text(encoding="utf-8"))
+    out.write_bytes(b"\xef\xbb\xbf" + json.dumps(data, sort_keys=True, ensure_ascii=True).encode("utf-8"))
+    seen.clear()
+    plan = asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, dry_run=True, force=True))
+    assert plan["script"]["content_sha256"] == scripted["content_sha256"]  # digest = content, not bytes
+
+
+def test_render_refuses_a_script_made_from_another_deck(env, monkeypatch, tmp_path):
+    seen, out, _ = _script_podcast(env, monkeypatch, tmp_path)
+    decks = tmp_path / "decks"
+    decks.mkdir()
+    (decks / mc.PODCASTS["expert"].deck).write_bytes(mc._deck_path(mc.PODCASTS["expert"].deck).read_bytes() + b"x")
+    seen.clear()
+    with pytest.raises(mc.MaintenanceError, match="the deck changed since this script was generated"):
+        asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, deck_dir=decks, force=True))
+    assert seen == {}
+
+
+BAD_PODCAST_SCRIPTS = {  # name: (edit, keep content_sha256 valid, expected problem)
+    "a video script": (lambda d: d.update(kind="video"), False, "kind is 'video', expected 'podcast'"),
+    "another episode": (lambda d: d.update(key="beginner"), False, "key is 'beginner', expected 'expert'"),
+    "other schema version": (lambda d: d.update(schema_version=2), False, "schema_version is 2"),
+    "extra top-level key": (lambda d: d.update(voice="x"), False, "unexpected keys"),
+    "missing top-level key": (lambda d: d.pop("generated_at"), False, "missing keys"),
+    "bad timestamp": (lambda d: d.update(generated_at="yesterday"), False, "ISO timestamp"),
+    "other language": (lambda d: d.update(language="fr-FR"), False, "language is 'fr-FR'"),
+    "other audience": (lambda d: d.update(audience_level="beginner"), False, "audience_level is 'beginner'"),
+    "other style": (lambda d: d.update(style="casual"), False, "style is 'casual'"),
+    "other deck": (lambda d: d.update(deck="other.pptx"), False, "deck is 'other.pptx'"),
+    "deck changed": (lambda d: d.update(deck_sha256="0" * 64), False, "the deck changed since"),
+    "turns is not a list": (lambda d: d.update(turns={"idx": 0}), False, "turns must be a non-empty list"),
+    "no turns": (lambda d: d.update(turns=[]), False, "turns must be a non-empty list"),
+    "edited text": (lambda d: d["turns"][0].update(text=d["turns"][0]["text"] + " (edited)"), False,
+                    "edited after it was generated"),
+    "reordered turns": (lambda d: d["turns"].reverse(), False, "edited after it was generated"),
+    "unknown turn key": (lambda d: d["turns"][0].update(emotion="happy"), True, "exactly the keys"),
+    "missing turn key": (lambda d: d["turns"][0].pop("slide_idx"), True, "exactly the keys"),
+    "word timings smuggled in": (lambda d: d["turns"][0].update(word_timings=[]), True, "exactly the keys"),
+    "unknown speaker": (lambda d: d["turns"][1].update(speaker="host"), True, "speaker must be"),
+    "blank text": (lambda d: d["turns"][0].update(text="  "), True, "non-empty text"),
+    "duplicate idx": (lambda d: d["turns"][1].update(idx=0), True, "appears twice"),
+    "boolean idx": (lambda d: d["turns"][0].update(idx=True), True, "non-negative integer"),
+    "negative idx": (lambda d: d["turns"][0].update(idx=-1), True, "non-negative integer"),
+    "text slide index": (lambda d: d["turns"][0].update(slide_idx="3"), True, "slide_idx must be"),
+    "reaction at sentence 0": (lambda d: d["turns"][1].update(reaction={"after_sentence": 0, "reaction_id": "ack"}),
+                               True, "reaction must be"),
+    "unknown reaction id": (lambda d: d["turns"][1].update(reaction={"after_sentence": 1, "reaction_id": "wow"}),
+                            True, "reaction must be"),
+    "reaction with extra key": (lambda d: d["turns"][1].update(
+        reaction={"after_sentence": 1, "reaction_id": "ack", "text": "x"}), True, "reaction must be"),
+    "too many turns": (lambda d: d.update(turns=[{"idx": i, "speaker": "expert", "text": f"t{i}", "slide_idx": None,
+                                                  "reaction": None} for i in range(41)]), True, "Too many turns"),
+    "turn too long": (lambda d: d["turns"][0].update(text="x" * 3001), True, "too long"),
+}
+
+
+@pytest.mark.parametrize("case", list(BAD_PODCAST_SCRIPTS))
+def test_render_podcast_refuses_an_invalid_script_before_any_work(env, monkeypatch, tmp_path, case):
+    seen, out, _ = _script_podcast(env, monkeypatch, tmp_path)
+    edit, rehash, problem = BAD_PODCAST_SCRIPTS[case]
+    _tamper(out, edit, rehash=rehash)
+    seen.clear()
+    _no_library(monkeypatch)
+    _no_generation(monkeypatch)
+    for dry_run in (False, True):
+        with pytest.raises(mc.MaintenanceError, match=re.escape(problem)):
+            asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, dry_run=dry_run, force=True,
+                                          unpublished=True))
+    assert seen == {}  # no ingest, no model call, no render
+
+
+BAD_VIDEO_SCRIPTS = {
+    "a podcast script": (lambda d: d.update(kind="podcast"), False, "kind is 'podcast', expected 'video'"),
+    "another video": (lambda d: d.update(key="demo-fr"), False, "key is 'demo-fr', expected 'demo-en'"),
+    "other voice": (lambda d: d.update(voice="en-US-Andrew:DragonHDLatestNeural"), False, "voice is"),
+    "missing voice": (lambda d: d.pop("voice"), False, "missing keys ['voice']"),
+    "deck changed": (lambda d: d.update(deck_sha256="f" * 64), False, "the deck changed since"),
+    "edited narration": (lambda d: d["narrations"][1].update(narration="edited"), False,
+                         "edited after it was generated"),
+    "unknown narration key": (lambda d: d["narrations"][0].update(slide_image_ref="/etc/passwd"), True,
+                              "exactly the keys"),
+    "missing narration key": (lambda d: d["narrations"][0].pop("duration_hint_s"), True, "exactly the keys"),
+    "blank narration": (lambda d: d["narrations"][0].update(narration=""), True, "non-empty text"),
+    "duplicate slide": (lambda d: d["narrations"][1].update(slide_index=0), True, "appears twice"),
+    "negative slide": (lambda d: d["narrations"][0].update(slide_index=-1), True, "non-negative integer"),
+    "style is a number": (lambda d: d["narrations"][0].update(speaking_style=3), True, "speaking_style must be"),
+    "negative duration": (lambda d: d["narrations"][0].update(duration_hint_s=-1), True, "duration_hint_s must be"),
+    "boolean duration": (lambda d: d["narrations"][0].update(duration_hint_s=True), True, "duration_hint_s must be"),
+    "narration too long": (lambda d: d["narrations"][0].update(narration="x" * 3001), True, "narration too long"),
+    "too many narrations": (lambda d: d.update(narrations=[{"slide_index": i, "narration": "n", "speaking_style": None,
+                                                            "duration_hint_s": None} for i in range(61)]),
+                            True, "too many slides"),
+}
+
+
+@pytest.mark.parametrize("case", list(BAD_VIDEO_SCRIPTS))
+def test_render_video_refuses_an_invalid_script_before_any_work(env, monkeypatch, tmp_path, case):
+    seen, out, _ = _script_video(env, monkeypatch, tmp_path, slides=3)
+    edit, rehash, problem = BAD_VIDEO_SCRIPTS[case]
+    _tamper(out, edit, rehash=rehash)
+    seen.clear()
+    _no_library(monkeypatch)
+    _no_generation(monkeypatch)
+    for dry_run in (False, True):
+        with pytest.raises(mc.MaintenanceError, match=re.escape(problem)):
+            asyncio.run(mc.render_video(env.cfg, "demo-en", from_script=out, dry_run=dry_run, force=True,
+                                        unpublished=True))
+    assert seen == {}
+
+
+def test_render_video_refuses_a_narration_for_a_slide_the_deck_does_not_have(env, monkeypatch, tmp_path):
+    seen, out, _ = _script_video(env, monkeypatch, tmp_path, slides=3)
+    _tamper(out, lambda d: d["narrations"][2].update(slide_index=7), rehash=True)
+    seen.clear()
+    with pytest.raises(mc.MaintenanceError, match=re.escape("the deck has no slide [7]")):
+        asyncio.run(mc.render_video(env.cfg, "demo-en", from_script=out, force=True, unpublished=True))
+    assert "script" not in seen and not env.vlib.items  # refused after the ingest, before any render
+
+
+def test_render_from_script_refuses_unreadable_oversized_and_malformed_files(env, monkeypatch, tmp_path):
+    seen, out, _ = _script_podcast(env, monkeypatch, tmp_path)
+    seen.clear()
+    _no_library(monkeypatch)
+    _no_generation(monkeypatch)
+
+    def refused(match):
+        with pytest.raises(mc.MaintenanceError, match=match):
+            asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, force=True))
+        assert seen == {}
+
+    good = out.read_bytes()
+    monkeypatch.setattr(mc, "MAX_SCRIPT_FILE_BYTES", len(good) - 1)  # one byte over the cap
+    refused("byte cap")
+    monkeypatch.setattr(mc, "MAX_SCRIPT_FILE_BYTES", len(good))  # exactly at the cap is fine
+    spec = mc.PODCASTS["expert"]
+    assert mc._load_script(out, "podcast", "expert", spec, mc._deck_path(spec.deck)).kind == "podcast"
+    monkeypatch.setattr(mc, "MAX_SCRIPT_FILE_BYTES", 1024 * 1024)
+    for raw, match in ((b"not json", "not valid JSON"), (b"\xff\xfe\x00", "not valid JSON"),
+                       (b"[" * 100_000, "not valid JSON"), (b"[1, 2]", "must be a JSON object"),
+                       (b"", "not valid JSON")):
+        out.write_bytes(raw)
+        refused(match)
+    out.unlink()
+    refused("cannot read script file")
+
+
+def test_render_all_cannot_take_a_script_and_cli_wiring(env, monkeypatch, tmp_path, capsys):
+    _fake_podcast_pipeline(monkeypatch, env, turns=SCRIPT_TURNS)
+    _fake_video_pipeline(monkeypatch, env, slides=2)
+    monkeypatch.setattr(mc, "_cfg", lambda: env.cfg)
+    p_out, v_out = tmp_path / "p.json", tmp_path / "v.json"
+    assert mc.main(["script-podcast", "expert", "--out", str(p_out)]) == 0
+    assert mc.main(["script-video", "demo-en", "--out", str(v_out)]) == 0
+    out = capsys.readouterr().out
+    assert "SCRIPTED podcast expert" in out and "SCRIPTED video demo-en" in out and "://" not in out
+    assert not env.plib.items and not env.vlib.items  # nothing archived, so nothing to publish
+
+    _no_generation(monkeypatch)
+    assert mc.main(["render-podcast", "expert", "--from-script", str(p_out), "--force", "--unpublished"]) == 0
+    assert mc.main(["render-video", "demo-en", "--from-script", str(v_out), "--force", "--unpublished"]) == 0
+    rendered = RENDERED_LINE.findall(capsys.readouterr().out)
+    assert [(k, n) for k, n, _ in rendered] == [("podcast", "expert"), ("video", "demo-en")]
+    assert len(env.plib.items) == 1 and len(env.vlib.items) == 1
+    assert not any(i["published"] for i in (*env.plib.items.values(), *env.vlib.items.values()))
+
+    assert mc.main(["render-podcast", "all", "--from-script", str(p_out)]) == 2
+    assert "name the episode, not 'all'" in capsys.readouterr().out
+    assert mc.main(["render-video", "all", "--from-script", str(v_out)]) == 2
+    assert mc.main(["render-podcast", "expert", "--from-script", str(v_out)]) == 2  # a video script
+    assert "invalid script file" in capsys.readouterr().out
+    assert len(env.plib.items) == 1 and len(env.vlib.items) == 1
+
+
+def test_script_digest_is_the_same_in_the_review_and_in_the_render(env, monkeypatch, tmp_path, capsys):
+    seen, out, scripted = _script_podcast(env, monkeypatch, tmp_path)
+    expected = _digest(SCRIPT_LINES)
+    assert scripted["content_sha256"] == expected == json.loads(out.read_text(encoding="utf-8"))["content_sha256"]
+    assert f"SCRIPTED podcast expert {expected} {out}" in capsys.readouterr().out.splitlines()
+    seen.clear()
+    asyncio.run(mc.render_podcast(env.cfg, "expert", from_script=out, force=True, unpublished=True))
+    assert f"USING_SCRIPT podcast expert {expected} {out}" in capsys.readouterr().out.splitlines()
+
+
+def test_cli_script_commands_parse():
+    parse = mc.build_parser().parse_args
+    args = parse(["--background", "/tmp/s.log", "script-podcast", "expert", "--out", "/tmp/e.json"])
+    assert args.cmd == "script-podcast" and args.name == "expert" and args.dry_run is False
+    assert str(args.background).replace("\\", "/").endswith("tmp/s.log") and args.out == Path("/tmp/e.json")
+    assert parse(["script-video", "demo-fr", "--out", "v.json", "--dry-run"]).dry_run is True
+    for argv in (["script-podcast", "all", "--out", "x"], ["script-podcast", "demo-en", "--out", "x"],
+                 ["script-video", "beginner", "--out", "x"], ["script-podcast", "expert"], ["script-video", "demo-en"]):
+        with pytest.raises(SystemExit):
+            parse(argv)
+    assert parse(["render-podcast", "expert", "--from-script", "e.json", "--unpublished"]).from_script == Path("e.json")
+    assert parse(["render-video", "demo-en", "--from-script", "v.json"]).from_script == Path("v.json")
+    assert parse(["render-podcast", "all"]).from_script is None and parse(["render-video", "all"]).from_script is None
 

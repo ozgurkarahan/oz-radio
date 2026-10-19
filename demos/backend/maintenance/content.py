@@ -11,10 +11,13 @@ Usage (from the backend directory, ``/app`` in the image)::
 
     python -m maintenance.content inventory [--json out.json]
     python -m maintenance.content seed [--dry-run]
+    python -m maintenance.content script-podcast {beginner,practitioner,expert,demo-fr} --out script.json \\
+        [--dry-run]
+    python -m maintenance.content script-video {demo-en,demo-fr,practitioner} --out script.json [--dry-run]
     python -m maintenance.content render-podcast {beginner,practitioner,expert,demo-fr,all} \\
-        [--format video|audio] [--force] [--unpublished] [--dry-run]
+        [--format video|audio] [--force] [--unpublished] [--from-script script.json] [--dry-run]
     python -m maintenance.content render-video {demo-en,demo-fr,practitioner,all} \\
-        [--force] [--unpublished] [--dry-run]
+        [--force] [--unpublished] [--from-script script.json] [--dry-run]
     python -m maintenance.content warm-listeners [--language en-US --language fr-FR] [--timeout 900] [--dry-run]
     python -m maintenance.content publish [--podcast-id job-...] [--video-id sv-...] [--off] [--dry-run]
     python -m maintenance.content unpublish [--podcast-id job-...] [--video-id sv-...] [--dry-run]
@@ -51,20 +54,40 @@ touches playlists only when ``--deck-title`` deletes decks).
 
 Staged re-render (no gap, no duplicate for visitors, nothing is deleted):
 
-1. ``render-podcast|render-video ... --force --unpublished`` archives the new
+1. ``script-podcast|script-video NAME --out FILE`` runs the render's own ingest
+   and script generation (same spec inputs, same prompts) and stops there: no
+   render, no library access, nothing published. It writes the script as JSON
+   (``kind``, ``key``, ``title``, ``language``, ``audience_level``, the model's
+   ``turns`` or ``narrations`` as the render consumes them, ``generated_at``, the
+   deck's SHA-256 and a ``content_sha256`` of the lines), prints a compact
+   transcript (a character the console cannot encode becomes a backslash escape
+   instead of an error) and one ``SCRIPTED <kind> <name> <sha256> <file>`` line.
+   It costs one model call, so a short exec is enough (``--background LOG``
+   works as everywhere). It never overwrites a file; ``--dry-run`` makes no
+   model call and writes nothing.
+2. Review the transcripts: nothing has been rendered or paid for yet.
+3. ``render-podcast|render-video NAME --from-script FILE`` renders exactly that
+   text and skips script generation (one episode, not ``all``). The file is
+   validated first, before any ingest, model call or library access: size cap,
+   JSON, exact schema, same kind and key, the spec's language, style, audience
+   (and voice), the deck unchanged since the script was written, ``content_sha256``
+   matching the lines (a file edited after generation is refused: generate it
+   again) and the routers' own limits. It prints
+   ``USING_SCRIPT <kind> <name> <sha256> <file>``, the digest the review saw.
+4. ``render-podcast|render-video ... --force --unpublished`` archives the new
    item with ``published: false`` and never publishes it. Each render prints one
    machine-readable line, ``RENDERED <podcast|video> <name> <job id>`` (no URLs),
    as soon as it is archived. Without ``--force``, an existing item with the
    title is only reported: ``--unpublished`` never publishes anything.
-2. Review the private renders as an admin (the library lists them).
-3. ``plan-switch --out switch.json`` pairs every published item with its newer
+5. Review the private renders as an admin (the library lists them).
+6. ``plan-switch --out switch.json`` pairs every published item with its newer
    unpublished re-render (same title, format and language) and writes the
    manifest, ``{"pairs": [{"kind": "podcast"|"video", "old_id": "job-...",
    "new_id": "job-..."}]}`` (a hand-written file needs only those keys). Matches
    it cannot decide (several published items, or several newer private
    re-renders, for one title) are left out and reported, never guessed; exit
    code 1 then flags the incomplete plan. It never overwrites a file.
-4. ``switch --manifest switch.json`` publishes each new item, then unpublishes
+7. ``switch --manifest switch.json`` publishes each new item, then unpublishes
    its old one (never a gap), pair by pair, and stops at the first failure.
    ``rollback --manifest switch.json`` publishes each old item, then unpublishes
    the new one. Both refuse a manifest whose items are missing or whose old and
@@ -77,7 +100,7 @@ Staged re-render (no gap, no duplicate for visitors, nothing is deleted):
    ``unpublish_old`` leaves both items visible, never neither); re-run the
    command or roll back. ``--dry-run`` reads the library but writes nothing,
    not even the manifest.
-5. ``publish``/``unpublish`` change single items by id (``--podcast-id``,
+8. ``publish``/``unpublish`` change single items by id (``--podcast-id``,
    ``--video-id``; both repeatable); an unpublished item is hidden, not deleted.
 
 ``warm-listeners`` pre-builds the cached listener kits (silent listening loop
@@ -98,6 +121,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -391,6 +415,317 @@ async def seed(cfg, *, dry_run: bool = False, deck_dir: Optional[Path] = None) -
 
 
 # ---------------------------------------------------------------------------
+# Reviewed scripts: script-podcast / script-video write one, render --from-script renders it
+# ---------------------------------------------------------------------------
+SCRIPT_SCHEMA_VERSION = 1
+# A script is 10-150 KB (at most 40 turns or 60 narrations of 3,000 characters): anything bigger is not ours.
+MAX_SCRIPT_FILE_BYTES = 1024 * 1024
+SCRIPT_ITEMS = {"podcast": "turns", "video": "narrations"}  # where each kind keeps its lines
+_SCRIPT_HEADER = ("schema_version", "kind", "key", "title", "deck", "deck_sha256", "language", "style",
+                  "audience_level", "generated_at", "content_sha256")
+SCRIPT_KEYS = {  # the exact top-level keys of a script file
+    "podcast": frozenset({*_SCRIPT_HEADER, "turns"}),
+    "video": frozenset({*_SCRIPT_HEADER, "voice", "narrations"}),
+}
+SCRIPT_LINE_KEYS = {  # the exact keys of one line
+    "podcast": frozenset({"idx", "speaker", "text", "slide_idx", "reaction"}),
+    "video": frozenset({"slide_index", "narration", "speaking_style", "duration_hint_s"}),
+}
+
+
+def _out(line: str) -> None:
+    """Print one line; a character the console cannot encode becomes a backslash escape, never an error."""
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _script_digest(lines: Any) -> str:
+    """SHA-256 of a script's lines as canonical JSON: ties the transcript that was reviewed to the file rendered."""
+    return hashlib.sha256(json.dumps(lines, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _spec_inputs(kind: str, spec) -> dict[str, Any]:
+    """The spec inputs that shape a script's text: a file generated for other ones is refused."""
+    inputs = {"deck": spec.deck, "language": spec.language, "style": spec.style,
+              "audience_level": spec.audience_level}
+    if kind == "video":
+        inputs["voice"] = spec.voice
+    return inputs
+
+
+def _router_limits(check, items) -> None:
+    """Run one of the routers' own limit checks (they raise HTTPException) as a MaintenanceError."""
+    from fastapi import HTTPException
+
+    try:
+        check(items)
+    except HTTPException as exc:
+        raise MaintenanceError(str(exc.detail)) from None
+
+
+def _check_narrations(narrations) -> None:
+    """The video router's render limits (routers.video.start_render), for scripts built outside it."""
+    from security import MAX_NARRATION_CHARS, MAX_SLIDES_PER_RENDER
+    from services.voice_catalog import is_allowed_voice
+
+    if len(narrations) > MAX_SLIDES_PER_RENDER:
+        raise MaintenanceError(f"too many slides (max {MAX_SLIDES_PER_RENDER})")
+    for n in narrations:
+        if len(n.narration or "") > MAX_NARRATION_CHARS or (n.voice and not is_allowed_voice(n.voice)):
+            raise MaintenanceError(f"slide {n.slide_index}: narration too long or voice not allowed")
+
+
+def _podcast_lines(turns) -> list[dict[str, Any]]:
+    """The turns as stored in a script file: only what the model wrote (timings are render output)."""
+    return [{"idx": t.idx, "speaker": t.speaker, "text": t.text, "slide_idx": t.slide_idx,
+             "reaction": t.reaction.model_dump() if t.reaction else None} for t in turns]
+
+
+def _video_lines(narrations) -> list[dict[str, Any]]:
+    """The narrations as stored (sorted as the render consumes them); slide images and titles are not stored."""
+    return [{"slide_index": n.slide_index, "narration": n.narration, "speaking_style": n.speaking_style,
+             "duration_hint_s": n.duration_hint_s} for n in sorted(narrations, key=lambda n: n.slide_index)]
+
+
+def _podcast_turns_from(lines: list[dict[str, Any]]) -> list:
+    from services.podcast_models import DialogueTurn, ReactionHint
+
+    return [DialogueTurn(idx=line["idx"], speaker=line["speaker"], text=line["text"], slide_idx=line["slide_idx"],
+                         reaction=ReactionHint(**line["reaction"]) if line["reaction"] else None)
+            for line in lines]
+
+
+def _video_narrations_from(lines: list[dict[str, Any]], spec: VideoSpec, doc=None) -> list:
+    """The lines as the render consumes them. Slide images and titles come from ``doc``, the freshly
+    ingested deck (the paths of the ingest that generated the script are gone); without it they stay empty."""
+    from services.video_models import SlideNarration
+
+    refs = {s.index: s for s in doc.slides} if doc is not None else None
+    if refs is not None:
+        absent = sorted(line["slide_index"] for line in lines if line["slide_index"] not in refs)
+        if absent:
+            raise MaintenanceError(f"the deck has no slide {absent}: generate the script again")
+    return [SlideNarration(
+        slide_index=line["slide_index"],
+        slide_image_ref=refs[line["slide_index"]].image_ref if refs else "",
+        title=refs[line["slide_index"]].title if refs else None,
+        narration=line["narration"], voice=spec.voice, speaking_style=line["speaking_style"],
+        duration_hint_s=line["duration_hint_s"]) for line in lines]
+
+
+def _valid_reaction(raw: Any) -> bool:
+    from pydantic import ValidationError
+    from services.podcast_models import ReactionHint
+
+    if not isinstance(raw, dict) or set(raw) != {"after_sentence", "reaction_id"}:
+        return False
+    try:
+        ReactionHint(**raw)
+    except ValidationError:
+        return False
+    return True
+
+
+def _script_line_problems(kind: str, lines: Any) -> list[str]:
+    """What is wrong with a script's lines (empty = well-formed): exact keys, types, unique ids."""
+    what = SCRIPT_ITEMS[kind]
+    if not isinstance(lines, list) or not lines:
+        return [f"{what} must be a non-empty list"]
+    id_key, text_key = ("idx", "text") if kind == "podcast" else ("slide_index", "narration")
+    problems: list[str] = []
+    seen: set[int] = set()
+    for n, line in enumerate(lines):
+        where = f"{what}[{n}]"
+        if not isinstance(line, dict) or set(line) != SCRIPT_LINE_KEYS[kind]:
+            problems.append(f"{where} must have exactly the keys {sorted(SCRIPT_LINE_KEYS[kind])}")
+            continue
+        if not _is_int(line[id_key]) or line[id_key] < 0:
+            problems.append(f"{where}.{id_key} must be a non-negative integer")
+        elif line[id_key] in seen:
+            problems.append(f"{where}.{id_key} {line[id_key]} appears twice")
+        else:
+            seen.add(line[id_key])
+        if not isinstance(line[text_key], str) or not line[text_key].strip():
+            problems.append(f"{where}.{text_key} must be non-empty text")
+        if kind == "podcast":
+            if line["speaker"] not in ("interviewer", "expert"):
+                problems.append(f"{where}.speaker must be 'interviewer' or 'expert'")
+            if line["slide_idx"] is not None and not _is_int(line["slide_idx"]):
+                problems.append(f"{where}.slide_idx must be an integer or null")
+            if line["reaction"] is not None and not _valid_reaction(line["reaction"]):
+                problems.append(f"{where}.reaction must be null or a known {{after_sentence, reaction_id}}")
+        else:
+            style, seconds = line["speaking_style"], line["duration_hint_s"]
+            if style is not None and not isinstance(style, str):
+                problems.append(f"{where}.speaking_style must be text or null")
+            if seconds is not None and (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                                        or not math.isfinite(seconds) or seconds < 0):
+                problems.append(f"{where}.duration_hint_s must be a non-negative number or null")
+    return problems
+
+
+def _script_limit_problems(kind: str, lines: list[dict[str, Any]], spec) -> list[str]:
+    """The routers' own render limits, applied to a script that did not come through them."""
+    try:
+        if kind == "podcast":
+            from routers import podcast as pr
+
+            _router_limits(pr._check_turns, _podcast_turns_from(lines))
+        else:
+            _check_narrations(_video_narrations_from(lines, spec))
+    except MaintenanceError as exc:
+        return [str(exc)]
+    return []
+
+
+@dataclass(frozen=True)
+class LoadedScript:
+    """A validated script file: the lines ``render --from-script`` renders, and what it reports about them."""
+
+    path: Path
+    kind: str
+    key: str
+    lines: list
+    content_sha256: str
+    generated_at: str
+
+    def summary(self) -> dict[str, Any]:
+        return {"file": str(self.path), SCRIPT_ITEMS[self.kind]: len(self.lines),
+                "content_sha256": self.content_sha256, "generated_at": self.generated_at}
+
+
+def _read_script_json(path: Path) -> dict[str, Any]:
+    try:
+        size = path.stat().st_size
+        if size > MAX_SCRIPT_FILE_BYTES:
+            raise MaintenanceError(f"script file {path} is {size} bytes: over the {MAX_SCRIPT_FILE_BYTES} byte cap")
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_SCRIPT_FILE_BYTES + 1)
+    except OSError as exc:
+        raise MaintenanceError(f"cannot read script file {path}: {exc.strerror or type(exc).__name__}") from None
+    if len(raw) > MAX_SCRIPT_FILE_BYTES:
+        raise MaintenanceError(f"script file {path} is over the {MAX_SCRIPT_FILE_BYTES} byte cap")
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (ValueError, RecursionError) as exc:  # includes UnicodeDecodeError and JSONDecodeError
+        raise MaintenanceError(f"script file {path} is not valid JSON: {type(exc).__name__}") from None
+    if not isinstance(data, dict):
+        raise MaintenanceError(f"script file {path} must be a JSON object")
+    return data
+
+
+def _is_timestamp(value: Any) -> bool:
+    try:
+        datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _load_script(path: Path, kind: str, name: str, spec, deck_path: Path) -> LoadedScript:
+    """Read and validate a script file for ``kind``/``name`` before any ingest, model call or library access."""
+    data = _read_script_json(path)
+    problems: list[str] = []
+    missing, unknown = sorted(SCRIPT_KEYS[kind] - set(data)), sorted(set(data) - SCRIPT_KEYS[kind])
+    if missing:
+        problems.append(f"missing keys {missing}")
+    if unknown:
+        problems.append(f"unexpected keys {unknown}")
+    expected = {"schema_version": SCRIPT_SCHEMA_VERSION, "kind": kind, "key": name, **_spec_inputs(kind, spec)}
+    problems += [f"{field} is {repr(data[field])[:60]}, expected {want!r}"
+                 for field, want in expected.items() if field in data and data[field] != want]
+    if "generated_at" in data and not _is_timestamp(data["generated_at"]):
+        problems.append("generated_at must be an ISO timestamp")
+    lines = data.get(SCRIPT_ITEMS[kind])
+    problems += _script_line_problems(kind, lines)
+    if not problems:  # only a well-formed script can be hashed and checked against the limits
+        if data["deck_sha256"] != _sha256_of(deck_path):
+            problems.append("the deck changed since this script was generated (deck_sha256): generate it again")
+        if data["content_sha256"] != _script_digest(lines):
+            problems.append("content_sha256 does not match the lines: the file was edited after it was "
+                            "generated; generate it again")
+        problems += _script_limit_problems(kind, lines, spec)
+    if problems:
+        raise MaintenanceError(f"invalid script file {path}: " + "; ".join(problems))
+    return LoadedScript(path, kind, name, lines, data["content_sha256"], data["generated_at"])
+
+
+def _announce_script(loaded: LoadedScript, name: str) -> None:
+    what = SCRIPT_ITEMS[loaded.kind]
+    _out(f"USING_SCRIPT {loaded.kind} {name} {loaded.content_sha256} {loaded.path}")
+    _say(f"{loaded.kind} {name}: rendering the reviewed script ({len(loaded.lines)} {what}, sha256 "
+         f"{loaded.content_sha256[:12]}, generated {loaded.generated_at}); script generation skipped")
+
+
+def _refuse_existing(out: Path) -> None:
+    if out.exists():
+        raise MaintenanceError(f"{out} already exists: refusing to overwrite a script (generate to a new path)")
+
+
+def _write_script(out: Path, payload: dict[str, Any]) -> None:
+    """Create ``out`` as UTF-8 JSON; it never replaces a file, and a failed write leaves nothing behind."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("x", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except FileExistsError:
+        raise MaintenanceError(f"{out} already exists: refusing to overwrite a script") from None
+    except OSError as exc:
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise MaintenanceError(f"cannot write script file {out}: {exc.strerror or type(exc).__name__}") from None
+
+
+def _script_payload(kind: str, name: str, spec, lines: list[dict[str, Any]], deck_path: Path) -> dict[str, Any]:
+    return {"schema_version": SCRIPT_SCHEMA_VERSION, "kind": kind, "key": name, "title": spec.title,
+            **_spec_inputs(kind, spec), "deck_sha256": _sha256_of(deck_path),
+            "generated_at": datetime.now(timezone.utc).isoformat(), "content_sha256": _script_digest(lines),
+            SCRIPT_ITEMS[kind]: lines}
+
+
+def _print_podcast_transcript(name: str, spec: PodcastSpec, lines: list[dict[str, Any]], n_slides: int,
+                              digest: str) -> None:
+    """Compact transcript for review: line id, slide, speaker, text; [+id@n] = listener reaction after sentence n."""
+    words = sum(len(line["text"].split()) for line in lines)
+    used = {line["slide_idx"] for line in lines
+            if line["slide_idx"] is not None and 0 <= line["slide_idx"] < n_slides}
+    _out(f"== podcast {name}: {spec.title} | {spec.language} | {spec.style} | {spec.audience_level} ==")
+    for line in lines:
+        slide = "-" if line["slide_idx"] is None else line["slide_idx"]
+        hint = f"  [+{line['reaction']['reaction_id']}@{line['reaction']['after_sentence']}]" \
+            if line["reaction"] else ""
+        _out(f"{line['idx']:>2} s{slide:<2} {line['speaker']:<11} {line['text']}{hint}")
+    _out(f"== {len(lines)} turns, {words} words, slides referenced {len(used)}/{n_slides}, "
+         f"sha256 {digest[:12]} ==")
+
+
+def _print_video_transcript(name: str, spec: VideoSpec, lines: list[dict[str, Any]], slides: list[int],
+                            digest: str) -> None:
+    words = sum(len(line["narration"].split()) for line in lines)
+    silent = sorted(set(slides) - {line["slide_index"] for line in lines})
+    _out(f"== video {name}: {spec.title} | {spec.language} | {spec.style} | {spec.audience_level} | "
+         f"{spec.voice} ==")
+    for line in lines:
+        style = f" ({line['speaking_style']})" if line["speaking_style"] else ""
+        _out(f"slide {line['slide_index']:>2}{style}: {line['narration']}")
+    _out(f"== {len(lines)} narrations, {words} words, slides without narration: {silent or 'none'}, "
+         f"sha256 {digest[:12]} ==")
+
+
+# ---------------------------------------------------------------------------
 # Podcasts
 # ---------------------------------------------------------------------------
 def _podcast_roles(language: str):
@@ -427,23 +762,50 @@ def _podcast_format(spec: PodcastSpec, fmt: Optional[str]) -> str:
     return value
 
 
+async def _podcast_document(cfg, name: str, spec: PodcastSpec, path: Path):
+    """Ingest the episode's deck as the render does (staged copy, slide images, display title)."""
+    from services.podcast_ingest import ingest_file
+
+    _say(f"podcast {name}: ingest {spec.deck}")
+    staged = _staged_copy(path, "podcast")
+    doc = await asyncio.to_thread(ingest_file, staged, cfg.libreoffice_path or "soffice")
+    doc.title = spec.title
+    return doc
+
+
+async def _generate_podcast_turns(cfg, name: str, spec: PodcastSpec, doc) -> list:
+    """The episode's script from the model, checked against the router's limits."""
+    from routers import podcast as pr
+    from services.podcast_models import ScriptRequest
+    from services.podcast_script import generate_script_stream
+
+    _say(f"podcast {name}: script ({spec.language}, {spec.style}, {spec.audience_level})")
+    req = ScriptRequest(document_id=doc.id, language=spec.language, style=spec.style, length=spec.length,
+                        num_turns=spec.num_turns, audience_level=spec.audience_level)
+    turns = [t async for t in generate_script_stream(cfg, doc, req)]
+    if not turns:
+        raise MaintenanceError("script generation returned no turns")
+    _router_limits(pr._check_turns, turns)
+    return turns
+
+
 async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
-                         force: bool = False, fmt: Optional[str] = None, unpublished: bool = False) -> dict:
+                         force: bool = False, fmt: Optional[str] = None, unpublished: bool = False,
+                         from_script: Optional[Path] = None) -> dict:
     """Render + publish one ``PODCASTS`` episode; ``fmt`` overrides the spec's format.
 
     ``unpublished`` renders privately: the item stays archived with ``published: false`` and
     its id is printed as ``RENDERED podcast <name> <job id>``. An existing item with the title
-    is then only reported (never published), unless ``force`` renders a fresh one."""
+    is then only reported (never published), unless ``force`` renders a fresh one.
+    ``from_script`` renders exactly the turns of a file written by ``script_podcast`` and skips
+    script generation; the file is validated before any ingest, model call or library access."""
     from routers import podcast as pr
-    from services.podcast_ingest import ingest_file
-    from services.podcast_models import (
-        JobOutputs, JobProgress, JobState, PodcastJob, Script, ScriptRequest,
-    )
-    from services.podcast_script import generate_script_stream
+    from services.podcast_models import JobOutputs, JobProgress, JobState, PodcastJob, Script
 
     spec = PODCASTS[name]
     fmt = _podcast_format(spec, fmt)
     path = _deck_path(spec.deck, deck_dir)
+    loaded = _load_script(from_script, "podcast", name, spec, path) if from_script is not None else None
     roles = _podcast_roles(spec.language)
     lib = pr._get_library(cfg)
     if not lib.available:
@@ -451,6 +813,8 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
     plan = {"name": name, "title": spec.title, "format": fmt, "language": spec.language, "style": spec.style,
             "audience_level": spec.audience_level,
             "roles": {"interviewer": roles.interviewer.model_dump(), "expert": roles.expert.model_dump()}}
+    if loaded:
+        plan["script"] = loaded.summary()
     found = _existing(lib, spec.titles, fmt)
     if found and force:
         plan["replaces"] = found["job_id"]
@@ -466,19 +830,11 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
         plan["action"] = "would render"
         return plan
 
-    _say(f"podcast {name}: ingest {spec.deck}")
-    staged = _staged_copy(path, "podcast")
-    doc = await asyncio.to_thread(ingest_file, staged, cfg.libreoffice_path or "soffice")
-    doc.title = spec.title
+    if loaded:
+        _announce_script(loaded, name)
+    doc = await _podcast_document(cfg, name, spec, path)
     pr.DOCUMENTS[doc.id] = doc
-
-    _say(f"podcast {name}: script ({spec.language}, {spec.style}, {spec.audience_level})")
-    req = ScriptRequest(document_id=doc.id, language=spec.language, style=spec.style, length=spec.length,
-                        num_turns=spec.num_turns, audience_level=spec.audience_level)
-    turns = [t async for t in generate_script_stream(cfg, doc, req)]
-    if not turns:
-        raise MaintenanceError("script generation returned no turns")
-    pr._check_turns(turns)
+    turns = _podcast_turns_from(loaded.lines) if loaded else await _generate_podcast_turns(cfg, name, spec, doc)
     script = Script(id=f"scr-{uuid.uuid4().hex[:8]}", document_id=doc.id, language=spec.language,
                     style=spec.style, length=spec.length, audience_level=spec.audience_level, turns=turns)
     pr.SCRIPTS[script.id] = script
@@ -506,28 +862,45 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
     return plan
 
 
+async def script_podcast(cfg, name: str, *, out: Path, dry_run: bool = False,
+                         deck_dir: Optional[Path] = None) -> dict:
+    """Generate one ``PODCASTS`` script for review: the render's own ingest and model call, nothing else.
+
+    No render, no library access, nothing published. Writes the script as JSON to ``out`` (never
+    replacing a file), prints the transcript and ``SCRIPTED podcast <name> <sha256> <out>``.
+    ``dry_run`` makes no model call and writes nothing."""
+    spec = PODCASTS[name]
+    path = _deck_path(spec.deck, deck_dir)
+    plan: dict[str, Any] = {"kind": "podcast", "name": name, "title": spec.title, "deck": spec.deck,
+                            "language": spec.language, "style": spec.style,
+                            "audience_level": spec.audience_level, "length": spec.length,
+                            "num_turns": spec.num_turns, "out": str(out)}
+    _refuse_existing(out)
+    if dry_run:
+        plan["action"] = "would generate"
+        return plan
+    doc = await _podcast_document(cfg, name, spec, path)
+    lines = _podcast_lines(await _generate_podcast_turns(cfg, name, spec, doc))
+    problems = _script_line_problems("podcast", lines)
+    if problems:
+        raise MaintenanceError("the generated script cannot be rendered, nothing written: " + "; ".join(problems))
+    payload = _script_payload("podcast", name, spec, lines, path)
+    _write_script(out, payload)
+    _print_podcast_transcript(name, spec, lines, len(doc.slide_titles), payload["content_sha256"])
+    _out(f"SCRIPTED podcast {name} {payload['content_sha256']} {out}")
+    plan.update(action="scripted", turns=len(lines), content_sha256=payload["content_sha256"],
+                generated_at=payload["generated_at"])
+    _say(f"podcast {name}: script written to {out}")
+    return plan
+
+
 # ---------------------------------------------------------------------------
 # Videos
 # ---------------------------------------------------------------------------
-async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
-                       force: bool = False, unpublished: bool = False) -> dict:
-    """Render + publish one ``VIDEOS`` entry.
-
-    ``unpublished`` renders privately: the item stays archived with ``published: false`` and
-    its id is printed as ``RENDERED video <name> <job id>``. An existing item with the title
-    is then only reported (never published), unless ``force`` renders a fresh one."""
-    from routers import video as vr
-    from security import MAX_NARRATION_CHARS, MAX_SLIDES_PER_RENDER
+def _check_video_voice(spec: VideoSpec) -> None:
     from services import avatar_registry
-    from services.video_ingest import ingest
-    from services.video_models import (
-        JobOutputs, JobProgress, JobState, ScriptRequest, VideoJob, VideoScript,
-    )
-    from services.video_script import generate_script_stream
     from services.voice_catalog import is_allowed_voice
 
-    spec = VIDEOS[name]
-    path = _deck_path(spec.deck, deck_dir)
     if not is_allowed_voice(spec.voice):
         raise MaintenanceError(f"voice {spec.voice!r} is not allowed")
     # The video worker picks the presenter from the voice (gender match); make
@@ -535,11 +908,58 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
     resolved = avatar_registry.for_voice(spec.voice).id
     if resolved != spec.avatar:
         raise MaintenanceError(f"voice {spec.voice} resolves to avatar {resolved!r}, expected {spec.avatar!r}")
+
+
+async def _video_document(name: str, spec: VideoSpec, path: Path):
+    """Ingest the video's deck as the render does (staged copy, slide images, display title)."""
+    from services.video_ingest import ingest
+
+    _say(f"video {name}: ingest {spec.deck}")
+    staged = _staged_copy(path, "video")
+    doc = await asyncio.to_thread(ingest, str(staged), spec.deck)
+    doc.title = spec.title
+    return doc
+
+
+async def _generate_video_narrations(cfg, name: str, spec: VideoSpec, doc) -> list:
+    """The video's script from the model, checked against the router's render limits."""
+    from services.video_models import ScriptRequest
+    from services.video_script import generate_script_stream
+
+    _say(f"video {name}: script ({spec.language}, {spec.audience_level})")
+    req = ScriptRequest(language=spec.language, style=spec.style, audience_level=spec.audience_level,
+                        voice=spec.voice)
+    narrations = [n async for n in generate_script_stream(cfg, doc, req)]
+    if not narrations:
+        raise MaintenanceError("script generation returned no narrations")
+    _check_narrations(narrations)
+    return narrations
+
+
+async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
+                       force: bool = False, unpublished: bool = False,
+                       from_script: Optional[Path] = None) -> dict:
+    """Render + publish one ``VIDEOS`` entry.
+
+    ``unpublished`` renders privately: the item stays archived with ``published: false`` and
+    its id is printed as ``RENDERED video <name> <job id>``. An existing item with the title
+    is then only reported (never published), unless ``force`` renders a fresh one.
+    ``from_script`` renders exactly the narrations of a file written by ``script_video`` and
+    skips script generation; the file is validated before any ingest, model call or library access."""
+    from routers import video as vr
+    from services.video_models import JobOutputs, JobProgress, JobState, VideoJob, VideoScript
+
+    spec = VIDEOS[name]
+    path = _deck_path(spec.deck, deck_dir)
+    _check_video_voice(spec)
+    loaded = _load_script(from_script, "video", name, spec, path) if from_script is not None else None
     lib = vr._get_library(cfg)
     if not lib.available:
         raise MaintenanceError("video library storage unavailable")
     plan = {"name": name, "title": spec.title, "language": spec.language, "voice": spec.voice,
             "avatar": spec.avatar, "audience_level": spec.audience_level, "style": spec.style}
+    if loaded:
+        plan["script"] = loaded.summary()
     found = _existing(lib, spec.titles)
     if found and force:
         plan["replaces"] = found["job_id"]
@@ -555,23 +975,12 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
         plan["action"] = "would render"
         return plan
 
-    _say(f"video {name}: ingest {spec.deck}")
-    staged = _staged_copy(path, "video")
-    doc = await asyncio.to_thread(ingest, str(staged), spec.deck)
-    doc.title = spec.title
+    if loaded:
+        _announce_script(loaded, name)
+    doc = await _video_document(name, spec, path)
     vr.DOCUMENTS[doc.doc_id] = doc
-
-    _say(f"video {name}: script ({spec.language}, {spec.audience_level})")
-    req = ScriptRequest(language=spec.language, style=spec.style, audience_level=spec.audience_level,
-                        voice=spec.voice)
-    narrations = [n async for n in generate_script_stream(cfg, doc, req)]
-    if not narrations:
-        raise MaintenanceError("script generation returned no narrations")
-    if len(narrations) > MAX_SLIDES_PER_RENDER:
-        raise MaintenanceError(f"too many slides (max {MAX_SLIDES_PER_RENDER})")
-    for n in narrations:
-        if len(n.narration or "") > MAX_NARRATION_CHARS or (n.voice and not is_allowed_voice(n.voice)):
-            raise MaintenanceError(f"slide {n.slide_index}: narration too long or voice not allowed")
+    narrations = (_video_narrations_from(loaded.lines, spec, doc) if loaded
+                  else await _generate_video_narrations(cfg, name, spec, doc))
     vr.SCRIPTS[doc.doc_id] = VideoScript(
         doc_id=doc.doc_id, language=spec.language, style=spec.style, audience_level=spec.audience_level,
         voice=spec.voice, narrations=sorted(narrations, key=lambda n: n.slide_index),
@@ -593,6 +1002,39 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
         raise MaintenanceError(f"video {job.job_id} rendered but publishing failed")
     plan.update(action="rendered", job_id=job.job_id, published=not unpublished, slides=len(narrations))
     _say(f"video {name}: {'rendered, still private' if unpublished else 'published'} {job.job_id}")
+    return plan
+
+
+async def script_video(cfg, name: str, *, out: Path, dry_run: bool = False,
+                       deck_dir: Optional[Path] = None) -> dict:
+    """Generate one ``VIDEOS`` script for review: the render's own ingest and model call, nothing else.
+
+    No render, no library access, nothing published. Writes the script as JSON to ``out`` (never
+    replacing a file), prints the transcript and ``SCRIPTED video <name> <sha256> <out>``.
+    ``dry_run`` makes no model call and writes nothing."""
+    spec = VIDEOS[name]
+    path = _deck_path(spec.deck, deck_dir)
+    _check_video_voice(spec)
+    plan: dict[str, Any] = {"kind": "video", "name": name, "title": spec.title, "deck": spec.deck,
+                            "language": spec.language, "style": spec.style,
+                            "audience_level": spec.audience_level, "voice": spec.voice, "out": str(out)}
+    _refuse_existing(out)
+    if dry_run:
+        plan["action"] = "would generate"
+        return plan
+    doc = await _video_document(name, spec, path)
+    lines = _video_lines(await _generate_video_narrations(cfg, name, spec, doc))
+    problems = _script_line_problems("video", lines)
+    if problems:
+        raise MaintenanceError("the generated script cannot be rendered, nothing written: " + "; ".join(problems))
+    _video_narrations_from(lines, spec, doc)  # every narration must belong to a slide of this deck
+    payload = _script_payload("video", name, spec, lines, path)
+    _write_script(out, payload)
+    _print_video_transcript(name, spec, lines, [s.index for s in doc.slides], payload["content_sha256"])
+    _out(f"SCRIPTED video {name} {payload['content_sha256']} {out}")
+    plan.update(action="scripted", narrations=len(lines), content_sha256=payload["content_sha256"],
+                generated_at=payload["generated_at"])
+    _say(f"video {name}: script written to {out}")
     return plan
 
 
@@ -1430,7 +1872,7 @@ async def publish_all(cfg, *, dry_run: bool = False, deck_dir: Optional[Path] = 
 # CLI
 # ---------------------------------------------------------------------------
 def _print(obj: Any) -> None:
-    print(json.dumps(obj, indent=2, ensure_ascii=False, default=str), flush=True)
+    _out(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
 
 
 class _Parser(argparse.ArgumentParser):
@@ -1457,6 +1899,23 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("seed", help="Upload/publish/translate the AI decks and create the playlist")
     p.add_argument("--dry-run", action="store_true")
 
+    p = sub.add_parser("script-podcast",
+                       help="Generate an AI podcast script for review "
+                            "(no render, no library access, nothing published)")
+    p.add_argument("name", choices=list(PODCASTS))
+    p.add_argument("--out", type=Path, required=True,
+                   help="Script file to write (never overwrites); render it later with "
+                        "render-podcast NAME --from-script FILE")
+    p.add_argument("--dry-run", action="store_true", help="Show the plan; no model call, nothing written")
+
+    p = sub.add_parser("script-video",
+                       help="Generate an AI video script for review (no render, no library access, nothing published)")
+    p.add_argument("name", choices=list(VIDEOS))
+    p.add_argument("--out", type=Path, required=True,
+                   help="Script file to write (never overwrites); render it later with "
+                        "render-video NAME --from-script FILE")
+    p.add_argument("--dry-run", action="store_true", help="Show the plan; no model call, nothing written")
+
     p = sub.add_parser("render-podcast", help="Render + publish an AI podcast (--unpublished: render privately)")
     p.add_argument("name", choices=[*PODCASTS, "all"])
     p.add_argument("--format", dest="fmt", choices=PODCAST_FORMATS, default=None,
@@ -1467,6 +1926,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--unpublished", action="store_true",
                    help="Render privately: never publish the new item and print 'RENDERED podcast <name> <job id>' "
                         "(an existing item with the title is only reported; go live with plan-switch/switch)")
+    p.add_argument("--from-script", type=Path, default=None, metavar="FILE",
+                   help="Render exactly the turns of a script-podcast file instead of generating them "
+                        "(validated first; one episode, not 'all')")
     p.add_argument("--dry-run", action="store_true")
 
     p = sub.add_parser("render-video", help="Render + publish an AI video (--unpublished: render privately)")
@@ -1476,6 +1938,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--unpublished", action="store_true",
                    help="Render privately: never publish the new item and print 'RENDERED video <name> <job id>' "
                         "(an existing item with the title is only reported; go live with plan-switch/switch)")
+    p.add_argument("--from-script", type=Path, default=None, metavar="FILE",
+                   help="Render exactly the narrations of a script-video file instead of generating them "
+                        "(validated first; one video, not 'all')")
     p.add_argument("--dry-run", action="store_true")
 
     p = sub.add_parser("warm-listeners",
@@ -1604,15 +2069,31 @@ def main(argv: Optional[list[str]] = None) -> int:
             _print(inv)
         elif args.cmd == "seed":
             _print(asyncio.run(seed(cfg, dry_run=args.dry_run, deck_dir=args.deck_dir)))
+        elif args.cmd == "script-podcast":
+            result = asyncio.run(script_podcast(cfg, args.name, out=args.out, dry_run=args.dry_run,
+                                                deck_dir=args.deck_dir))
+            if args.dry_run:
+                _print(result)
+        elif args.cmd == "script-video":
+            result = asyncio.run(script_video(cfg, args.name, out=args.out, dry_run=args.dry_run,
+                                              deck_dir=args.deck_dir))
+            if args.dry_run:
+                _print(result)
         elif args.cmd == "render-podcast":
+            if args.from_script is not None and args.name == "all":
+                raise MaintenanceError("--from-script renders one reviewed script: name the episode, not 'all'")
             names = list(PODCASTS) if args.name == "all" else [args.name]
             _print([asyncio.run(render_podcast(cfg, n, dry_run=args.dry_run, deck_dir=args.deck_dir,
-                                               force=args.force, fmt=args.fmt, unpublished=args.unpublished))
+                                               force=args.force, fmt=args.fmt, unpublished=args.unpublished,
+                                               from_script=args.from_script))
                     for n in names])
         elif args.cmd == "render-video":
+            if args.from_script is not None and args.name == "all":
+                raise MaintenanceError("--from-script renders one reviewed script: name the video, not 'all'")
             names = list(VIDEOS) if args.name == "all" else [args.name]
             _print([asyncio.run(render_video(cfg, n, dry_run=args.dry_run, deck_dir=args.deck_dir,
-                                             force=args.force, unpublished=args.unpublished))
+                                             force=args.force, unpublished=args.unpublished,
+                                             from_script=args.from_script))
                     for n in names])
         elif args.cmd == "warm-listeners":
             result = warm_listeners(cfg, languages=args.language or None, dry_run=args.dry_run,
