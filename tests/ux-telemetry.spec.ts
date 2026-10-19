@@ -31,6 +31,8 @@ test.describe.configure({ timeout: 90_000 });
 
 const INGESTION = 'https://ingest.oz-radio.test';
 const ENDPOINT = `${INGESTION}/v2/track`;
+/** A request to the ingestion host (by origin, not by prefix). */
+const toIngestion = (u: string): boolean => { try { return new URL(u).origin === INGESTION; } catch { return false; } };
 const IKEY = '11111111-2222-4333-8444-555555555555';
 const ON: BootTelemetry = { enabled: true, ingestion: INGESTION, ikey: IKEY, server_cold: false };
 const VITALS_CHUNK = /\/src\/services\/telemetryVitals\.ts/;
@@ -138,7 +140,7 @@ async function watch(page: Page): Promise<Watch> {
 /** Telemetry is off, or the visitor said no: nothing was sent and nothing extra was downloaded or listened to. */
 async function expectSilence(page: Page, w: Watch) {
   expect(await w.calls(), 'no sendBeacon call at all').toEqual([]);
-  expect(w.requests.filter((u) => u.startsWith(INGESTION)), 'no request to the ingestion host').toEqual([]);
+  expect(w.requests.filter(toIngestion), 'no request to the ingestion host').toEqual([]);
   expect(w.requests.filter((u) => VITALS_CHUNK.test(u)), 'the observers chunk is never downloaded').toEqual([]);
   await w.hide();
   await page.waitForTimeout(300);
@@ -477,7 +479,7 @@ test.describe('oz_load', () => {
     for (const secret of ['jane.doe', 'example.com', '<script>', 'foo', 'token', 'abc123', 'secret-tracking-id', 'urn:li', '/feed', 'update']) {
       expect(raw, secret).not.toContain(secret);
     }
-    expect(w.requests.filter((u) => u.startsWith(INGESTION)), 'sendBeacon is the transport, not a request of the page').toEqual([]);
+    expect(w.requests.filter(toIngestion), 'sendBeacon is the transport, not a request of the page').toEqual([]);
     expect((await w.named('oz_load')), 'once per page load').toHaveLength(1);
     await noCookiesOrStorage(page);
   });

@@ -50,7 +50,7 @@ test.describe('Regression — navigation & auth gating', () => {
     await open(page, 'visitor', '/');
     for (const href of ['/decks', '/video/library', '/podcast/library']) {
       await page.locator(`a[href="${href}"]`).first().click();
-      await expect(page).toHaveURL(new RegExp(`${href.replace(/\//g, '\\/')}$`));
+      await expect(page).toHaveURL(new RegExp(`${href.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`));
     }
   });
 
