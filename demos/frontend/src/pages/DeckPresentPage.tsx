@@ -10,7 +10,7 @@ import {
   DECK_VOICES,
   avatarForVoice,
   voiceForLanguage,
-  deckNeedsNotesTranslation, mergeDeckTranslations, translateDeckNotes,
+  deckNeedsNotesTranslation, mergeDeckTranslations, presenterSlides, translateDeckNotes,
 } from '../services/decksApi';
 import { isPhotoAvatar, pickAvatarForGender, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import { useAuth } from '../services/auth';
@@ -28,7 +28,7 @@ function deckToPresentation(d: DeckDetail): Presentation {
     slide_count: d.slide_count ?? d.slides?.length ?? 0,
     language: d.language,
     // Slides keep `translated_notes` (admin payload) so narration follows the selected language.
-    slides: d.slides ?? [],
+    slides: presenterSlides(d.slides),
   };
 }
 

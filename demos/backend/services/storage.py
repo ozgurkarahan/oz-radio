@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions as cosmos_exceptions
 from azure.identity import DefaultAzureCredential
@@ -28,6 +30,17 @@ COSMOS_PROGRESS_CONTAINER = "playlist_progress"
 _PRESENTATION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 DEFAULT_SAS_MINUTES = 24 * 60
 PUBLIC_SAS_MINUTES = 15
+# A configured Cosmos DB / Blob Storage that failed to initialise is retried at most this often
+# (seconds), so one transient start-up failure does not disable the store until the next restart.
+INIT_RETRY_SECONDS = 30
+
+
+class StorageUnavailable(Exception):
+    """Cosmos DB is configured but cannot be reached.
+
+    Raised by the ``strict=True`` readers (``list_decks``, ``get_presentation``) instead of answering
+    ``[]`` / ``None``, so a caller can tell "nothing there" from "storage is down" (contracts v1.2 §2.4).
+    """
 
 
 def deck_title(doc: dict) -> str:
@@ -43,7 +56,7 @@ def deck_title(doc: dict) -> str:
 class PresentationStore:
     """Manages presentation persistence in Cosmos DB + Blob Storage."""
 
-    def __init__(self, config: AzureConfig) -> None:
+    def __init__(self, config: AzureConfig, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._config = config
         self._blob_client: BlobServiceClient | None = None
         self._cosmos_db: Any = None
@@ -54,19 +67,58 @@ class PresentationStore:
         self._account_name: str | None = None
         self._user_delegation_key = None
         self._delegation_key_expiry: datetime | None = None
+        self._clock = clock
+        self._init_lock = threading.Lock()
+        self._init_attempted_at: float | None = None
 
     # ------------------------------------------------------------------
     # Lazy init — only connects when first needed
     # ------------------------------------------------------------------
 
+    def _blob_configured(self) -> bool:
+        cfg = self._config
+        return bool(cfg.blob_connection_string) or bool(cfg.use_managed_identity and cfg.blob_account_name)
+
+    def _init_pending(self) -> bool:
+        """True while a configured Cosmos DB container or Blob client is still missing."""
+        cosmos_missing = bool(self._config.cosmos_endpoint) and self._cosmos_container is None
+        blob_missing = self._blob_configured() and self._blob_client is None
+        return cosmos_missing or blob_missing
+
+    def _retry_due(self) -> bool:
+        attempted = self._init_attempted_at
+        return attempted is not None and self._init_pending() and self._clock() - attempted >= INIT_RETRY_SECONDS
+
     def _ensure_init(self) -> bool:
-        if self._initialised:
+        if self._initialised and not self._retry_due():
             return self._cosmos_container is not None
-        self._initialised = True
+        # The very first init blocks concurrent callers (they need its answer); a retry is attempted by one
+        # thread only, the others answer from the current state instead of queueing behind a slow connect.
+        first = not self._initialised
+        if not self._init_lock.acquire(blocking=first):
+            return self._cosmos_container is not None
+        try:
+            if self._initialised and not self._retry_due():
+                return self._cosmos_container is not None
+            self._attempt_init()
+        finally:
+            self._init_lock.release()
+        return self._cosmos_container is not None
 
-        credential = DefaultAzureCredential() if self._config.use_managed_identity else None
+    def _attempt_init(self) -> None:
+        """One init attempt. The parts that already work are kept: only a missing Blob client or Cosmos
+        container is (re)built."""
+        try:
+            self._init_attempted_at = self._clock()
+            credential = DefaultAzureCredential() if self._config.use_managed_identity else None
+            if self._blob_client is None:
+                self._init_blob(credential)
+            if self._cosmos_container is None:
+                self._init_cosmos(credential)
+        finally:
+            self._initialised = True
 
-        # Blob Storage
+    def _init_blob(self, credential: DefaultAzureCredential | None) -> None:
         try:
             if self._config.use_managed_identity and self._config.blob_account_name:
                 # Managed identity: construct client from account name
@@ -98,46 +150,45 @@ class PresentationStore:
             logger.warning("Blob Storage init failed (non-blocking): %s", e)
             self._blob_client = None
 
-        # Cosmos DB
-        if self._config.cosmos_endpoint:
-            try:
-                if self._config.cosmos_key:
-                    client = CosmosClient(self._config.cosmos_endpoint, self._config.cosmos_key)
-                elif credential:
-                    client = CosmosClient(self._config.cosmos_endpoint, credential=credential)
-                else:
-                    client = None
+    def _init_cosmos(self, credential: DefaultAzureCredential | None) -> None:
+        if not self._config.cosmos_endpoint:
+            return
+        try:
+            if self._config.cosmos_key:
+                client = CosmosClient(self._config.cosmos_endpoint, self._config.cosmos_key)
+            elif credential:
+                client = CosmosClient(self._config.cosmos_endpoint, credential=credential)
+            else:
+                client = None
 
-                if client and self._config.cosmos_key:
-                    # Key auth (local dev) may create resources on demand.
-                    self._cosmos_db = client.create_database_if_not_exists(self._config.cosmos_database)
-                    self._cosmos_container = self._cosmos_db.create_container_if_not_exists(
-                        id=COSMOS_CONTAINER,
-                        partition_key=PartitionKey(path="/id"),
-                    )
-                    self._progress_container = self._cosmos_db.create_container_if_not_exists(
-                        id=COSMOS_PROGRESS_CONTAINER,
-                        partition_key=PartitionKey(path="/user_id"),
-                    )
-                elif client:
-                    # Entra ID data-plane roles cannot create databases/containers;
-                    # they are provisioned by infra (infra/modules/cosmos.bicep).
-                    self._cosmos_db = client.get_database_client(self._config.cosmos_database)
-                    self._cosmos_container = self._cosmos_db.get_container_client(COSMOS_CONTAINER)
-                    self._cosmos_container.read()
-                    try:
-                        self._progress_container = self._cosmos_db.get_container_client(COSMOS_PROGRESS_CONTAINER)
-                        self._progress_container.read()
-                    except Exception as pe:
-                        logger.warning("Cosmos progress container unavailable: %s", pe)
-                        self._progress_container = None
-                if client:
-                    logger.info("Cosmos DB initialised (db=%s)", self._config.cosmos_database)
-            except Exception as e:
-                logger.warning("Cosmos DB init failed (non-blocking): %s", e)
-                self._cosmos_container = None
-
-        return self._cosmos_container is not None
+            if client and self._config.cosmos_key:
+                # Key auth (local dev) may create resources on demand.
+                self._cosmos_db = client.create_database_if_not_exists(self._config.cosmos_database)
+                self._cosmos_container = self._cosmos_db.create_container_if_not_exists(
+                    id=COSMOS_CONTAINER,
+                    partition_key=PartitionKey(path="/id"),
+                )
+                self._progress_container = self._cosmos_db.create_container_if_not_exists(
+                    id=COSMOS_PROGRESS_CONTAINER,
+                    partition_key=PartitionKey(path="/user_id"),
+                )
+            elif client:
+                # Entra ID data-plane roles cannot create databases/containers;
+                # they are provisioned by infra (infra/modules/cosmos.bicep).
+                self._cosmos_db = client.get_database_client(self._config.cosmos_database)
+                self._cosmos_container = self._cosmos_db.get_container_client(COSMOS_CONTAINER)
+                self._cosmos_container.read()
+                try:
+                    self._progress_container = self._cosmos_db.get_container_client(COSMOS_PROGRESS_CONTAINER)
+                    self._progress_container.read()
+                except Exception as pe:
+                    logger.warning("Cosmos progress container unavailable: %s", pe)
+                    self._progress_container = None
+            if client:
+                logger.info("Cosmos DB initialised (db=%s)", self._config.cosmos_database)
+        except Exception as e:
+            logger.warning("Cosmos DB init failed (non-blocking): %s", e)
+            self._cosmos_container = None
 
     @property
     def available(self) -> bool:
@@ -331,10 +382,17 @@ class PresentationStore:
         except (cosmos_exceptions.CosmosResourceExistsError, cosmos_exceptions.CosmosAccessConditionFailedError):
             return False
 
-    def get_presentation(self, presentation_id: str) -> dict | None:
-        """Get presentation metadata by id."""
+    def get_presentation(self, presentation_id: str, strict: bool = False) -> dict | None:
+        """Get presentation metadata by id (``None`` when it does not exist).
+
+        ``strict=True`` raises :class:`StorageUnavailable` when Cosmos DB is configured but unreachable
+        (container unavailable, or the read fails for any reason other than "not found") instead of
+        answering ``None``. "Not found" and "Cosmos not configured" stay ``None`` in both modes.
+        """
         self._ensure_init()
         if not self._cosmos_container:
+            if strict and self._config.cosmos_endpoint:
+                raise StorageUnavailable("Cosmos DB is configured but not available")
             return None
         try:
             return self._cosmos_container.read_item(
@@ -344,6 +402,8 @@ class PresentationStore:
             return None
         except Exception as e:
             logger.error("Failed to get presentation %s: %s", presentation_id, e)
+            if strict:
+                raise StorageUnavailable("Cosmos DB read failed") from e
             return None
 
     def list_presentations(self) -> list[dict]:
@@ -360,21 +420,31 @@ class PresentationStore:
             logger.error("Failed to list presentations: %s", e)
             return []
 
-    def list_decks(self) -> list[dict]:
-        """List catalog decks (source='deck') with metadata."""
+    def list_decks(self, strict: bool = False) -> list[dict]:
+        """List catalog decks (source='deck') with metadata.
+
+        ``strict=True`` raises :class:`StorageUnavailable` when Cosmos DB is configured but the container is
+        unavailable or the query fails, instead of answering ``[]``; ``[]`` is then only ever "no decks" (or
+        "Cosmos DB not configured"). ``strict=False`` keeps the lenient behaviour: every failure reads ``[]``.
+        """
         self._ensure_init()
         if not self._cosmos_container:
+            if strict and self._config.cosmos_endpoint:
+                raise StorageUnavailable("Cosmos DB is configured but not available")
             return []
         try:
             query = (
                 "SELECT c.id, c.filename, c.title, c.slide_count, c.language, "
-                "c.uploaded_at, c.tags, c.source, c.published, c.live_demo FROM c WHERE c.source = 'deck'"
+                "c.uploaded_at, c.tags, c.source, c.published, c.live_demo, c.audience_level "
+                "FROM c WHERE c.source = 'deck'"
             )
             return list(self._cosmos_container.query_items(
                 query=query, enable_cross_partition_query=True
             ))
         except Exception as e:
             logger.error("Failed to list decks: %s", e)
+            if strict:
+                raise StorageUnavailable("Cosmos DB query failed") from e
             return []
 
     def delete_presentation(self, presentation_id: str) -> bool:

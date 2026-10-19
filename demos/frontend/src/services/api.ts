@@ -8,6 +8,8 @@ export interface Slide {
   image_url?: string;
   video_url?: string;
   translated_notes?: Record<string, string>;
+  /** Slide-visible text for alt text (public decks; contracts §2.2). Never speaker notes. */
+  text?: string;
 }
 
 export interface Presentation {
