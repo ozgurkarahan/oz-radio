@@ -1,49 +1,61 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   ArrowRight, Clapperboard, Headphones, Layers, ListMusic, Mic, Play, Search, type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../services/auth';
-import { useDemoConfig } from '../services/demo';
 import { type Deck, listDecks } from '../services/decksApi';
 import { listLibrary as listVideos, type LibrarySummary as VideoSummary } from '../services/videoApi';
 import { listLibrary as listPodcasts, hasAudio, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import { usePrefersListen } from './PodcastLibraryPage';
 import {
-  Button, ButtonLink, EpisodeList, EpisodeRow, HostDisc, HostsMini, LivePill, SectionHead,
-  episodeNumber, formatDuration, humanizeTitle, languageName, pluralize,
+  DemoActionLink, LiveDemoBadge, OWNER_SIGN_IN_HINT, liveSessionsLeft, recordedDemoReason, useDemoEntry, type DemoEntry,
+} from '../components/AuthGate';
+import {
+  Alert, Button, ButtonLink, EmptyState, EpisodeList, EpisodeRow, HostDisc, HostsMini, SectionHead, Spinner,
+  episodeNumber, formatDuration, humanizeTitle, languageName, loadErrorMessage, pluralize,
+  type AudienceLevelValue,
 } from '../ui';
 import '../styles/pages/home.css';
 
-type Dept = { to: string; icon: LucideIcon; kicker: string; title: string; desc: string; adminOnly?: boolean };
+type Dept = { to: string; icon: LucideIcon; kicker: string; title: string; desc: string };
 
-const DEPARTMENTS: Dept[] = [
-  { to: '/decks', icon: Layers, kicker: 'Decks', title: 'Browse & present', desc: 'Every published deck, presented slide by slide by the live avatar.' },
-  { to: '/search', icon: Search, kicker: 'Search', title: 'Ask your decks', desc: 'Ask anything; the right slide is found and presented for you.', adminOnly: true },
-  { to: '/playlists', icon: ListMusic, kicker: 'Playlists', title: 'Learning paths', desc: 'Chain decks into ordered playlists and resume where you left off.', adminOnly: true },
-  { to: '/live', icon: Mic, kicker: 'Live', title: 'Present a new deck', desc: 'Drop a .pptx and the avatar presents it, with Q&A grounded in the slides.', adminOnly: true },
-  { to: '/video/library', icon: Clapperboard, kicker: 'Video', title: 'Narrated videos', desc: 'Avatar-narrated videos with subtitles and a SCORM package.' },
-  { to: '/podcast/library', icon: Headphones, kicker: 'Podcast', title: 'Two-host podcasts', desc: 'Two avatars discuss your document in a podcast conversation.' },
+/** What every visitor can open. */
+const PUBLIC_DEPARTMENTS: Dept[] = [
+  { to: '/decks', icon: Layers, kicker: 'Decks', title: 'Browse and present', desc: 'Every published deck, slide by slide, including the one the live avatar narrates.' },
+  { to: '/video/library', icon: Clapperboard, kicker: 'Video', title: 'Narrated videos', desc: 'Decks narrated by an AI host. Language and level are shown on each video.' },
+  { to: '/podcast/library', icon: Headphones, kicker: 'Podcast', title: 'Two-host podcasts', desc: 'Two AI hosts discuss a document as a conversation. Listen on the go or watch.' },
 ];
+
+/** Owner tools: grouped apart and marked "Sign-in required" for visitors. */
+const OWNER_DEPARTMENTS: Dept[] = [
+  { to: '/search', icon: Search, kicker: 'Search', title: 'Ask your decks', desc: 'Ask anything; the right slide is found and presented for you.' },
+  { to: '/playlists', icon: ListMusic, kicker: 'Playlists', title: 'Learning paths', desc: 'Chain decks into ordered playlists and resume where you left off.' },
+  { to: '/live', icon: Mic, kicker: 'Live', title: 'Present a new deck', desc: 'Drop a .pptx and the avatar presents it, with Q&A grounded in the slides.' },
+];
+
+type Kind = { icon: LucideIcon; label: string };
 
 type Episode = {
   key: string;
-  kind: 'deck' | 'video' | 'podcast';
+  kind: Kind;
   title: string;
   date: number;
   to: string;
   meta: string[];
   hosts: (AvatarInfo | undefined)[];
   duration: string;
+  level?: AudienceLevelValue | null;
+  language?: string;
   live?: boolean;
 };
 
-const KIND: Record<Episode['kind'], { icon: LucideIcon; label: string }> = {
-  deck: { icon: Mic, label: 'Live presentation' },
-  video: { icon: Clapperboard, label: 'Narrated video' },
-  podcast: { icon: Headphones, label: 'Podcast' },
-};
+// "Live presentation" is only a deck that visitors can actually start live; the other decks are slides.
+const DECK_LIVE: Kind = { icon: Mic, label: 'Live presentation' };
+const DECK_SLIDES: Kind = { icon: Layers, label: 'Slides' };
+const VIDEO: Kind = { icon: Clapperboard, label: 'Narrated video' };
+const PODCAST: Kind = { icon: Headphones, label: 'Podcast' };
 
 const time = (iso?: string | null) => (iso ? new Date(iso).getTime() || 0 : 0);
 
@@ -56,27 +68,83 @@ const podcastLink = (p: PodcastSummary, listenFirst: boolean) => {
   return `/podcast/library?${new URLSearchParams({ episode: p.job_id, mode })}`;
 };
 
-export default function HomePage() {
-  const navigate = useNavigate();
-  const auth = useAuth();
-  const locked = !auth.loading && !auth.is_admin;
-  const demo = useDemoConfig();
-  const { avatars } = useAvatars();
-  const listenFirst = usePrefersListen();
-  const [decks, setDecks] = useState<Deck[]>([]);
-  const [videos, setVideos] = useState<VideoSummary[]>([]);
-  const [podcasts, setPodcasts] = useState<PodcastSummary[]>([]);
+interface HomeData {
+  phase: 'loading' | 'ready';
+  decks: Deck[];
+  videos: VideoSummary[];
+  podcasts: PodcastSummary[];
+  /** A list that failed is not an empty list: it gets an error and "Try again", never "nothing is published". */
+  failed: { decks: boolean; videos: boolean; podcasts: boolean };
+  /** The first rejection, only ever read through `loadErrorMessage` (never printed). */
+  reason: unknown;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    listDecks().then((d) => { if (!cancelled) setDecks(d); }).catch(() => { /* home stays usable */ });
-    listVideos().then((v) => { if (!cancelled) setVideos(v); }).catch(() => {});
-    listPodcasts().then((p) => { if (!cancelled) setPodcasts(p); }).catch(() => {});
-    return () => { cancelled = true; };
+const LOADING: HomeData = {
+  phase: 'loading', decks: [], videos: [], podcasts: [], failed: { decks: false, videos: false, podcasts: false }, reason: null,
+};
+
+/** The three public lists, loaded together so the episode rows appear (and are ordered) once. */
+function useHomeData() {
+  const [data, setData] = useState<HomeData>(LOADING);
+  const [retrying, setRetrying] = useState(false);
+  const mounted = useRef(true);
+
+  const load = useCallback(async () => {
+    const [decks, videos, podcasts] = await Promise.allSettled([listDecks(), listVideos(), listPodcasts()]);
+    if (!mounted.current) return;
+    const rejected = [decks, videos, podcasts].find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    setData({
+      phase: 'ready',
+      decks: decks.status === 'fulfilled' ? decks.value : [],
+      videos: videos.status === 'fulfilled' ? videos.value : [],
+      podcasts: podcasts.status === 'fulfilled' ? podcasts.value : [],
+      failed: { decks: decks.status === 'rejected', videos: videos.status === 'rejected', podcasts: podcasts.status === 'rejected' },
+      reason: rejected ? rejected.reason : null,
+    });
   }, []);
 
-  // Surface the anonymous live avatar demo when at least one deck allows it.
-  const demoDeck = locked && demo.enabled ? decks.find((d) => d.live_demo) ?? null : null;
+  useEffect(() => {
+    mounted.current = true;
+    load();
+    return () => { mounted.current = false; };
+  }, [load]);
+
+  const retry = useCallback(async () => {
+    setRetrying(true);
+    await load();
+    if (mounted.current) setRetrying(false);
+  }, [load]);
+
+  return { data, retry, retrying };
+}
+
+/** Status text beside the demo link: what the session is like, or why only the recording is offered. */
+function DemoStatus({ entry }: { entry: DemoEntry }) {
+  let note: string | null = null;
+  let quota: string | null = null;
+  if (entry.kind === 'live') {
+    const minutes = Math.max(1, Math.round(entry.sessionSeconds / 60));
+    note = `${entry.qa ? 'Ask questions by voice' : 'Narration-only'} · up to ${minutes} min · no sign-in`;
+    quota = entry.remaining === null ? null : liveSessionsLeft(entry.remaining);
+  } else if (entry.kind === 'recorded') {
+    note = recordedDemoReason(entry.reason);
+  }
+  return (
+    <p className="home-hero__status">
+      {note && <span data-testid="home-demo-note">{note}</span>}
+      {quota && <span data-testid="home-demo-quota">{quota}</span>}
+    </p>
+  );
+}
+
+export default function HomePage() {
+  const auth = useAuth();
+  // Default deny: a visitor never sees owner tools as open links, not even before /api/me answers.
+  const locked = !auth.is_admin;
+  const entry = useDemoEntry();
+  const { avatars } = useAvatars();
+  const listenFirst = usePrefersListen();
+  const { data, retry, retrying } = useHomeData();
 
   const lead = pickDefaultAvatar(avatars);
   const co = useMemo(() => {
@@ -87,68 +155,65 @@ export default function HomePage() {
   }, [avatars, lead]);
   const byName = (name?: string | null) => avatars.find((a) => a.display_name === name);
 
+  // Rows wait for the demo entry too, so a deck's kind label never flips from "Slides" to "Live presentation".
+  const ready = data.phase === 'ready' && entry.kind !== 'pending';
+  const liveNow = entry.kind === 'live';
+
   const episodes = useMemo<Episode[]>(() => {
     const items: Episode[] = [
-      ...decks.map((d) => ({
-        key: `deck-${d.deck_id}`, kind: 'deck' as const, title: humanizeTitle(d.title), date: time(d.uploaded_at),
-        to: `/decks/${d.deck_id}/present`, meta: [pluralize(d.slide_count, 'slide'), languageName(d.language)],
-        hosts: [lead], duration: '', live: !!d.live_demo && demo.enabled,
-      })),
-      ...videos.map((v) => ({
-        key: `video-${v.job_id}`, kind: 'video' as const, title: humanizeTitle(v.title || v.document_title), date: time(v.created_at),
+      ...data.decks.map((d) => {
+        const live = !!d.live_demo && liveNow;
+        return {
+          key: `deck-${d.deck_id}`, kind: live ? DECK_LIVE : DECK_SLIDES, title: humanizeTitle(d.title), date: time(d.uploaded_at),
+          to: `/decks/${d.deck_id}/present`, meta: [pluralize(d.slide_count, 'slide'), languageName(d.language)],
+          hosts: [lead], duration: '', level: d.audience_level, language: d.language, live,
+        };
+      }),
+      ...data.videos.map((v) => ({
+        key: `video-${v.job_id}`, kind: VIDEO, title: humanizeTitle(v.title || v.document_title), date: time(v.created_at),
         to: '/video/library', meta: ['Narrated video', languageName(v.language)], hosts: [lead],
-        duration: formatDuration(v.duration_sec),
+        duration: formatDuration(v.duration_sec), level: v.audience_level, language: v.language,
       })),
-      ...podcasts.map((p) => {
+      ...data.podcasts.map((p) => {
         const named = (p.speaker_names ?? []).map(byName).filter(Boolean) as AvatarInfo[];
         return {
-          key: `podcast-${p.job_id}`, kind: 'podcast' as const, title: humanizeTitle(p.title || p.document_title), date: time(p.created_at),
+          key: `podcast-${p.job_id}`, kind: PODCAST, title: humanizeTitle(p.title || p.document_title), date: time(p.created_at),
           to: podcastLink(p, listenFirst), meta: ['Podcast', languageName(p.language)],
           hosts: named.length ? named : [lead, co], duration: formatDuration(p.duration_sec),
+          level: p.audience_level, language: p.language,
         };
       }),
     ];
     return items.sort((a, b) => b.date - a.date).slice(0, 6);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [decks, videos, podcasts, avatars, demo.enabled, listenFirst]);
+  }, [data, avatars, liveNow, listenFirst]);
 
-  const minutes = Math.max(1, Math.round(demo.session_seconds / 60));
+  const failedCount = Object.values(data.failed).filter(Boolean).length;
+  const allFailed = failedCount === 3;
+  const total = data.decks.length + data.videos.length + data.podcasts.length;
 
   return (
     <div className="container page" style={{ paddingTop: 0 }}>
       <section className="home-hero" aria-labelledby="home-title">
         <div className="home-hero__copy">
-          <div className="eyebrow">Presented · Narrated · Podcast — by AI hosts</div>
           <h1 id="home-title" className="display home-hero__title">
             Every deck deserves a <em>great host.</em>
           </h1>
           <p className="lead">
-            AI avatars that present, narrate and podcast your decks. Upload once, ask anything —
-            {lead?.display_name ? ` ${lead.display_name}` : ' the avatar'} presents the exact slide that answers you.
+            AI hosts explain slide decks and discuss them as podcasts. Listen, watch, or try the live demo — free, no sign-in.
           </p>
-          <div className="home-hero__ctas">
-            {demoDeck ? (
-              <Button
-                variant="primary"
-                size="lg"
-                icon={Play}
-                data-testid="home-try-live-demo"
-                onClick={() => navigate(`/decks/${demoDeck.deck_id}/present`)}
-              >
-                Watch the live demo
-              </Button>
-            ) : (
-              <ButtonLink to="/decks" variant="primary" size="lg" icon={Layers}>Browse decks</ButtonLink>
-            )}
-            <ButtonLink to={demoDeck ? '/decks' : '/podcast/library'} size="lg">
-              {demoDeck ? 'Browse decks' : 'Listen to a podcast'}
-            </ButtonLink>
-            {demoDeck && (
-              <span className="home-hero__note" data-testid="home-demo-note">
-                {demo.qa.enabled ? 'Ask questions by voice' : 'Narration-only'} · up to {minutes} min · no sign-in
-              </span>
-            )}
+          <div className="home-hero__ctas" aria-busy={entry.kind === 'pending' || undefined}>
+            <DemoActionLink
+              entry={entry}
+              size="lg"
+              className="home-hero__cta"
+              testIdLive="home-try-live-demo"
+              testIdRecorded="home-watch-recorded-demo"
+            />
+            <ButtonLink to="/podcast/library" size="lg" icon={Headphones}>Listen to an episode</ButtonLink>
+            <ButtonLink to="/decks" size="lg" variant="link" iconRight={ArrowRight} className="home-hero__browse">Browse decks</ButtonLink>
           </div>
+          <DemoStatus entry={entry} />
         </div>
 
         <div className="home-hosts" aria-label="Your hosts">
@@ -156,7 +221,7 @@ export default function HomePage() {
             <div className="home-host home-host--lead">
               <HostDisc host={lead} ring speaking style={{ '--disc': 'clamp(170px, 22vw, 260px)' } as React.CSSProperties} />
               <div className="home-host__role">
-                {demoDeck ? <LivePill>On air</LivePill> : <span className="eyebrow">Host</span>}
+                <span className="eyebrow">Host</span>
                 <span className="home-host__name">{lead.display_name}</span>
               </div>
             </div>
@@ -173,49 +238,91 @@ export default function HomePage() {
         </div>
       </section>
 
-      {episodes.length > 0 && (
-        <section className="home-section" aria-labelledby="home-episodes">
-          <SectionHead
-            className="home-section__head"
-            title={<span id="home-episodes">This week on Oz Radio</span>}
-            aside={pluralize(decks.length + videos.length + podcasts.length, 'episode')}
-          />
-          <EpisodeList label="Latest episodes">
-            {episodes.map((e, i) => (
-              <EpisodeRow
-                key={e.key}
-                num={episodeNumber(i + 1)}
-                title={e.title}
-                to={e.to}
-                meta={e.meta}
-                kind={KIND[e.kind]}
-                hosts={<HostsMini hosts={e.hosts} />}
-                duration={e.live ? <LivePill>Live demo</LivePill> : e.duration}
-                actions={(
-                  <Link
+      <section className="home-section" aria-labelledby="home-episodes">
+        <SectionHead
+          className="home-section__head"
+          title={<span id="home-episodes">Latest on Oz Radio</span>}
+          aside={ready && episodes.length > 0 ? pluralize(total, 'episode') : undefined}
+        />
+        {!ready ? (
+          <div className="home-episodes__loading" aria-busy="true"><Spinner label="Loading episodes…" /></div>
+        ) : (
+          <>
+            {failedCount > 0 && (
+              <Alert tone={allFailed ? 'error' : 'info'} className="home-episodes__alert" data-testid="home-load-error">
+                <div className="cluster">
+                  <span>{loadErrorMessage(data.reason, allFailed ? 'the latest episodes' : 'some episodes')}</span>
+                  <Button size="sm" onClick={retry} busy={retrying}>Try again</Button>
+                </div>
+              </Alert>
+            )}
+            {episodes.length > 0 && (
+              <EpisodeList label="Latest episodes">
+                {episodes.map((e, i) => (
+                  <EpisodeRow
+                    key={e.key}
+                    data-testid="home-episode"
+                    num={episodeNumber(i + 1)}
+                    title={e.title}
                     to={e.to}
-                    className={`btn btn--icon btn--sm${i === 0 ? ' btn--primary' : ''}`}
-                    aria-label={`Open ${e.title}`}
-                  >
-                    <Play aria-hidden />
-                  </Link>
-                )}
-              />
-            ))}
-          </EpisodeList>
-        </section>
-      )}
+                    meta={e.meta}
+                    kind={e.kind}
+                    level={e.level}
+                    lang={e.language}
+                    hosts={<HostsMini hosts={e.hosts} />}
+                    duration={e.duration}
+                    extra={e.live ? <LiveDemoBadge liveDemo /> : undefined}
+                    actions={(
+                      <Link
+                        to={e.to}
+                        className={`btn btn--icon btn--sm${i === 0 ? ' btn--primary' : ''}`}
+                        aria-label={`Open ${e.title}`}
+                      >
+                        <Play aria-hidden />
+                      </Link>
+                    )}
+                  />
+                ))}
+              </EpisodeList>
+            )}
+            {failedCount === 0 && total === 0 && (
+              <EmptyState icon={Headphones} title="No episodes are published yet" className="home-empty">
+                Decks, videos and podcasts appear here as soon as they are published. The live demo and the decks are ready now.
+              </EmptyState>
+            )}
+          </>
+        )}
+      </section>
 
       <section className="home-section" aria-labelledby="home-sections">
-        <SectionHead className="home-section__head" title={<span id="home-sections">Inside Oz Radio</span>} aside="Six ways in" />
+        <SectionHead className="home-section__head" title={<span id="home-sections">Inside Oz Radio</span>} aside="Free to browse" />
         <div className="home-departments">
-          {DEPARTMENTS.map((d) => (
+          {PUBLIC_DEPARTMENTS.map((d) => (
+            <Link key={d.to} to={d.to} className="home-dept">
+              <span className="home-dept__kicker eyebrow"><d.icon aria-hidden />{d.kicker}</span>
+              <span className="home-dept__title">{d.title}</span>
+              <span className="home-dept__desc">{d.desc}</span>
+              <span className="home-dept__cta">Open {d.kicker} <ArrowRight aria-hidden /></span>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="home-section" aria-labelledby="home-owner" data-testid="home-owner-tools">
+        <SectionHead
+          className="home-section__head"
+          title={<span id="home-owner">Owner tools</span>}
+          aside={locked ? 'Sign-in required' : undefined}
+        />
+        {locked && <p className="home-owner__hint">{OWNER_SIGN_IN_HINT}</p>}
+        <div className="home-departments">
+          {OWNER_DEPARTMENTS.map((d) => (
             <Link key={d.to} to={d.to} className="home-dept">
               <span className="home-dept__kicker eyebrow"><d.icon aria-hidden />{d.kicker}</span>
               <span className="home-dept__title">{d.title}</span>
               <span className="home-dept__desc">{d.desc}</span>
               <span className="home-dept__cta">
-                {locked && d.adminOnly
+                {locked
                   ? <span className="home-dept__lock">Sign-in required</span>
                   : <>Open {d.kicker} <ArrowRight aria-hidden /></>}
               </span>

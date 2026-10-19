@@ -26,9 +26,52 @@
   margin-top: var(--sp-3);
 }
 
-.home-hero__note {
+/* The skeleton and the final link share this width, so nothing moves when the demo entry is decided. */
+.home-hero__cta {
+  min-width: 16.5rem;
+}
+
+/* "Browse decks": the quietest of the three actions, still a full-height touch target. */
+.home-hero__browse {
+  min-height: var(--tap);
+  padding-inline: 0;
+}
+
+/* Status beside the demo link ("Narration-only · up to 3 min", "17 live sessions left today"). One line is always reserved. */
+.home-hero__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--sp-3);
+  min-height: 1.5rem;
+  margin-top: calc(var(--sp-2) * -1);
   font-size: var(--fs-sm);
   color: var(--c-muted);
+}
+
+.home-hero__status span + span::before {
+  content: '·';
+  margin-right: var(--sp-3);
+}
+
+.home-episodes__loading {
+  display: flex;
+  justify-content: center;
+  min-height: 30rem;
+  padding-top: var(--sp-7);
+}
+
+.home-episodes__alert {
+  margin-top: var(--sp-4);
+}
+
+.home-empty {
+  padding-block: var(--sp-7);
+}
+
+.home-owner__hint {
+  padding-block: var(--sp-3);
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
 }
 
 .home-hosts {

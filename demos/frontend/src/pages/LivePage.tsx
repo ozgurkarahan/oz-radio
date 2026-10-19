@@ -37,7 +37,7 @@ export default function LivePage() {
           title="The live presenter is limited to demo users"
           description="Upload a PowerPoint deck with speaker notes and a live AI avatar presents it in your language, with slide-aware Q&A. Published decks and videos remain browsable without signing in."
           action="upload a deck and try the live avatar"
-          links={[{ href: '/decks', label: 'Browse the decks' }, { href: '/video/library', label: 'Browse the video library' }, { href: '/podcast/library', label: 'Browse the podcast library' }]}
+          links={[{ href: '/decks', label: 'Browse the decks' }, { href: '/video/library', label: 'Browse the video library' }]}
         />
       </div>
     );
