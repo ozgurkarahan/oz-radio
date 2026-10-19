@@ -280,8 +280,12 @@ test.describe('Regression — redesign behaviours', () => {
     await trigger.click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
+    // The mock's video file is empty: let the player's recovery settle on "couldn't be played" first (it hides the failed
+    // <video>, which drops its focus), so the trap is checked on a stable dialog. A playable video is no better here: Chrome's
+    // native video controls keep Tab and Escape to themselves once they have focus.
+    await expect(page.getByTestId('video-problem')).toBeVisible();
     const inDialog = () => page.evaluate(() => !!document.activeElement?.closest('[role=dialog]'));
-    expect(await inDialog()).toBe(true);
+    await expect.poll(inDialog).toBe(true); // "Try again" takes the focus the hidden video had
     // Focusing something behind the scrim is pulled back into the dialog.
     await page.evaluate(() => (document.querySelector('.masthead__brand') as HTMLElement).focus());
     expect(await inDialog()).toBe(true);
