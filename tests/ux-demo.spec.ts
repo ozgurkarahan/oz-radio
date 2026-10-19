@@ -8,7 +8,9 @@
  *    T3-11 and T3-Q01 … T3-Q14. The other tests cover the criteria C3.1 (two taps from Home to the first narration
  *    request, progress within a second), C3.4 (captions in sync), the countdown warnings (P1-5), captions for screen
  *    readers (P1-1), the audio element, ICE offer timing, the typed question, the v1-server degradation and the
- *    replacements for the demo block of regression.spec.ts.
+ *    replacements for the demo block of regression.spec.ts. Code-review findings of the first range: the idle close
+ *    while the visitor types a question (`demo.activity`, `demo.idle`, the "Closes in…" card; tagged [F2]) and the 20 s
+ *    media watchdog against the 8 s reconnect grace ([T3-08c]).
  *
  * Phone tests emulate a Pixel 7 inside the chromium project (the mobile-chromium project does not match this file) and
  * take viewport screenshots only (`fullPage` drops touch emulation).
@@ -782,6 +784,106 @@ test.describe('setup and media failures', () => {
     await expect(card(page)).toHaveCount(0);
     await expect(page.getByTestId('demo-stop')).toBeVisible();
   });
+
+  // ── the 20 s watchdog of a link that never comes up must not preempt the reconnect grace (review finding 3) ──
+
+  /** A scripted `RTCPeerConnection`: the spec sets its `connectionState` (`__pcs[0].set('connected')`) and reads when it was created. */
+  async function scriptedPeerConnection(page: Page) {
+    await page.addInitScript(() => {
+      const w = window as any;
+      w.__pcs = [] as unknown[];
+      class ScriptedPC {
+        onicecandidate: unknown = null;
+        onicegatheringstatechange: unknown = null;
+        onconnectionstatechange: (() => void) | null = null;
+        oniceconnectionstatechange: unknown = null;
+        ondatachannel: unknown = null;
+        ontrack: unknown = null;
+        iceGatheringState = 'new';
+        iceConnectionState = 'new';
+        connectionState = 'new';
+        signalingState = 'stable';
+        localDescription: { type: string; sdp: string } | null = null;
+        createdAt = Date.now();
+        constructor() { w.__pcs.push(this); }
+        addTransceiver() {}
+        createDataChannel() { return {}; }
+        async createOffer() { return { type: 'offer', sdp: 'v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n' }; }
+        async setLocalDescription(description: { type: string; sdp: string }) { this.localDescription = description; }
+        async setRemoteDescription() {}
+        close() { this.connectionState = 'closed'; }
+        set(state: string) { this.connectionState = state; this.onconnectionstatechange?.(); }
+      }
+      w.RTCPeerConnection = ScriptedPC;
+    });
+  }
+
+  /** Taps Start on a session whose avatar service hands out ICE servers; resolves once the page created its peer connection. */
+  async function startWithPeerConnection(page: Page) {
+    await scriptedPeerConnection(page);
+    const { mock } = await open(page, { clock: true, socket: { onOpen: 'ice' } });
+    await tapStart(page, mock);
+    await page.waitForFunction(() => (window as any).__pcs?.length === 1);
+    return mock;
+  }
+
+  /** Milliseconds of the page's clock until the 20 s watchdog of the first peer connection is due. */
+  const untilWatchdog = (page: Page) => page.evaluate(() => 20_000 - (Date.now() - (window as any).__pcs[0].createdAt));
+
+  test('[T3-08c] media that connected and drops just before the 20 s mark goes through the 8 s reconnect grace — the watchdog never ends a connected session', async ({ page }) => {
+    const mock = await startWithPeerConnection(page);
+    await page.evaluate(() => (window as any).__pcs[0].set('connected'));
+    await expect(page.getByTestId('raise-hand'), 'the media is up').toBeVisible();
+    await freezeClock(page);
+    await page.clock.runFor(Math.max(0, (await untilWatchdog(page)) - 400));
+    await page.evaluate(() => (window as any).__pcs[0].set('disconnected'));
+    await expect(page.getByTestId('demo-reconnecting')).toHaveText('Reconnecting…');
+    await page.clock.runFor(900);                                     // the 20 s mark is behind us, the grace is not over
+    await expect(card(page)).toHaveCount(0);
+    await expect(page.getByTestId('demo-reconnecting')).toBeVisible();
+    await page.clock.runFor(2000);
+    await page.evaluate(() => (window as any).__pcs[0].set('connected'));
+    await expect(page.getByTestId('demo-reconnecting')).toHaveCount(0);
+    await page.clock.runFor(10_000);
+    await expect(card(page)).toHaveCount(0);
+    await expect(page.getByTestId('demo-stop')).toBeVisible();
+    expect(mock.ofType('demo.finish'), 'the session was never ended from this side').toHaveLength(0);
+  });
+
+  test('[T3-08c] a link that drops at the 20 s mark and does not come back still ends after the 8 s grace as "interrupted", not as "couldn\'t connect"', async ({ page }) => {
+    await startWithPeerConnection(page);
+    await page.evaluate(() => (window as any).__pcs[0].set('connected'));
+    await expect(page.getByTestId('raise-hand'), 'the media is up').toBeVisible();
+    await freezeClock(page);
+    await page.clock.runFor(Math.max(0, (await untilWatchdog(page)) - 400));
+    await page.evaluate(() => (window as any).__pcs[0].set('disconnected'));
+    await page.clock.runFor(7000);
+    await expect(card(page)).toHaveCount(0);
+    await page.clock.runFor(1500);
+    await expectOutcome(page, 'interrupted', COPY.interrupted.title, 'alert');
+  });
+
+  test('[T3-08] a link that never connects is still judged at 20 s — not before — as "Couldn\'t connect", and the socket is closed', async ({ page }) => {
+    const mock = await startWithPeerConnection(page);
+    await freezeClock(page);
+    await page.clock.runFor(Math.max(0, (await untilWatchdog(page)) - 600));
+    await expect(card(page)).toHaveCount(0);
+    await page.clock.runFor(1200);
+    const c = await expectOutcome(page, 'connect', COPY.connect.title, 'alert');
+    await expect(c.getByTestId('demo-outcome-retry')).toHaveText('Try again');
+    await expect.poll(() => mock.closes, { message: 'the slot is freed' }).toEqual([{ code: CLOSE.FINISHED, reason: 'Demo finished' }]);
+  });
+
+  test('[T3-08c] a stray "timeout" once the media connected is ignored; a "failed" link still ends the session', async ({ page }) => {
+    const { mock } = await open(page);
+    await connect(page, mock);
+    await page.evaluate(() => (window as any).__ozRadioTest.mediaState('timeout'));
+    await page.waitForTimeout(300);
+    await expect(card(page)).toHaveCount(0);
+    await expect(page.getByTestId('demo-stop')).toBeVisible();
+    await page.evaluate(() => (window as any).__ozRadioTest.mediaState('failed'));
+    await expectOutcome(page, 'interrupted', COPY.interrupted.title, 'alert');
+  });
 });
 
 // ── 7. After the narration: ask, finish, or nothing (F2) ───────────────────────────────────────────────────
@@ -794,7 +896,8 @@ test.describe('after the narration (F2)', () => {
     await shot(page, testInfo, 'desktop-done');
     const done = page.getByTestId('demo-narration-done');
     await expect(done).toContainText('The presentation is complete');
-    await expect(page.getByTestId('demo-done-time')).toHaveText(/^\d:\d\d left in this live session$/);
+    // The idle close (≈ 45 s after the narration) comes long before the 5-minute cap: the card counts down to the one that comes first.
+    await expect(page.getByTestId('demo-done-time')).toHaveText(/^Closes in 0:[34]\d unless you ask a question$/);
     await expect(page.getByTestId('demo-ask')).toHaveText('Ask a question');
     await expect(page.getByTestId('demo-finish')).toHaveText('Finish demo');
     for (const name of [/present all/i, /present this slide/i, /speak slide/i]) await expect(page.getByRole('button', { name })).toHaveCount(0);
@@ -852,6 +955,8 @@ test.describe('after the narration (F2)', () => {
     const done = page.getByTestId('demo-narration-done');
     await expect(done).toBeVisible();
     await expect(done).toContainText("You've reached this session's narration limit");
+    // No `demo.narration_complete` in this case, so no idle deadline is known: the session time, as ever.
+    await expect(page.getByTestId('demo-done-time')).toHaveText(/^\d:\d\d left in this live session$/);
     await expect(page.getByTestId('demo-ask')).toBeVisible();
     await expect(page.getByTestId('demo-finish')).toBeVisible();
     const recording = page.getByTestId('demo-done-recording');
@@ -884,6 +989,143 @@ test.describe('after the narration (F2)', () => {
     await page.clock.runFor(700);
     await mock.waitForSent('demo.speak', 2);
     expect(mock.ofType('demo.speak').map((m) => m.slide)).toEqual([0, 1]);
+  });
+});
+
+// ── 7b. After the narration: the time that is really left, and keeping the session open while the visitor types ───
+
+test.describe('idle close and the visitor typing a question (review finding 1)', () => {
+  const doneTime = (page: Page) => page.getByTestId('demo-done-time');
+  const typed = (page: Page) => page.getByTestId('qa-text-input');
+
+  test('[F2] the card counts down to the idle close when that comes first, with "unless you ask a question" while a question can be asked', async ({ page }) => {
+    const { mock } = await open(page, { slides: 2 });
+    await reachNarrationDone(page, mock, 2);
+    await expect(doneTime(page)).toHaveText(/^Closes in 0:[34]\d unless you ask a question$/);
+    await expect(page.getByTestId('demo-narration-done'), 'the card stays a polite status, not a per-second live region').toHaveAttribute('role', 'status');
+    await expect(doneTime(page)).toHaveClass(/tabular/);
+  });
+
+  test('[F2] with no question to ask the card just says "Closes in {m:ss}"', async ({ page }) => {
+    const { mock } = await open(page, { slides: 2, api: { demoQa: undefined } });
+    await reachNarrationDone(page, mock, 2);
+    await expect(page.getByTestId('demo-ask')).toHaveCount(0);
+    await expect(doneTime(page)).toHaveText(/^Closes in 0:[34]\d$/);
+  });
+
+  test('[F2] when the session cap comes first the card keeps "{m:ss} left in this live session"', async ({ page }) => {
+    const { mock } = await open(page, { slides: 2, socket: { remainingMs: 30_000 } });
+    await reachNarrationDone(page, mock, 2);
+    await expect(doneTime(page)).toHaveText(/^0:\d\d left in this live session$/);
+  });
+
+  test('[F2] every demo.idle re-syncs the time: the later of the two limits never shows, the earlier one always does', async ({ page }) => {
+    const { mock } = await open(page, { slides: 2 });
+    await reachNarrationDone(page, mock, 2);
+    mock.idle(125_000);
+    await expect(doneTime(page)).toHaveText(/^Closes in 2:0[0-5] unless you ask a question$/);
+    mock.idle(20_000);
+    await expect(doneTime(page)).toHaveText(/^Closes in 0:(19|20) unless you ask a question$/);
+    mock.idle(400_000);                                  // later than the 5-minute cap: the cap binds again
+    await expect(doneTime(page)).toHaveText(/^[45]:\d\d left in this live session$/);
+    mock.idle(90_000);
+    await expect(doneTime(page)).toHaveText(/^Closes in 1:(2[89]|30) unless you ask a question$/);
+  });
+
+  test('[F2] the idle time counts down second by second without another message', async ({ page }) => {
+    const { mock } = await open(page, { slides: 1, clock: true });
+    await reachNarrationDone(page, mock, 1);
+    await freezeClock(page);
+    mock.idle(60_000);
+    await expect(doneTime(page)).toHaveText('Closes in 1:00 unless you ask a question');
+    await page.clock.runFor(25_000);
+    // the local timer ticks once a second at its own phase: 25 s later the display reads 0:35 or 0:36
+    await expect(doneTime(page)).toHaveText(/^Closes in 0:3[56] unless you ask a question$/);
+  });
+
+  test('[F2] while a question is in flight the server cannot close on idleness: the card shows the session time, then the fresh idle window', async ({ page }) => {
+    const { mock } = await open(page, { slides: 1, socket: { qaDelaysMs: { transcript: 1500, answer: 1500 } } });
+    await reachNarrationDone(page, mock, 1);
+    await expect(doneTime(page)).toHaveText(/^Closes in 0:[34]\d unless you ask a question$/);
+    await page.getByTestId('demo-ask').click();
+    await typed(page).fill('What is an agent?');
+    await page.getByTestId('qa-text-submit').click();
+    await expect(page.getByTestId('qa-state')).toHaveText('Finding the answer in the deck…');
+    await expect(doneTime(page), 'the question is being answered').toHaveText(/^\d:\d\d left in this live session$/);
+    await expect(page.getByTestId('qa-answer')).toBeVisible();
+    await endTurns(page, mock, 1, 2);
+    await mock.waitForSent('qa.resume');
+    await expect(typed(page)).toBeVisible();
+    await expect(doneTime(page), 'the answer started a fresh idle window').toHaveText(/^Closes in 0:[3-5]\d unless you ask a question$/);
+  });
+
+  test('[F2] "Ask a question" tells the server at once (one demo.activity), moves focus to the field, and the focus does not send another', async ({ page }) => {
+    const { mock } = await open(page, { slides: 2 });
+    await reachNarrationDone(page, mock, 2);
+    expect(mock.ofType('demo.activity'), 'nothing was sent before the visitor acted').toHaveLength(0);
+    await page.getByTestId('demo-ask').click();
+    await expect(typed(page)).toBeFocused();
+    await mock.waitForSent('demo.activity');
+    await page.waitForTimeout(300);
+    expect(mock.ofType('demo.activity')).toEqual([{ type: 'demo.activity' }]);
+  });
+
+  test('[F2] focusing the field and typing send demo.activity: the first at once, then at most one every 10 s', async ({ page }) => {
+    const { mock } = await open(page, { slides: 2, clock: true });
+    await reachNarrationDone(page, mock, 2);
+    await freezeClock(page);
+    await typed(page).click();                           // focus: the visitor is composing a question
+    await mock.waitForSent('demo.activity');
+    await typed(page).pressSequentially('What is an agent', { delay: 20 });
+    await page.clock.runFor(DEMO_TIMING.activityIntervalMs - 1500);
+    await typed(page).pressSequentially('?', { delay: 20 });
+    await page.waitForTimeout(300);
+    expect(mock.ofType('demo.activity'), 'one for the focus and the first keys, none within 10 s of it').toHaveLength(1);
+    await page.clock.runFor(1600);
+    await typed(page).pressSequentially('!', { delay: 20 });
+    await mock.waitForSent('demo.activity', 2);
+    await typed(page).pressSequentially(' Thanks', { delay: 20 });
+    await page.waitForTimeout(300);
+    expect(mock.ofType('demo.activity')).toHaveLength(2);
+    await page.clock.runFor(DEMO_TIMING.activityIntervalMs + 500);
+    await typed(page).press('Backspace');                // any draft change counts, deleting too
+    await mock.waitForSent('demo.activity', 3);
+    for (const message of mock.ofType('demo.activity')) expect(message).toEqual({ type: 'demo.activity' });
+  });
+
+  test('[F2] nothing is sent while the narration runs, before demo.narration_complete', async ({ page }) => {
+    const { mock } = await open(page, { slides: 3 });
+    await connect(page, mock);
+    await mock.waitForSent('demo.speak', 1);
+    await typed(page).click();
+    await typed(page).pressSequentially('Why?', { delay: 20 });
+    await page.waitForTimeout(400);
+    expect(mock.log.some((e) => e.dir === 'out' && e.type === 'demo.narration_complete')).toBe(false);
+    expect(mock.ofType('demo.activity'), 'the narration is not complete').toHaveLength(0);
+    await typed(page).fill('');
+    await endTurns(page, mock, 2);                       // slides 1 and 2 are done: slide 3 is the last one
+    await mock.waitForSent('demo.speak', 3);
+    await expect.poll(() => mock.log.some((e) => e.dir === 'out' && e.type === 'demo.narration_complete')).toBe(true);
+    await typed(page).pressSequentially('Why?', { delay: 20 });
+    await mock.waitForSent('demo.activity');
+    expect(mock.ofType('demo.activity')).toHaveLength(1);
+  });
+
+  test('[F2] with questions off nothing is sent, however long the visitor stays', async ({ page }) => {
+    const { mock } = await open(page, { slides: 1, api: { demoQa: undefined } });
+    await reachNarrationDone(page, mock, 1);
+    await page.waitForTimeout(400);
+    expect(mock.ofType('demo.activity')).toHaveLength(0);
+    await expect(typed(page)).toHaveCount(0);
+  });
+
+  test('[F2] an older (v1) server sends no idle deadline: the card keeps the session time and nothing is sent', async ({ page }) => {
+    const { mock } = await open(page, { slides: 1, socket: { protocol: 1 } });
+    await reachNarrationDone(page, mock, 1);
+    await expect(doneTime(page)).toHaveText(/^\d:\d\d left in this live session$/);
+    await page.getByTestId('demo-ask').click();               // no typed field on a v1 server: the spoken question starts
+    await mock.waitForSent('qa.begin');
+    expect(mock.ofType('demo.activity'), 'a v1 server never announces the end of the narration').toHaveLength(0);
   });
 });
 
@@ -1701,6 +1943,25 @@ test.describe('phone (Pixel 7 viewport)', () => {
     expect(cardBox.y + cardBox.height, 'the card is not hidden under the bar').toBeLessThanOrEqual(bar.y + 1);
     await expect(c.getByTestId('demo-outcome-recording')).toBeInViewport();
     await page.screenshot({ path: testInfo.outputPath('outcome-phone.png') });
+  });
+
+  test('[F2] after the narration the card with the idle wording stays inside the screen, above the bar, with Ask and Finish within reach', async ({ page }, testInfo) => {
+    const { mock } = await open(page, { slides: 2 });
+    await page.getByTestId('demo-start').tap();
+    await expect.poll(() => mock.connections).toBe(1);
+    await demoHooks.connected(page);
+    await endTurns(page, mock, 2);
+    const done = page.getByTestId('demo-narration-done');
+    await expect(done).toBeVisible();
+    await expect(page.getByTestId('demo-done-time')).toHaveText(/^Closes in 0:[34]\d unless you ask a question$/);
+    for (const id of ['demo-narration-done', 'demo-ask', 'demo-finish']) {
+      await expect(page.getByTestId(id), `${id} is on the first screen`).toBeInViewport({ ratio: 1 });
+    }
+    const box = (await done.boundingBox())!;
+    expect(box.x, 'the longer wording wraps inside the screen').toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('done-phone.png') });
   });
 });
 

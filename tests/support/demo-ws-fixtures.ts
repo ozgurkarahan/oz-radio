@@ -2,9 +2,11 @@ import { expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  DEMO_ACTIVITY_MIN_INTERVAL_SECONDS,
   DEMO_AZURE_EVENTS as AZ,
   DEMO_CLOSE_CODES as CLOSE,
   DEMO_CLOSE_REASONS,
+  DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS,
   DEMO_IDLE_CLOSE_SECONDS,
   DEMO_AUDIO_TAIL_GRACE_SECONDS,
   DEMO_IDLE_CHECK_INTERVAL_SECONDS,
@@ -28,7 +30,8 @@ import { avatar } from './mock-api';
  *   mockDemoSocket(page, opts)   the server side: demo.started right after accept (before anything else, like the real
  *                                endpoint), demo.speaking, per-speak captions + word timestamps + response.done (optionally
  *                                spread over `responseMs`), response.cancel, demo.narration_complete after the last slide,
- *                                the busy-based idle close (4002), qa.ask_text, voice questions, demo.finish (4001 at any
+ *                                the busy-based idle close (4002) with its `demo.idle` announcements and the `demo.activity`
+ *                                keep-alive (v1.3), qa.ask_text, voice questions, demo.finish (4001 at any
  *                                time, even before the avatar service answers), scripted close codes, an `error` event
  *   refuseDemoHandshake(page)    the socket never opens and closes with 1006 (pre-accept refusal, proxy, VPN)
  *   demoProbe(page)              drives a WebSocket from the page itself (socket-level checks, no UI)
@@ -203,6 +206,11 @@ export interface DemoSocketOptions {
    * The number is the (grace + idle) window, 40 000 ms by default; a smaller value scales EVERY idle duration by
    * `idleCloseMs / 40 000` (latency, D, the 30 s, the 1 s check interval), so a spec can run it in ~2 s.
    * `false` = report the real, unscaled `idle_close_ms` but never close.
+   *
+   * v1.3: a `demo.activity` (the visitor is composing a question) pushes the deadline to now + 30 s — honoured only after the
+   * narration is complete and while a question can still be asked, at most one per 5 s (scaled like the rest), never a
+   * reply — and every move of the deadline later by ≥ 1 s (scaled) since the last value sent is announced as
+   * `demo.idle {idle_close_ms}` from the idle ticker (also with `false`, which only stops the closing).
    */
   idleCloseMs?: number | false;
   /** Close mid-session: after the first `demo.speak` ack, after `demo.narration_complete`, after the first answer, or N ms after open. */
@@ -258,6 +266,8 @@ export interface DemoSocketMock {
   ofType(type: string): any[];
   /** Pushes a server message to the page (ignored when no socket is open). */
   send(msg: object): void;
+  /** Pushes a `demo.idle {idle_close_ms}` (v1.3), e.g. to re-sync the time the narration-done card counts down to. */
+  idle(idleCloseMs: number): void;
   close(code: number, reason?: string): void;
   /** Resolves with the n-th (1-based) client message of `type` once it arrived. */
   waitForSent(type: string, n?: number, timeoutMs?: number): Promise<any>;
@@ -303,6 +313,7 @@ export async function mockDemoSocket(page: Page, o: DemoSocketOptions = {}): Pro
     options: o,
     sent: [], log: [], items: [], turns: [], connections: 0, urls: [], closes: [],
     send: () => {},
+    idle: () => {},
     close: () => {},
     ofType(type) { return this.sent.filter((m) => m?.type === type); },
     async waitForSent(type, n = 1, timeoutMs = 20_000) {
@@ -348,6 +359,7 @@ export async function mockDemoSocket(page: Page, o: DemoSocketOptions = {}): Pro
       try { void ws.close({ code, reason }); } catch { /* already closed */ }
     };
     mock.send = send;
+    mock.idle = (idleCloseMs) => send({ type: MSG.IDLE, idle_close_ms: idleCloseMs });
     mock.close = closeWs;
     ws.onClose(() => { closed = true; stopTimers(); });
 
@@ -366,6 +378,8 @@ export async function mockDemoSocket(page: Page, o: DemoSocketOptions = {}): Pro
     let qaRequest: string | null = null;                   // request id of the active question
     let completeSent = false;
     let idleDeadline: number | null = null;                // epoch ms; set at narration_complete, only moves later
+    let announcedDeadline: number | null = null;           // the deadline the client was last told (narration_complete, then demo.idle)
+    let lastActivityAt: number | null = null;              // when the last demo.activity was honoured
     let audibleEnd = 0;                                    // estimated end of the latest avatar audio (epoch ms)
     const idleScale = () => (typeof o.idleCloseMs === 'number' ? o.idleCloseMs / IDLE_WINDOW_MS : 1);
     const scaled = (seconds: number) => seconds * 1000 * idleScale();
@@ -373,13 +387,35 @@ export async function mockDemoSocket(page: Page, o: DemoSocketOptions = {}): Pro
     const raiseDeadline = (t: number) => { idleDeadline = idleDeadline === null ? t : Math.max(idleDeadline, t); };
     /** A terminal question event (qa.error, qa.unavailable, qa.cancel, qa.resume): the visitor just acted. */
     const terminalQaEvent = () => { if (completeSent) raiseDeadline(Date.now() + scaled(DEMO_IDLE_CLOSE_SECONDS)); };
+    /**
+     * `demo.activity` (v1.3): the visitor is composing a question. Honoured only after the narration is complete and while a
+     * question can still be asked, at most once per ACTIVITY_MIN_INTERVAL_SECONDS (scaled like the other idle durations);
+     * pushes the deadline to now + 30 s. Never a reply (the move reaches the client as `demo.idle`), never an error.
+     */
+    const onActivity = () => {
+      if (!v2 || !completeSent || questionsLeft <= 0 || o.qaAskText === 'disabled') return;
+      const now = Date.now();
+      if (lastActivityAt !== null && now - lastActivityAt < scaled(DEMO_ACTIVITY_MIN_INTERVAL_SECONDS)) return;
+      lastActivityAt = now;
+      raiseDeadline(now + scaled(DEMO_IDLE_CLOSE_SECONDS));
+    };
+    /** `demo.idle`: the deadline moved later by ≥ 1 s (scaled) since the last value the client was told. The real server does this from its idle watcher. */
+    const announceIdle = () => {
+      if (idleDeadline === null || announcedDeadline === null) return;
+      if (idleDeadline - announcedDeadline < scaled(DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS)) return;
+      announcedDeadline = idleDeadline;
+      send({ type: MSG.IDLE, idle_close_ms: Math.max(0, Math.round(idleDeadline - Date.now())) });
+    };
     const startIdleTicker = () => {
       if (!v2 || idleTicker) return;
       const everyMs = Math.max(20, Math.round(DEMO_IDLE_CHECK_INTERVAL_SECONDS * 1000 * idleScale()));
       idleTicker = setInterval(() => {
-        if (closed || o.idleCloseMs === false || idleDeadline === null) return;
-        const quiet = inflight.size === 0 && (qaState === 'idle' || qaState === 'answered');
-        if (quiet && Date.now() >= idleDeadline) closeWs(CLOSE.IDLE);
+        if (closed || idleDeadline === null) return;
+        if (o.idleCloseMs !== false) {
+          const quiet = inflight.size === 0 && (qaState === 'idle' || qaState === 'answered');
+          if (quiet && Date.now() >= idleDeadline) { closeWs(CLOSE.IDLE); return; }
+        }
+        announceIdle();
       }, everyMs);
     };
     const qaReset = () => { qaState = 'idle'; qaRequest = null; };
@@ -494,6 +530,7 @@ export async function mockDemoSocket(page: Page, o: DemoSocketOptions = {}): Pro
       if (!v2 || completeSent) return;
       completeSent = true;
       raiseDeadline(Math.max(audibleEnd, Date.now()) + idleTail());
+      announcedDeadline = idleDeadline;                    // the idle_close_ms below is the first announcement
       send({
         type: MSG.NARRATION_COMPLETE, slides_spoken: slidesSpoken.size, slide_count: slideCount,
         remaining_ms: remaining(), idle_close_ms: Math.max(0, Math.round((idleDeadline ?? Date.now()) - Date.now())),
@@ -593,6 +630,9 @@ export async function mockDemoSocket(page: Page, o: DemoSocketOptions = {}): Pro
           break;
         case MSG.FINISH:
           if (v2) closeWs(CLOSE.FINISHED);
+          break;
+        case MSG.ACTIVITY:
+          onActivity();                                     // v1.3: no reply, never an error; an old server drops it as unknown
           break;
         case MSG.RESPONSE_CANCEL:
           cancelInflight();

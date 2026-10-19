@@ -14,7 +14,7 @@ import {
   timeWarningText, type DemoQaConfig,
 } from '../services/demo';
 import {
-  DEMO_CLOSE_CODES, DEMO_PROTOCOL_VERSION, DEMO_QA_LIMIT_MESSAGES, DEMO_TIMING, DEMO_WARN_AT_SECONDS,
+  DEMO_CLOSE_CODES, DEMO_MSG, DEMO_PROTOCOL_VERSION, DEMO_QA_LIMIT_MESSAGES, DEMO_TIMING, DEMO_WARN_AT_SECONDS,
   outcomeFor, type DemoOutcome as DemoOutcomeInfo, type DemoQaLimitScope, type Recording,
 } from '../services/demoProtocol';
 import { CaptionPacer, type CaptionView } from '../services/demoCaptions';
@@ -163,6 +163,18 @@ export default function AvatarPanel({
     if (!Number.isFinite(remainingMs)) return;
     setDemoEndsAt(monoNow() + Math.max(0, remainingMs));
   }, []);
+  // The server's idle deadline (contracts §4.5, monotonic like the session countdown): `demo.narration_complete` starts it,
+  // every `demo.idle` re-syncs it. After the narration the card shows whichever of the two limits comes first.
+  const [idleEndsAt, setIdleEndsAt] = useState<number | null>(null);
+  const syncIdleClock = useCallback((idleCloseMs: number) => {
+    if (!Number.isFinite(idleCloseMs)) return;
+    const now = monoNow();
+    setDemoNow(now); // the seconds read from this very moment, not from the last tick
+    setIdleEndsAt(now + Math.max(0, idleCloseMs));
+  }, []);
+  // `demo.narration_complete` arrived in this session, and when the last `demo.activity` was sent (throttle).
+  const narrationCompleteRef = useRef(false);
+  const lastActivityAtRef = useRef<number | null>(null);
   // Narration length per slide in the demo (the visitor never receives notes):
   // `narration_chars` from `demo.started` when provided, else `demo.speaking` acks.
   const [demoChars, setDemoChars] = useState<Record<number, number>>({});
@@ -191,6 +203,8 @@ export default function AvatarPanel({
   const autoPresentedRef = useRef(false);
   const announcedWarningsRef = useRef(new Set<number>());
   const setupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The 20 s watchdog of a link that never comes up (setupWebRTC); cleared as soon as the media connects.
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaDropTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deckTitleRef = useRef(deckTitle);
@@ -447,6 +461,8 @@ export default function AvatarPanel({
       iceTransportPolicy: 'relay',
     });
     peerConnectionRef.current = pc;
+    // A new peer connection has not connected yet: a stale flag of an earlier one must not hide its failure to come up.
+    mediaEverConnectedRef.current = false;
     // The ICE servers arrived: the avatar is coming up, the setup watchdog (no ICE servers at all) is done.
     clearDemoTimer(setupTimerRef);
 
@@ -459,7 +475,11 @@ export default function AvatarPanel({
       if (peerConnectionRef.current !== pc) return;
       handleMediaStateRef.current(pc.connectionState);
     };
-    setTimeout(() => {
+    // A link that never comes up ends after 20 s. It only ever judges that: the first 'connected' (handleMediaState) stops
+    // it, so a later drop is the business of the reconnect grace (demo) or the 'failed' state (admin), never of this timer.
+    clearDemoTimer(connectTimerRef);
+    connectTimerRef.current = setTimeout(() => {
+      connectTimerRef.current = null;
       if (peerConnectionRef.current === pc && pc.connectionState !== 'connected') handleMediaStateRef.current('timeout');
     }, 20000);
 
@@ -954,7 +974,15 @@ export default function AvatarPanel({
       }
       if (msg.type === 'demo.narration_complete') {
         // The server has asked for the last slide. The visitor is offered "Ask a question / Finish demo" when the avatar
-        // has *finished saying* it (own playback), which is later: nothing to do here but the clock re-sync above.
+        // has *finished saying* it (own playback), which is later: the clock re-sync above and the idle deadline (what the
+        // card counts down to, and what `demo.activity` keeps open) are all there is to do here.
+        narrationCompleteRef.current = true;
+        if (typeof msg.idle_close_ms === 'number') syncIdleClock(msg.idle_close_ms);
+        return;
+      }
+      if (msg.type === DEMO_MSG.IDLE) {
+        // The idle deadline moved later (an answer, a question refused, the visitor typing): the card shows the new time.
+        if (typeof msg.idle_close_ms === 'number') syncIdleClock(msg.idle_close_ms);
         return;
       }
       if (msg.type === 'demo.notice') {
@@ -1031,7 +1059,7 @@ export default function AvatarPanel({
     } catch (err) {
       console.error('[WS] Parse error:', err);
     }
-  }, [setupWebRTC, handleAnswer, playback, pacer, syncDemoClock, handleQaMessage, goNext, scheduleSpeak]);
+  }, [setupWebRTC, handleAnswer, playback, pacer, syncDemoClock, syncIdleClock, handleQaMessage, goNext, scheduleSpeak]);
 
   // Keep handleMessage ref in sync so the WS handler always uses the latest version
   useEffect(() => { handleMessageRef.current = handleMessage; }, [handleMessage]);
@@ -1050,10 +1078,14 @@ export default function AvatarPanel({
   /** Demo state that belongs to one session: watchdogs, captions, prompts. */
   const resetDemoSession = useCallback(() => {
     clearDemoTimer(setupTimerRef);
+    clearDemoTimer(connectTimerRef);
     clearDemoTimer(mediaDropTimerRef);
     clearDemoTimer(finishTimerRef);
     pacer.reset();
     autoPresentedRef.current = false;
+    narrationCompleteRef.current = false;
+    lastActivityAtRef.current = null;
+    setIdleEndsAt(null);
     setNarrationDone(null);
     setFinishing(false);
     setReconnecting(false);
@@ -1130,10 +1162,14 @@ export default function AvatarPanel({
   // The media link (WebRTC) changed state. Signalling success does not mean video flows: the demo gives a dropped link
   // 8 s to come back ("Reconnecting…"), then reports an interrupted session; a link that never came up is the network's.
   const handleMediaState = useCallback((state: string) => {
+    // 'timeout' judges a link that never came up; once the media has connected it says nothing about a later drop.
+    if (state === 'timeout' && mediaEverConnectedRef.current) return;
     // A dropped link is silent too: never read that silence as the end of speech.
     playback.setMediaInterrupted(state === 'disconnected');
     if (state === 'connected') {
       mediaEverConnectedRef.current = true;
+      // The never-connected watchdog has done its job: from now on a drop is the reconnect grace's (demo) or 'failed' (admin).
+      clearDemoTimer(connectTimerRef);
       trackDemoStage('rtc_connected');
       clearDemoTimer(mediaDropTimerRef);
       setReconnecting(false);
@@ -1461,6 +1497,7 @@ export default function AvatarPanel({
     playback.cancel();
     stopTicker();
     retryCountRef.current = 0;
+    clearDemoTimer(connectTimerRef);
     try {
       // Tell Azure to close the session before dropping the connection
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -1485,7 +1522,7 @@ export default function AvatarPanel({
     setDemoConnecting(false);
     setDemoEndsAt(null);
     setStatus('Disconnected');
-  }, [clearAdvance, sendWs, resetQa, playback, stopTicker, resetDemoSession]);
+  }, [clearAdvance, sendWs, resetQa, playback, stopTicker, resetDemoSession, clearDemoTimer]);
 
   useEffect(() => { stopSessionRef.current = stopSession; }, [stopSession]);
 
@@ -1613,6 +1650,11 @@ export default function AvatarPanel({
   const demoSecondsLeft = isDemo && demoEndsAt
     ? Math.min(demoSecondsRef.current, Math.max(0, Math.ceil((demoEndsAt - demoNow) / 1000)))
     : null;
+  // The idle deadline in seconds. It does not bind while a question is in flight: the server closes for idleness only
+  // when it is quiet, and starts a fresh window once the answer is done.
+  const idleSecondsLeft = isDemo && idleEndsAt != null && !qaBusy
+    ? Math.max(0, Math.ceil((idleEndsAt - demoNow) / 1000))
+    : null;
 
   // Countdown warnings (WCAG 2.2.1): shown and announced once at 60 s and 20 s before the cap. The server's
   // `remaining_ms` is the truth (it re-syncs the clock); this only reads the countdown.
@@ -1686,8 +1728,20 @@ export default function AvatarPanel({
     </Button>
   );
 
+  // The visitor is composing a question after the narration (the "Ask a question" tap, focus or typing in the question field): tell
+  // the server, which then keeps the session open (`demo.activity`, contracts §4.2). At most one per DEMO_TIMING.activityIntervalMs,
+  // the first at once; never before `demo.narration_complete`, while no question can be asked, or once the session is over.
+  const noteQuestionActivity = () => {
+    if (!isDemo || !narrationCompleteRef.current || !canAskMore || finishing) return;
+    const now = monoNow();
+    const last = lastActivityAtRef.current;
+    if (last != null && now - last < DEMO_TIMING.activityIntervalMs) return;
+    if (sendWs({ type: DEMO_MSG.ACTIVITY })) lastActivityAtRef.current = now;
+  };
+
   // "Ask a question" after the presentation: the typed field when there is one, else the spoken question.
   const askAfterNarration = () => {
+    noteQuestionActivity();
     const input = dockRef.current?.querySelector<HTMLInputElement>('[data-testid="qa-text-input"]');
     if (input) input.focus(); else raiseHand();
   };
@@ -1711,7 +1765,8 @@ export default function AvatarPanel({
       demo={isDemo}
       typedQueued={isDemo && !!qa.typed}
       draft={draft}
-      onDraftChange={setDraft}
+      onDraftChange={(text) => { setDraft(text); noteQuestionActivity(); }}
+      onTypedFocus={noteQuestionActivity}
       remaining={isDemo ? remainingQuestions : null}
       level={micLevel}
       transcript={qa.transcript}
@@ -1867,6 +1922,7 @@ export default function AvatarPanel({
                   <DemoNarrationDone
                     title={narrationDone === 'limit' ? DEMO_COPY.narrationLimit : 'The presentation is complete'}
                     secondsLeft={demoSecondsLeft}
+                    idleSecondsLeft={idleSecondsLeft}
                     canAsk={canAskMore}
                     onAsk={askAfterNarration}
                     onFinish={finishDemo}

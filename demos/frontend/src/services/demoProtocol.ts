@@ -1,5 +1,5 @@
 /**
- * Demo WebSocket protocol v2 (`/ws/voice/demo`) and the live-demo outcome contract (contracts v1.2 §4).
+ * Demo WebSocket protocol v2 (`/ws/voice/demo`) and the live-demo outcome contract (contracts v1.3 §4).
  *
  * FROZEN shared contract file (owner WU-F0, UX-fix run). Types, constants and pure helpers only: no UI.
  * Do not edit: ask the coordinator, who records the change in fleet/contracts.md.
@@ -24,14 +24,21 @@ export const DEMO_PROTOCOL_VERSION = 2;
 export const DEMO_WS_PATH = '/ws/voice/demo';
 /**
  * Idle window of the server's busy-based deadline (contracts §4.5): once the narration is complete the server closes
- * with 4002 only when no avatar response is in flight, the question session is idle or answered, and the deadline passed.
- * A terminal question event (qa.error, qa.unavailable, qa.cancel, qa.resume) moves the deadline to now + this.
+ * with 4002 only when no avatar response is in flight, the question session is quiet (idle or answered, no daily
+ * question reservation pending), and the deadline passed. A terminal question event (qa.error, qa.unavailable,
+ * qa.cancel, qa.resume) and, v1.3, an honoured `demo.activity` move the deadline to now + this; a later completed turn
+ * to its audible end + the grace + this. Nothing moves it past the session cap (4408 wins). Every move later by at
+ * least DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS reaches the client as `demo.idle {idle_close_ms}`.
  */
 export const DEMO_IDLE_CLOSE_SECONDS = 30;
 /** Safety margin the server adds after the estimated end of the avatar's audio before the idle window starts. */
 export const DEMO_AUDIO_TAIL_GRACE_SECONDS = 10;
 /** The server evaluates the idle deadline at least this often (seconds). */
 export const DEMO_IDLE_CHECK_INTERVAL_SECONDS = 1;
+/** v1.3, server side: at most one `demo.activity` is honoured per this many seconds (the rest are ignored, never an error). */
+export const DEMO_ACTIVITY_MIN_INTERVAL_SECONDS = 5;
+/** v1.3, server side: `demo.idle` is sent when the idle deadline moved later by at least this many seconds since the last value sent. */
+export const DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS = 1;
 /** Estimate of `response.created` → first audible sample (seconds): part of the idle-clock anchor. */
 export const DEMO_FIRST_AUDIO_LATENCY_SECONDS = 1.5;
 /** Narration speed assumed when no word timestamps arrived (characters per second); same default as NarrationRate. */
@@ -58,6 +65,12 @@ export const DEMO_TIMING = {
    * refused `qa.error {code:"limit", scope:"unavailable"}` and not counted for the session.
    */
   qaReserveTimeoutMs: 3000,
+  /**
+   * v1.3: while the visitor composes a question after the narration (the "Ask a question" tap, focus or typing in the
+   * question field) the client sends `demo.activity` at most this often, the first one at once. It stays above the
+   * server's ACTIVITY_MIN_INTERVAL_SECONDS so that every one is honoured.
+   */
+  activityIntervalMs: 10000,
 } as const;
 /** Same text the server sends in `qa.error {code:"too_long"}` for a typed question. */
 export const DEMO_TEXT_TOO_LONG_MESSAGE = 'That question is too long. Please keep it under 500 characters.';
@@ -272,6 +285,7 @@ export const DEMO_MSG = {
   QA_CANCEL: 'qa.cancel',
   QA_RESUME: 'qa.resume',
   QA_ASK_TEXT: 'qa.ask_text',
+  ACTIVITY: 'demo.activity',
   // server → client (Azure Voice Live events are forwarded untouched next to these)
   PROXY_CONNECTED: 'proxy.connected',
   STARTED: 'demo.started',
@@ -279,6 +293,7 @@ export const DEMO_MSG = {
   NOTICE: 'demo.notice',
   CAPTION: 'demo.caption',
   NARRATION_COMPLETE: 'demo.narration_complete',
+  IDLE: 'demo.idle',
   QA_READY: 'qa.ready',
   QA_ACCEPTED: 'qa.accepted',
   QA_TRANSCRIPT: 'qa.transcript',
@@ -308,6 +323,8 @@ export type DemoCaptionKind = (typeof DEMO_CAPTION_KINDS)[number];
 // client → server
 export interface DemoSpeakMessage { type: 'demo.speak'; slide: number; request_id?: string }
 export interface DemoFinishMessage { type: 'demo.finish' }
+/** v1.3: the visitor is composing a question after the narration; no fields, no reply (the server answers with `demo.idle` when the deadline moved). */
+export interface DemoActivityMessage { type: 'demo.activity' }
 export interface QaAskTextMessage { type: 'qa.ask_text'; request_id: string; slide: number; text: string }
 
 // server → client
@@ -353,9 +370,15 @@ export interface DemoNarrationCompleteMessage {
   slides_spoken: number;
   slide_count: number;
   remaining_ms: number;
-  /** Server's estimate of the time left before it closes with 4002 if the visitor does nothing. */
+  /** Server's estimate of the time left before it closes with 4002 if the visitor does nothing (the first value; `demo.idle` re-syncs it). */
   idle_close_ms: number;
 }
+/**
+ * v1.3: after `demo.narration_complete`, the idle deadline moved later by at least DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS
+ * (an answer turn, a terminal question event, an honoured `demo.activity`). The client re-syncs
+ * `idleEndsAt = receivedAt + idle_close_ms`.
+ */
+export interface DemoIdleMessage { type: 'demo.idle'; idle_close_ms: number }
 export interface QaAcceptedMessage {
   type: 'qa.accepted';
   request_id: string;
@@ -374,7 +397,7 @@ export interface DemoQaErrorMessage {
 export interface DemoProxyErrorMessage { type: 'error'; error: { message: string } }
 
 export type DemoClientMessage =
-  | DemoSpeakMessage | DemoFinishMessage | QaAskTextMessage
+  | DemoSpeakMessage | DemoFinishMessage | DemoActivityMessage | QaAskTextMessage
   | { type: 'session.avatar.connect'; client_sdp: string }
   | { type: 'response.cancel' }
   | { type: 'qa.begin'; request_id: string; slide: number; mode: 'after_slide' }
@@ -383,6 +406,7 @@ export type DemoClientMessage =
 
 export type DemoServerMessage =
   | DemoStartedMessage | DemoSpeakingMessage | DemoNoticeMessage | DemoCaptionMessage | DemoNarrationCompleteMessage
+  | DemoIdleMessage
   | QaReadyMessage | QaAcceptedMessage | QaTranscriptMessage | QaAnswerMessage | DemoQaErrorMessage | QaUnavailableMessage
   | DemoProxyErrorMessage | { type: 'proxy.connected'; message?: string };
 

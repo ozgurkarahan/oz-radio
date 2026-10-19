@@ -17,8 +17,10 @@ import {
   fetchBootFallback, normalizeBoot, parseBoot, pickDemoDeck,
 } from '../demos/frontend/src/services/boot';
 import {
-  DEMO_AZURE_EVENTS, DEMO_AUDIO_TAIL_GRACE_SECONDS, DEMO_CAPTION_KINDS, DEMO_CLOSE_CODES, DEMO_CLOSE_REASONS, DEMO_FALLBACK_LINKS,
-  DEMO_FIRST_AUDIO_LATENCY_SECONDS, DEMO_IDLE_CHECK_INTERVAL_SECONDS, DEMO_IDLE_CLOSE_SECONDS, DEMO_MAX_TEXT_QUESTION_CHARS, DEMO_MSG,
+  DEMO_ACTIVITY_MIN_INTERVAL_SECONDS, DEMO_AZURE_EVENTS, DEMO_AUDIO_TAIL_GRACE_SECONDS, DEMO_CAPTION_KINDS, DEMO_CLOSE_CODES,
+  DEMO_CLOSE_REASONS, DEMO_FALLBACK_LINKS,
+  DEMO_FIRST_AUDIO_LATENCY_SECONDS, DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS, DEMO_IDLE_CHECK_INTERVAL_SECONDS, DEMO_IDLE_CLOSE_SECONDS,
+  DEMO_MAX_TEXT_QUESTION_CHARS, DEMO_MSG,
   DEMO_NARRATION_CHARS_PER_SECOND, DEMO_OUTCOME_COPY, DEMO_PROTOCOL_VERSION, DEMO_QA_LIMIT_MESSAGES, DEMO_SERVICE_ERROR_DETAIL,
   DEMO_SWITCHED_OFF_DETAIL, DEMO_TEXT_TOO_LONG_MESSAGE, DEMO_TIMING, DEMO_WS_PATH, demoDeckPath, findRecording, outcomeFor, recordingPath,
 } from '../demos/frontend/src/services/demoProtocol';
@@ -317,6 +319,14 @@ test.describe('contract helpers (node)', () => {
     expect(num('QA_RESERVE_TIMEOUT_SECONDS') * 1000).toBe(DEMO_TIMING.qaReserveTimeoutMs);
     // the client's typed-question ack timeout outlasts the server's bounded reservation (+ the 1 s `qa.accepted` budget)
     expect(DEMO_TIMING.askTextAckTimeoutMs).toBeGreaterThan(DEMO_TIMING.qaReserveTimeoutMs + 1000);
+    // v1.3 `demo.activity` / `demo.idle`: the server's rate limit and announcement step, and the client's throttle, which is
+    // longer than the rate limit so that every activity the client sends is honoured
+    expect(num('ACTIVITY_MIN_INTERVAL_SECONDS')).toBe(DEMO_ACTIVITY_MIN_INTERVAL_SECONDS);
+    expect(num('IDLE_ANNOUNCE_MIN_DELTA_SECONDS')).toBe(DEMO_IDLE_ANNOUNCE_MIN_DELTA_SECONDS);
+    expect(DEMO_TIMING.activityIntervalMs).toBe(10_000);
+    expect(DEMO_TIMING.activityIntervalMs).toBeGreaterThan(num('ACTIVITY_MIN_INTERVAL_SECONDS') * 1000);
+    expect(DEMO_MSG.ACTIVITY).toBe('demo.activity');
+    expect(DEMO_MSG.IDLE).toBe('demo.idle');
     expect(num('MAX_TEXT_QUESTION_CHARS')).toBe(DEMO_MAX_TEXT_QUESTION_CHARS);
     expect(str('TEXT_TOO_LONG_MESSAGE')).toBe(DEMO_TEXT_TOO_LONG_MESSAGE);
     expect(str('SERVICE_ERROR_DETAIL')).toBe(DEMO_SERVICE_ERROR_DETAIL);
@@ -748,6 +758,69 @@ test.describe('mockDemoSocket', () => {
     expect(mock.log.find((e) => e.dir === 'close')!.t - at('response.done', 2)).toBeGreaterThanOrEqual(3000 - 10); // done + the scaled 40 s
   });
 
+  test('v1.3 demo.activity: ignored before narration_complete; after it the deadline moves to now + 30 s, announced as demo.idle (never a reply), at most once per 5 s', async ({ page }) => {
+    // idleCloseMs 8000 scales every idle duration by 0.2: the 30 s window is 6 s, the 1 s announcement step 200 ms, the 5 s rate limit 1 s
+    const mock = await mockDemoSocket(page, { slideCount: 2, idleCloseMs: 8000 });
+    await blank(page);
+    const probe = demoProbe(page);
+    await probe.open();
+    await probe.waitForMessage('demo.started');
+    await probe.send({ type: 'demo.activity' });                 // before the narration is complete: ignored
+    await probe.send({ type: 'demo.speak', slide: 0 });
+    await probe.waitForMessage('response.done');
+    await probe.send({ type: 'demo.activity' });                 // slide 0 of 2: the narration is still not complete
+    await probe.send({ type: 'demo.speak', slide: 1 });
+    const complete = await probe.waitForMessage('demo.narration_complete');
+    expect(complete.idle_close_ms).toBeGreaterThanOrEqual(8000);
+    await page.waitForTimeout(600);
+    expect((await probe.messages()).map((m) => m.type), 'nothing moved the deadline').not.toContain('demo.idle');
+
+    await page.waitForTimeout(3000);                             // the original deadline is ≥ 8 s after the narration completed
+    await probe.send({ type: 'demo.activity' });                 // honoured: now + 6 s, later than the original deadline
+    const first = await probe.waitForMessage('demo.idle');
+    expect(first.idle_close_ms).toBeGreaterThan(5500);
+    expect(first.idle_close_ms).toBeLessThanOrEqual(6000);
+    await page.waitForTimeout(400);
+    await probe.send({ type: 'demo.activity' });                 // 0.5 s after the honoured one: rate-limited, ignored
+    await page.waitForTimeout(800);
+    expect((await probe.messages()).filter((m) => m.type === 'demo.idle'), 'an ignored activity moves nothing').toHaveLength(1);
+    await probe.send({ type: 'demo.activity' });                 // 1.4 s after it: honoured again
+    const second = await probe.waitForMessage('demo.idle', { n: 2 });
+    expect(second.idle_close_ms).toBeGreaterThan(5500);
+    expect(second.idle_close_ms).toBeLessThanOrEqual(6000);
+    const messages = await probe.messages();
+    expect(messages.map((m) => m.type)).not.toContain('demo.activity');                       // never echoed or answered
+    expect(messages.filter((m) => m.type === 'qa.error' || m.type === 'demo.notice')).toEqual([]);
+    expect(mock.ofType('demo.activity')).toHaveLength(5);        // every frame was recorded
+  });
+
+  test('v1.3 demo.activity: ignored when no question can be asked (the typed question is disabled)', async ({ page }) => {
+    const mock = await mockDemoSocket(page, { slideCount: 1, idleCloseMs: 4000, qaAskText: 'disabled' });
+    await blank(page);
+    const probe = demoProbe(page);
+    await probe.open();
+    await probe.waitForMessage('demo.started');
+    await probe.send({ type: 'demo.speak', slide: 0 });
+    const complete = await probe.waitForMessage('demo.narration_complete');
+    await page.waitForTimeout(complete.idle_close_ms - 1500);
+    await probe.send({ type: 'demo.activity' });                 // no question can be asked: no extension, no announcement
+    expect(await probe.waitForClose(10_000)).toMatchObject({ code: 4002 });
+    const completeAt = mock.log.find((e) => e.dir === 'out' && e.type === 'demo.narration_complete')!.t;
+    const closedAt = mock.log.find((e) => e.dir === 'close')!.t;
+    expect(closedAt - completeAt).toBeLessThan(complete.idle_close_ms + 800);   // the original deadline, not now + 3 s
+    expect((await probe.messages()).map((m) => m.type)).not.toContain('demo.idle');
+  });
+
+  test('v1.3 demo.idle: the helper pushes it to the page', async ({ page }) => {
+    const mock = await mockDemoSocket(page, { idleCloseMs: false });
+    await blank(page);
+    const probe = demoProbe(page);
+    await probe.open();
+    await probe.waitForMessage('demo.started');
+    mock.idle(123_456);
+    expect(await probe.waitForMessage('demo.idle')).toEqual({ type: 'demo.idle', idle_close_ms: 123_456 });
+  });
+
   test('response.cancel: the response in flight ends with response.done "cancelled", with no further and no final caption', async ({ page }) => {
     const mock = await mockDemoSocket(page, { slideCount: 1, responseMs: 1500, idleCloseMs: false });
     await blank(page);
@@ -865,7 +938,7 @@ test.describe('mockDemoSocket', () => {
     }
   });
 
-  test('protocol v1 (an old server): no v2 fields, captions, narration_complete, qa.ask_text or demo.finish', async ({ page }) => {
+  test('protocol v1 (an old server): no v2 fields, captions, narration_complete, qa.ask_text, demo.activity or demo.finish', async ({ page }) => {
     const mock = await mockDemoSocket(page, { protocol: 1, slideCount: 1, idleCloseMs: 300 });
     await blank(page);
     const probe = demoProbe(page);
@@ -877,13 +950,15 @@ test.describe('mockDemoSocket', () => {
     await probe.send({ type: 'demo.speak', slide: 0 });
     await probe.waitForMessage('response.done');
     await probe.send({ type: 'qa.ask_text', request_id: 'q-1', slide: 0, text: 'Hello?' });
+    await probe.send({ type: 'demo.activity' });
     await probe.send({ type: 'demo.finish' });
     await page.waitForTimeout(500); // longer than idleCloseMs: nothing closes a v1 session
     const types = (await probe.messages()).map((m) => m.type);
     expect(types).toContain('response.audio_transcript.done');
-    for (const missing of ['demo.caption', 'demo.narration_complete', 'qa.accepted', 'qa.error']) expect(types).not.toContain(missing);
+    for (const missing of ['demo.caption', 'demo.narration_complete', 'demo.idle', 'qa.accepted', 'qa.error']) expect(types).not.toContain(missing);
     expect(mock.closes).toEqual([]);
     expect(mock.ofType('qa.ask_text')).toHaveLength(1); // the client sent it; the old server dropped it
+    expect(mock.ofType('demo.activity')).toHaveLength(1);
   });
 
   test('error event, silent server, no ICE servers, ICE servers, notices and scripted mid-session closes', async ({ page }) => {

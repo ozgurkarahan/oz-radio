@@ -26,6 +26,8 @@ interface Props {
   /** The typed question being written; it stays when the question fails and is cleared by the parent once it is accepted. */
   draft: string;
   onDraftChange: (text: string) => void;
+  /** The typed question field got focus (the demo tells the server the visitor is composing a question). */
+  onTypedFocus?: () => void;
   remaining: number | null;
   level: number;
   transcript: string | null;
@@ -59,8 +61,8 @@ const PHASE_TEXT: Partial<Record<QaPhase, string>> = {
 /** Raise-hand voice Q&A controls and status (rendered inside the avatar rail). */
 export default function RaiseHandPanel(props: Props) {
   const {
-    phase, available, disabledReason, narrating, canAskNow, canType, demo, typedQueued, draft, onDraftChange, remaining, level,
-    transcript, answer, error, notice, onRaise, onAskNow, onSubmitText, onDone, onCancel, onContinue,
+    phase, available, disabledReason, narrating, canAskNow, canType, demo, typedQueued, draft, onDraftChange, onTypedFocus, remaining,
+    level, transcript, answer, error, notice, onRaise, onAskNow, onSubmitText, onDone, onCancel, onContinue,
   } = props;
   const rootRef = useRef<HTMLElement>(null);
   const doneRef = useRef<HTMLButtonElement>(null);
@@ -113,6 +115,7 @@ export default function RaiseHandPanel(props: Props) {
           placeholder={demo ? 'Type a question' : 'Ask about this deck'}
           autoComplete="off"
           onChange={(e) => onDraftChange(e.target.value)}
+          onFocus={onTypedFocus}
         />
       </Field>
       <Button data-testid="qa-text-submit" type="submit" size="sm" icon={Send} disabled={!draft.trim()}>

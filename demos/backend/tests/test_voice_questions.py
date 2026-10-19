@@ -937,6 +937,89 @@ def test_is_quiet_follows_the_question_state(monkeypatch):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("kind", ["voice", "typed"])
+@pytest.mark.parametrize("outcome", [None, "global", "ip", "busy", "timeout"])
+def test_is_not_quiet_while_the_daily_reservation_is_pending(kind, outcome, monkeypatch):
+    """The daily reservation (up to QA_RESERVE_TIMEOUT_SECONDS) runs while the question session is still `idle`: the
+    demo's idle close must not fire in that window, however it ends. A refusal's terminal event (which restarts the idle
+    window) happens before the session is quiet again; after an acceptance a question is in progress as before."""
+    monkeypatch.setattr(dp, "QA_RESERVE_TIMEOUT_SECONDS", 0.2)
+
+    async def run():
+        release = asyncio.Event()
+        answer_gate = asyncio.Event()                         # the grounded answer never arrives in this test
+        quiet_at_terminal: list[bool] = []
+
+        async def slow_answer(*a, **k):
+            await answer_gate.wait()
+            return dict(TYPED_ANSWER)
+
+        async def reserve():
+            if outcome == "timeout":
+                await asyncio.sleep(30)                       # never answers within the bound
+            await release.wait()
+            return outcome
+
+        monkeypatch.setattr(vq.deck_qa, "answer_deck_question", slow_answer)
+        s, sent, _ = _demo_session(reserve=reserve, on_terminal=lambda: quiet_at_terminal.append(s.is_quiet()))
+        assert s.is_quiet()
+        handled = asyncio.ensure_future(s.handle(_voice_begin("q1") if kind == "voice" else _typed("q1")))
+        await asyncio.sleep(0.05)
+        assert not handled.done() and s.state == "idle"       # still waiting for the reservation…
+        assert not s.is_quiet()                               # …which is not a quiet session
+        release.set()
+        await asyncio.wait_for(handled, 2)
+        if outcome is None:
+            assert s.used == 1 and quiet_at_terminal == []    # accepted: nothing terminal yet…
+            assert not s.is_quiet()                           # …a question is being listened to / answered
+            assert s.state == ("listening" if kind == "voice" else "processing")
+        else:
+            assert s.used == 0 and [m["type"] for m in sent] == ["qa.error"] and sent[0]["code"] == "limit"
+            assert quiet_at_terminal == [False]               # the idle window restarted before the session was quiet
+            assert s.is_quiet() and s.state == "idle"
+        s.close()
+
+    asyncio.run(run())
+
+
+def test_a_cancelled_reservation_leaves_the_session_quiet_again():
+    """The pump is cancelled while a question waits for its reservation (the session ends): nothing stays reserved."""
+    async def run():
+        async def reserve():
+            await asyncio.sleep(30)
+
+        s, _, _ = _demo_session(reserve=reserve)
+        handled = asyncio.ensure_future(s.handle(_typed("t1")))
+        await asyncio.sleep(0.02)
+        assert not s.is_quiet()
+        handled.cancel()
+        await asyncio.gather(handled, return_exceptions=True)
+        return s
+
+    s = asyncio.run(run())
+    assert s.is_quiet() and s.used == 0 and s.state == "idle"
+
+
+def test_can_ask_follows_the_question_budget(monkeypatch):
+    """What a `demo.activity` needs to count: Q&A on, a deck bound, a question left, the session still open."""
+    _answering(monkeypatch)
+
+    async def run():
+        s, _, _ = _demo_session(max_questions=1)
+        assert s.can_ask()
+        await s.handle(_typed("t1"))
+        await asyncio.wait_for(s._task, 2)
+        assert s.used == 1
+        used_up = s.can_ask()
+        off, _, _ = _demo_session(enabled=False)
+        no_deck, _, _ = _demo_session(slides=None)
+        closed, _, _ = _demo_session()
+        closed.close()
+        return used_up, off.can_ask(), no_deck.can_ask(), closed.can_ask()
+
+    assert asyncio.run(run()) == (False, False, False, False)
+
+
 def test_admin_has_no_typed_question():
     """The admin endpoint keeps its own qa.text; qa.ask_text is a demo message and reads as bad_state there."""
     async def run():

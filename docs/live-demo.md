@@ -37,7 +37,9 @@ and it is **off by default**.
    from Home). Visitors have no per-slide controls (admins keep **Present all**
    and the per-slide controls); **Stop** ends the session at any time. After the
    last slide, **Ask a question** (while questions are left) and **Finish demo**
-   appear next to the time left. There is no avatar, voice or language picker and
+   appear next to the time that is really left: the idle close (*Closes in 0:42
+   unless you ask a question*) or, when it comes first, the session cap (*3:10 left
+   in this live session*). There is no avatar, voice or language picker and
    no upload. When `DEMO_QA_ENABLED=true` the visitor can also **raise a hand** and
    ask a spoken question, or type one in the same panel (see
    [Raise-hand Q&A](#raise-hand-qa)); otherwise there is no microphone at all.
@@ -71,6 +73,8 @@ Browser                         Oz Radio backend                       Azure Voi
   |-- response.cancel ----------->|--------------------------------------->|
   |<-- demo.caption (v2) ---------| the avatar's words, paced to its audio |
   |<-- demo.narration_complete ---| once, after the last slide (v2)        |
+  |-- demo.activity (v2) -------->| the visitor is composing a question:   |
+  |<-- demo.idle {idle_close_ms} -| the idle deadline moved later (v2)     |
   |-- qa.ask_text {request_id,    | typed question (v2): no invite, no mic,|
   |    slide, text} ------------->| answered from the deck, as a spoken one|
   |   (anything else: dropped)    |                                        |
@@ -99,6 +103,7 @@ dropped silently. A frame is at most 32 KiB.
 | `session.avatar.connect` | `client_sdp` (base64, ≤ 20 KiB) | once; forwarded to Azure |
 | `demo.speak` | `slide` (int), optional `request_id` | the stored narration of that slide; at least 1 s between speaks; at most `min(40, 2 × slides)` (`speak_limit`); a slide without text → `empty_slide` |
 | `demo.finish` (v2) | — | the server closes with `4001` at once, even while the avatar is still being set up |
+| `demo.activity` (v2) | — | the visitor is composing a question after the narration (the *Ask a question* tap, focus or typing in the question field); the client sends at most one every 10 s. Honoured only after `demo.narration_complete` and while a question can still be asked (demo Q&A on, questions left), at most one per 5 s (the rest are ignored, never an error): it moves the idle deadline to now + 30 s. No reply (the new deadline arrives as `demo.idle`), never forwarded, never extends the session cap |
 | `response.cancel` | — | forwarded to Azure |
 | `qa.begin`, `qa.audio`, `qa.commit`, `qa.cancel`, `qa.resume` | as in [Raise-hand Q&A](#raise-hand-qa) | voice questions, handled by the backend, never forwarded |
 | `qa.ask_text` (v2) | `request_id`, `slide` (int), `text` (≤ 500 characters) | a typed question, never forwarded |
@@ -115,7 +120,8 @@ dropped silently. A frame is at most 32 KiB.
 | `demo.speaking` | `slide`, `chars`, `remaining`, `remaining_ms`, `request_id?` | acknowledges an accepted `demo.speak` |
 | `demo.notice` | `code` (`rate_limited`, `speak_limit`, `empty_slide`), `message`, `slide?`, `request_id?` | |
 | `demo.caption` (v2) | `slide` (int or null), `kind` (`narration`, `answer` or `invite`), `response_id`, `text`, `final` | what the avatar says, from its transcript; the `final: true` text replaces the deltas |
-| `demo.narration_complete` (v2) | `slides_spoken`, `slide_count`, `remaining_ms`, `idle_close_ms` | once per session, when the last slide's narration has completed |
+| `demo.narration_complete` (v2) | `slides_spoken`, `slide_count`, `remaining_ms`, `idle_close_ms` | once per session, when the last slide's narration has completed; `idle_close_ms` is the time until the idle close if the visitor does nothing |
+| `demo.idle` (v2) | `idle_close_ms` | after `demo.narration_complete`, whenever the idle deadline moved later by at least 1 s since the last value sent (an answer turn, a terminal question event, an honoured `demo.activity`); sent by the idle watcher, so at most once per second. The client re-syncs the time it counts down to |
 | `qa.ready` | `request_id`, `max_audio_ms`, `max_audio_bytes`, `remaining_questions`, `remaining_ms` | voice questions only |
 | `qa.accepted` (v2) | `request_id`, `remaining_questions`, `remaining_ms` | the answer to `qa.ask_text`, sent before any model call |
 | `qa.transcript` | `request_id`, `text`, `remaining_ms` | the heard or typed question, trimmed |
@@ -142,6 +148,15 @@ dropped silently. A frame is at most 32 KiB.
   its captions.
 - **Countdown** warnings come at 60 s and 20 s before the cap, each announced once.
   The server's `remaining_ms` is the truth; a local timer fills the gaps.
+- **After the narration** the card shows the time that is really left, the smaller of
+  the session time and the idle close: *{m:ss} left in this live session* when the
+  cap comes first, otherwise *Closes in {m:ss} unless you ask a question* (or just
+  *Closes in {m:ss}* when no question can be asked). `demo.narration_complete` and
+  every `demo.idle` re-sync the idle time. While a question is being answered the card
+  shows the session time (the server cannot close on idleness then). A visitor
+  composing a question (the *Ask a question* tap, focus or typing in the field) sends
+  `demo.activity`, which keeps the session open while a question can still be asked;
+  a visitor who only looks at the card is closed after the usual 30 s.
 - **Phones** get the controls as a fixed bar at the bottom of the screen. The page
   reserves its height so keyboard focus never lands under it.
 - **A dropped media link** shows *Reconnecting…* for up to 8 s; after that the
@@ -165,13 +180,13 @@ dropped silently. A frame is at most 32 KiB.
 | Daily sessions per client IP `DEMO_DAILY_SESSIONS_PER_IP` | after `accept()` → 4429 | `3` / UTC day (IPs stored only as salted hashes) |
 | Daily streaming minutes `DEMO_DAILY_MINUTES` | after `accept()` → 4429 | `60` min / UTC day (seconds recorded at session end) |
 | Hard session timeout `DEMO_SESSION_SECONDS` (`DEMO_QA_SESSION_SECONDS` when demo Q&A is on) | server timer → 4408 | `180` s (`300` s) |
-| Idle close after the narration | server clock → 4002 | 30 s after the estimated end of the last slide's audio (plus a 10 s grace); never while an avatar response or a question is in flight |
+| Idle close after the narration | server clock → 4002 | 30 s after the estimated end of the last slide's audio (plus a 10 s grace); never while an avatar response, a question or a question's daily reservation is in flight; a visitor composing a question keeps it open (`demo.activity`, only while a question can still be asked), never past the session cap |
 | Quota store unavailable or contended | after accept() → 4503 | fail closed |
 | Narrations per session `DEMO_MAX_SPEAKS` | message filter | 2 × slides, max 40 |
 | `demo.speak` rate limit | message filter | ≥ 1 s apart |
 | Narration length | server truncation | 2,000 chars |
 | Session config 100 % server-side | `build_demo_session_config` | deck language, registry default avatar (or `?avatar=` restricted to the public avatar catalog), allowlisted voice, fixed "read verbatim" instructions, `turn_detection: none`, no input audio, `max_response_output_tokens: 4096` |
-| Strict client→server allowlist | `DemoMessageFilter` | SDP offer, `demo.speak`, `demo.finish` (v2), `response.cancel`, plus `qa.begin` (after_slide) / `qa.audio` / `qa.commit` / `qa.cancel` / `qa.resume` and the typed `qa.ask_text` (v2), handled by the backend (never forwarded) |
+| Strict client→server allowlist | `DemoMessageFilter` | SDP offer, `demo.speak`, `demo.finish` (v2), `demo.activity` (v2, no reply, never forwarded), `response.cancel`, plus `qa.begin` (after_slide) / `qa.audio` / `qa.commit` / `qa.cancel` / `qa.resume` and the typed `qa.ask_text` (v2), handled by the backend (never forwarded) |
 | Demo Q&A (`DEMO_QA_ENABLED`) | `QaSession` + `DemoQuota` | off; 2 questions/session, 15 s of audio (500 characters when typed), 40/day global, 6/day per IP, ≥ 30 s of session left |
 | Azure socket torn down when either side leaves | `handle_demo_proxy` | — |
 | Custom avatar character names redacted from server events | `redact_server_message` | — |
@@ -217,7 +232,7 @@ closes `4503`.
 | Code | Sent when | The visitor reads | Retry |
 |---|---|---|---|
 | `4001` | the visitor pressed **Finish demo** (`demo.finish`) | "Thanks for trying the live demo" | none |
-| `4002` | idle after the narration: no avatar response or question in flight, and 30 s after the estimated end of the last slide's audio (plus a 10 s grace) | "Your live session has ended" | none |
+| `4002` | idle after the narration: no avatar response, question or daily question reservation in flight, and 30 s after the estimated end of the last slide's audio (plus a 10 s grace), or 30 s after the visitor last composed a question (`demo.activity`) or a question ended | "Your live session has ended" | none |
 | `4408` | the session time cap (`DEMO_SESSION_SECONDS`, or `DEMO_QA_SESSION_SECONDS` with demo Q&A) | "Your live session has ended" | none |
 | `1013` | the single demo slot is taken (`DEMO_MAX_CONCURRENT`) | "Another visitor is using the avatar" | "Try again in a minute" |
 | `4429` | daily limit: global sessions, streaming minutes or client IP | "Today's live allowance has been reached" | none; Start is disabled with the reason |

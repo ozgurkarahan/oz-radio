@@ -322,6 +322,7 @@ class QaSession:
         self._task: Optional[asyncio.Task] = None
         self._watchdog: Optional[asyncio.Task] = None
         self._last_frame_at: Optional[float] = None
+        self._reserving = 0
         self._closed = False
 
     @property
@@ -329,9 +330,15 @@ class QaSession:
         return self.opts.access == "demo"
 
     def is_quiet(self) -> bool:
-        """True when no question is being listened to or answered (idle or answered, no task running)."""
+        """True when no question is being listened to, reserved or answered (idle or answered, no task running, no
+        daily reservation pending): the demo's idle clock may then close the session."""
         task = self._task
-        return self.state in ("idle", "answered") and (task is None or task.done())
+        return self._reserving == 0 and self.state in ("idle", "answered") and (task is None or task.done())
+
+    def can_ask(self) -> bool:
+        """True while a question could still be taken: Q&A is on, a deck is bound and the per-session maximum is not
+        reached (the demo's ``demo.activity`` only counts then)."""
+        return not self._closed and self.opts.enabled and bool(self.slides) and self.used < self.opts.max_questions
 
     # -- outgoing ---------------------------------------------------------
     def remaining_ms(self) -> Optional[int]:
@@ -387,6 +394,21 @@ class QaSession:
             return None
         logger.info("Voice Q&A: daily reservation refused (%s)", exhausted)
         return "unavailable" if exhausted in ("busy", "unavailable") else "daily"
+
+    async def _reserve_or_refuse(self, request_id: str) -> bool:
+        """Reserve the daily question for ``request_id``. ``True`` when it was granted; otherwise the refusal has been
+        sent (``qa.error`` ``limit``, whose terminal event restarts the demo's idle window). The session is not quiet
+        for the whole of it — the wait for the reservation and the refusal that may follow — so the idle close can
+        never fire between a submitted question and its outcome."""
+        self._reserving += 1
+        try:
+            refused = await self._reserve_daily()
+            if refused:
+                await self._limit_error(request_id, refused)
+                return False
+            return True
+        finally:
+            self._reserving -= 1
 
     def _reset(self) -> None:
         self._stop_watchdog()
@@ -483,9 +505,7 @@ class QaSession:
         if self.used >= self.opts.max_questions:
             await self._limit_error(rid, "session")
             return
-        refused = await self._reserve_daily()
-        if refused:
-            await self._limit_error(rid, refused)
+        if not await self._reserve_or_refuse(rid):
             return
         if self._closed:
             return
@@ -546,9 +566,7 @@ class QaSession:
         if self.used >= self.opts.max_questions:
             await self._limit_error(rid, "session")
             return
-        refused = await self._reserve_daily()
-        if refused:
-            await self._limit_error(rid, refused)
+        if not await self._reserve_or_refuse(rid):
             return
         if self._closed:
             return

@@ -265,10 +265,12 @@ class DemoMessageFilter:
     Accepted: one ``session.avatar.connect`` (SDP offer), ``demo.speak``
     (server looks up stored narration; an optional valid ``request_id`` is
     echoed in the ack or notice), ``demo.finish`` (the session ends, see
-    :attr:`finish_requested`) and ``response.cancel``; plus, via
-    :meth:`filter_qa`, the demo subset of raise-hand Q&A messages — voice
-    questions and the typed ``qa.ask_text`` — (handled by the backend, never
-    forwarded). Everything else is dropped silently.
+    :attr:`finish_requested`), ``demo.activity`` (the visitor is composing a
+    question: no reply, never forwarded, see :meth:`take_activity`) and
+    ``response.cancel``; plus, via :meth:`filter_qa`, the demo subset of
+    raise-hand Q&A messages — voice questions and the typed ``qa.ask_text`` —
+    (handled by the backend, never forwarded). Everything else is dropped
+    silently.
     """
 
     QA_TYPES = frozenset({
@@ -300,11 +302,18 @@ class DemoMessageFilter:
         self._sdp_sent = False
         self._remaining_ms = remaining_ms
         self.finish_requested = False
+        self._activity = False
 
     @property
     def slide_indices(self) -> list[int]:
         """Distinct slide indices of the deck, ascending (what ``demo.speak`` may name)."""
         return sorted(self._slides)
+
+    def take_activity(self) -> bool:
+        """True once for every ``demo.activity`` frame :meth:`handle` has seen since the last call: the pump hands it
+        to :meth:`DemoSession.on_activity`. The frame itself is never forwarded and gets no reply."""
+        seen, self._activity = self._activity, False
+        return seen
 
     @staticmethod
     def is_finish(data: Any) -> bool:
@@ -364,6 +373,9 @@ class DemoMessageFilter:
             return [_CANCEL_MESSAGE], []
         if msg_type == dp.MSG_FINISH:
             self.finish_requested = True
+            return [], []
+        if msg_type == dp.MSG_ACTIVITY:
+            self._activity = True                 # every other field is ignored: the frame carries nothing
             return [], []
         if msg_type == "demo.speak":
             return self._speak(msg)
@@ -462,8 +474,12 @@ class DemoSession:
     * **Idle clock.** Once the narration is complete the session may close with ``CLOSE_IDLE`` when no avatar
       response is in flight (or asked for), the question session is quiet and ``now >= idle deadline``. The
       deadline starts at ``max(audible end of the completed turns, now) + grace + idle`` and only moves later: a
-      later completed turn, a cancelled response, a terminal question event. Rejected or dropped client messages
-      never touch it.
+      later completed turn, a cancelled response, a terminal question event, an honoured ``demo.activity`` (the
+      visitor is composing a question: only while one can still be asked, at most one per
+      ``ACTIVITY_MIN_INTERVAL_SECONDS``). Rejected or dropped client messages never touch it.
+    * **demo.idle.** Every move of the deadline later by at least ``IDLE_ANNOUNCE_MIN_DELTA_SECONDS`` since the last
+      value announced (``demo.narration_complete`` is the first) is handed to the idle watcher by
+      :meth:`idle_announcement`, so the client can show the time that is really left.
     """
 
     def __init__(
@@ -482,11 +498,15 @@ class DemoSession:
         self._grace_seconds = float(dp.AUDIO_TAIL_GRACE_SECONDS)
         self._first_audio_seconds = float(dp.FIRST_AUDIO_LATENCY_SECONDS)
         self._chars_per_second = float(dp.NARRATION_CHARS_PER_SECOND)
+        self._activity_min_seconds = float(dp.ACTIVITY_MIN_INTERVAL_SECONDS)
+        self._announce_min_delta = float(dp.IDLE_ANNOUNCE_MIN_DELTA_SECONDS)
         self._pending: deque[tuple[str, Optional[int], float]] = deque()   # asked for, not yet created
         self._responses: Dict[str, _Turn] = {}                              # created, not yet done
         self._spoken: set[int] = set()
         self._complete_sent = False
         self._idle_deadline: Optional[float] = None
+        self._announced_deadline: Optional[float] = None                    # the deadline the client was last told
+        self._last_activity: Optional[float] = None                         # when the last demo.activity was honoured
         self._audible_end = 0.0
 
     # -- what the proxy asked for ----------------------------------------
@@ -503,6 +523,19 @@ class DemoSession:
         """A terminal question event: the visitor just acted, so the idle window restarts."""
         if self._complete_sent:
             self._raise_deadline(self._clock() + self._idle_seconds)
+
+    def on_activity(self, can_ask: bool) -> None:
+        """``demo.activity``: the visitor is composing a question, so the idle window restarts. Ignored (never an
+        error, the deadline stays) before the narration is complete, once no question can be asked any more
+        (``can_ask`` false: Q&A off, no deck, no question left) and when the previous honoured activity is less than
+        ``ACTIVITY_MIN_INTERVAL_SECONDS`` old. It never extends the session cap: that is enforced outside."""
+        if not self._complete_sent or not can_ask:
+            return
+        now = self._clock()
+        if self._last_activity is not None and now - self._last_activity < self._activity_min_seconds:
+            return
+        self._last_activity = now
+        self._raise_deadline(now + self._idle_seconds)
 
     def on_empty_last_slide(self) -> list[Dict[str, Any]]:
         """The last slide answered ``empty_slide``: nothing is left to say, the narration is complete."""
@@ -607,12 +640,27 @@ class DemoSession:
         now = self._clock()
         self._complete_sent = True
         self._raise_deadline(max(self._audible_end, now) + self._grace_seconds + self._idle_seconds)
+        self._announced_deadline = self._idle_deadline      # idle_close_ms below is the first announcement
         return {
             "type": dp.MSG_NARRATION_COMPLETE,
             "slides_spoken": len(self._spoken),
             "slide_count": self.slide_count,
             "remaining_ms": self._remaining_ms() if self._remaining_ms is not None else 0,
             "idle_close_ms": max(0, round(((self._idle_deadline or now) - now) * 1000)),
+        }
+
+    def idle_announcement(self) -> Optional[Dict[str, Any]]:
+        """``demo.idle`` when the deadline has moved later by at least ``IDLE_ANNOUNCE_MIN_DELTA_SECONDS`` since the
+        value the client was last told (``demo.narration_complete`` counts as the first), else ``None``. The idle
+        watcher asks once per check interval, so the client hears of a move at most once per second."""
+        if not self._complete_sent or self._idle_deadline is None or self._announced_deadline is None:
+            return None
+        if self._idle_deadline - self._announced_deadline < self._announce_min_delta:
+            return None
+        self._announced_deadline = self._idle_deadline
+        return {
+            "type": dp.MSG_IDLE,
+            "idle_close_ms": max(0, round((self._idle_deadline - self._clock()) * 1000)),
         }
 
     @property
@@ -870,7 +918,7 @@ async def _run_demo_connected(
     qa = _make_qa_session(qa_opts, config, client, azure, demo=state) if qa_opts is not None else None
     pump = asyncio.ensure_future(_demo_pump(inbox, client, azure, flt, state, qa))
     forward = asyncio.ensure_future(_demo_azure_to_client(azure, client, redact, state, inbox))
-    idle = asyncio.ensure_future(_demo_idle_watch(state, qa))
+    idle = asyncio.ensure_future(_demo_idle_watch(state, qa, client, inbox))
     tasks = (pump, forward, idle)
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -914,6 +962,10 @@ async def _demo_pump(
             to_azure, to_client = flt.handle(data)
             if flt.finish_requested:
                 return _PUMP_FINISH
+            if flt.take_activity():
+                # No reply: the new idle deadline reaches the browser as demo.idle (from the idle watcher).
+                state.on_activity(qa is not None and qa.can_ask())
+                continue
             if not to_azure and not to_client:
                 logger.info("Demo client→Azure: dropped message (len=%s)", len(data))
                 continue
@@ -981,13 +1033,29 @@ async def _demo_azure_to_client(
     return _AZURE_CLOSED
 
 
-async def _demo_idle_watch(state: DemoSession, qa: Optional[QaSession]) -> str:
-    """Returns when the demo has been idle long enough after the narration (contracts §4.5)."""
+async def _demo_idle_watch(
+    state: DemoSession, qa: Optional[QaSession], client: Any, inbox: _DemoInbox,
+) -> str:
+    """Returns when the demo has been idle long enough after the narration (contracts §4.5). Once per check
+    interval it also tells the browser when the idle deadline moved later (``demo.idle``)."""
     interval = max(0.01, float(dp.IDLE_CHECK_INTERVAL_SECONDS))
     while True:
         await asyncio.sleep(interval)
         if state.idle_expired(qa is None or qa.is_quiet()):
             return _IDLE
+        note = state.idle_announcement()
+        if note is None:
+            continue
+        try:
+            await client.send_json(note)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if _client_is_gone(e, inbox):
+                logger.debug("Demo idle announcement ended: %s", e)
+                return _CLIENT_GONE
+            logger.error("Demo idle announcement failed: %s: %s", type(e).__name__, e)
+            return _FAILED
 
 
 class _SerializedClient:

@@ -1,4 +1,4 @@
-"""Shared contract constants of the UX-fix run (contracts v1.2): demo WebSocket protocol v2, close codes,
+"""Shared contract constants of the UX-fix run (contracts v1.3): demo WebSocket protocol v2, close codes,
 boot block and the public library API.
 
 FROZEN shared contract file (owner WU-F0). Constants only — no behaviour, no imports. Do not edit: ask the
@@ -22,14 +22,25 @@ WS_PATH = "/ws/voice/demo"
 
 # Busy-based idle close (contracts §4.5). After demo.narration_complete the server closes with CLOSE_IDLE when ALL
 # hold: no avatar response is in flight (every response.created has had its response.done, any status), the QA
-# session is idle or answered, and now >= idle_deadline. The deadline only moves later: each later completed turn
+# session is quiet (idle or answered, no question task running, no daily question reservation pending), and
+# now >= idle_deadline. The deadline only moves later: each later completed turn
 # -> anchor(turn) + AUDIO_TAIL_GRACE_SECONDS + IDLE_CLOSE_SECONDS; each terminal QA event (qa.error, qa.unavailable,
-# qa.cancel, qa.resume) -> now + IDLE_CLOSE_SECONDS. Rejected or dropped client messages never move it.
+# qa.cancel, qa.resume) -> now + IDLE_CLOSE_SECONDS; each honoured demo.activity (v1.3: the visitor is composing a
+# question after the narration, only while a question can still be asked, at most one per
+# ACTIVITY_MIN_INTERVAL_SECONDS) -> now + IDLE_CLOSE_SECONDS. Rejected, ignored or dropped client messages never move
+# it, and nothing moves it past the session cap (4408 still wins). Every move later by at least
+# IDLE_ANNOUNCE_MIN_DELTA_SECONDS since the last announced value (demo.narration_complete counts as the first) is sent
+# to the client as demo.idle {idle_close_ms} by the idle watcher, so at most once per IDLE_CHECK_INTERVAL_SECONDS.
 IDLE_CLOSE_SECONDS = 30
 # Safety margin added after the estimated end of the avatar's audio before the idle window starts.
 AUDIO_TAIL_GRACE_SECONDS = 10
 # The idle deadline is evaluated at least this often.
 IDLE_CHECK_INTERVAL_SECONDS = 1
+# v1.3: the server honours at most one demo.activity per this many seconds (extra frames are ignored, never an error).
+# The client sends at most one per DEMO_TIMING.activityIntervalMs (10 s), so every client activity is honoured.
+ACTIVITY_MIN_INTERVAL_SECONDS = 5
+# v1.3: demo.idle is sent when the idle deadline moved later by at least this many seconds since the last value sent.
+IDLE_ANNOUNCE_MIN_DELTA_SECONDS = 1
 # Estimate of response.created -> first audible sample (measured 1.0-1.4 s, 2026-10-18 trial).
 FIRST_AUDIO_LATENCY_SECONDS = 1.5
 # Fallback narration speed when no word timestamps arrived (same default as NarrationRate on the client).
@@ -98,6 +109,7 @@ MSG_QA_COMMIT = "qa.commit"
 MSG_QA_CANCEL = "qa.cancel"
 MSG_QA_RESUME = "qa.resume"
 MSG_QA_ASK_TEXT = "qa.ask_text"
+MSG_ACTIVITY = "demo.activity"
 # Application message types (server -> client)
 MSG_PROXY_CONNECTED = "proxy.connected"
 MSG_STARTED = "demo.started"
@@ -105,6 +117,7 @@ MSG_SPEAKING = "demo.speaking"
 MSG_NOTICE = "demo.notice"
 MSG_CAPTION = "demo.caption"
 MSG_NARRATION_COMPLETE = "demo.narration_complete"
+MSG_IDLE = "demo.idle"
 MSG_QA_READY = "qa.ready"
 MSG_QA_ACCEPTED = "qa.accepted"
 MSG_QA_TRANSCRIPT = "qa.transcript"

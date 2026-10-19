@@ -82,6 +82,11 @@ interface NarrationDoneProps {
   title: string;
   /** Seconds left in the session, from the countdown. */
   secondsLeft: number | null;
+  /**
+   * Seconds until the server closes the session for idleness (`demo.narration_complete` / `demo.idle`); null = no idle
+   * deadline known (the narration limit, an older server) or none that binds right now.
+   */
+  idleSecondsLeft?: number | null;
   /** Typed or voice questions are possible (Q&A on, questions left). */
   canAsk: boolean;
   onAsk: () => void;
@@ -92,19 +97,32 @@ interface NarrationDoneProps {
 }
 
 /**
+ * The time that is really left: the session cap, or the idle deadline when that comes first. The cap reads "{m:ss} left in
+ * this live session"; the idle deadline reads "Closes in {m:ss}", with "unless you ask a question" while one can be asked.
+ */
+function remainingTimeText(secondsLeft: number | null, idleSecondsLeft: number | null, canAsk: boolean): string | null {
+  if (idleSecondsLeft != null && (secondsLeft == null || idleSecondsLeft < secondsLeft)) {
+    const clock = formatClock(idleSecondsLeft);
+    return canAsk ? `Closes in ${clock} unless you ask a question` : `Closes in ${clock}`;
+  }
+  return secondsLeft != null ? `${formatClock(secondsLeft)} left in this live session` : null;
+}
+
+/**
  * After the narration: instead of an idle avatar offering "Present all" again, the visitor chooses — ask a question while
  * the session lasts, or finish (which ends it and frees the avatar for the next visitor).
  */
-export function DemoNarrationDone({ title, secondsLeft, canAsk, onAsk, onFinish, finishing, recording }: NarrationDoneProps) {
+export function DemoNarrationDone({ title, secondsLeft, idleSecondsLeft = null, canAsk, onAsk, onFinish, finishing, recording }: NarrationDoneProps) {
   const ref = useRef<HTMLDivElement>(null);
   // The choice that ends the presentation must not wait below the fold of a short screen (no focus change: it is a status).
   useEffect(() => { ref.current?.scrollIntoView({ block: 'nearest' }); }, []);
+  const timeText = remainingTimeText(secondsLeft, idleSecondsLeft, canAsk);
   return (
     <div ref={ref} className="demo-done" role="status" data-testid="demo-narration-done">
       <p className="demo-done__title">{title}</p>
-      {secondsLeft != null && (
+      {timeText != null && (
         <p className="demo-done__time small muted tabular" data-testid="demo-done-time">
-          {formatClock(secondsLeft)} left in this live session
+          {timeText}
         </p>
       )}
       <div className="demo-done__actions">
