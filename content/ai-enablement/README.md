@@ -114,18 +114,83 @@ podcasts and videos get human-readable display titles (`DISPLAY_TITLES` in
 content seeded earlier under the filename slug is still recognised, and
 `python -m maintenance.content retitle [--dry-run]` renames it (Cosmos deck
 title, playlist steps, AI Search chunks and library manifests). See
-`demos/backend/maintenance/content.py` for podcast/video rendering and purge.
+`demos/backend/maintenance/content.py` for the full command list (podcast and
+video rendering, publish/unpublish, the staged switch below, purge).
 
-Podcast re-renders (staged, so visitors never see duplicates):
+#### Re-render podcasts and videos (staged rollout)
+
+A re-render (for example after better scripts) is a **visibility change, not a
+replacement**: render the new items privately, check them, then switch visitors
+over. The old items are only unpublished, so a rollback is one command.
+**Never purge during the rollout.**
 
 ```bash
-python -m maintenance.content inventory --json /tmp/before.json   # record current items
-python -m maintenance.content warm-listeners                      # build the cached listener kits first
-python -m maintenance.content render-podcast all --force          # new video + radio renditions
-python -m maintenance.content publish --podcast-id <old-id> --off # unpublish each superseded item (kept for rollback)
-python -m maintenance.content purge --podcast-id <old-id> --record /tmp/purge.json  # only after verification
+python -m maintenance.content inventory --json /tmp/before.json    # record the current items
+python -m maintenance.content warm-listeners                       # build the cached listener kits first
+
+# 1. Render privately: the new items are archived unpublished. One detached job at a time.
+python -m maintenance.content --background /tmp/podcasts.log render-podcast all --force --unpublished
+python -m maintenance.content logtail /tmp/podcasts.log -n 40      # progress; RENDERED podcast <name> job-... = new ids
+grep '^RENDERED ' /tmp/podcasts.log                                # just the new ids (ids only, never URLs)
+python -m maintenance.content --background /tmp/videos.log render-video all --force --unpublished
+python -m maintenance.content logtail /tmp/videos.log -n 40        # RENDERED video <name> sv-... = new ids
+
+# 2. Inspect every new item as an admin (admins see unpublished items with their published flag).
+
+# 3. Plan, preview, switch.
+python -m maintenance.content plan-switch --out /tmp/switch.json   # published item -> its newer private re-render
+python -m maintenance.content switch --manifest /tmp/switch.json --dry-run
+python -m maintenance.content switch --manifest /tmp/switch.json   # per pair: publish new, then unpublish old
+
+# 4. If something is wrong: publish each old item again, then unpublish each new one.
+python -m maintenance.content rollback --manifest /tmp/switch.json --dry-run
+python -m maintenance.content rollback --manifest /tmp/switch.json
 ```
 
-`render-podcast --format audio` renders a radio-only episode. Run CLI renders
-when nobody is rendering from the studio: the CLI process does not share the
-server's render limits or batch-job pacing.
+- **`--unpublished`** archives the render with `published: false`, never
+  publishes it and prints one `RENDERED <podcast|video> <name> <job id>` line
+  as soon as it is archived (ids only, never URLs). Pass `--force` as well for
+  a re-render: without it an item that already has the title is only reported
+  (and, under `--unpublished`, never published). A failed render prints no
+  `RENDERED` line and no item appears in the library. Run the renders one
+  after the other, and when nobody renders from the studio (the CLI process
+  does not share the server's render limits or batch-job pacing);
+  `--format audio` renders a radio-only episode.
+- **`plan-switch`** pairs each published item with the single newer
+  unpublished item of the same kind, title, format and language, and writes the
+  manifest. Published items without a re-render are listed as `unmatched`.
+  Matches it cannot decide (several published items, or several newer private
+  re-renders, for one title) are left out and reported in `errors` (exit code
+  1), never guessed: add that pair to the manifest by hand. It never overwrites
+  an existing file (the manifest holds the switch record), and `--dry-run`
+  prints the plan without writing.
+- **The manifest** is plain JSON, so it can also be written by hand; only
+  these keys are needed (`plan-switch` adds title, format, language and
+  creation times for review):
+
+  ```json
+  {"pairs": [
+    {"kind": "podcast", "old_id": "job-1a2b3c4d", "new_id": "job-5e6f7a8b"},
+    {"kind": "video", "old_id": "sv-1a2b3c4d", "new_id": "sv-5e6f7a8b"}
+  ]}
+  ```
+
+- **`switch` / `rollback`** check the whole manifest before changing anything
+  (ids valid and present; old and new share title, format and language), then
+  go pair by pair and stop at the first failure. The item that must be visible
+  always goes live before the other one is hidden, so visitors never see a gap
+  (a failed unpublish leaves both visible, never neither). Both are
+  idempotent: re-run them after a failure, and a step already in its target
+  state is reported `already`. Every step is appended to the pair's `log` in
+  the manifest (`at`, `command`, `step`, `id`, `outcome`) and the pair's
+  `status` is kept current; `--dry-run` writes nothing, not even the manifest.
+  Exit codes: 0 done, 1 a step failed or the plan is incomplete, 2 invalid
+  request (nothing was changed).
+- **Single items:** `publish --podcast-id job-... --video-id sv-... [--off]`
+  and `unpublish ...` (the same as `publish --off`) accept `--dry-run`; ids are
+  validated first and nothing is deleted.
+- The manifest lives on the replica's filesystem: keep the JSON that `switch`
+  prints (a rollback only needs the pairs). Purge old items in a later,
+  separate clean-up once the new ones have proven themselves (`purge
+  --podcast-id/--video-id ... --record /tmp/purge.json` refuses to delete the
+  last published copy of a catalog item).
