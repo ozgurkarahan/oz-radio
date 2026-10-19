@@ -43,8 +43,10 @@ previous segment's last frame — inside the talking clip's 250 ms silent lead,
 never across speech — without changing the segment length.
 
 Plus an optional branded intro + outro card carrying the Oz Radio sonic logo
-(``podcast_jingle``), background music ducked to -25 dB (graceful skip if the
-file is missing) and loudnorm I=-16:TP=-1.5:LRA=11. Exports final.mp4
+(``podcast_jingle``; the card tagline, the closing line and the speaker role
+labels follow the episode's language, see ``card_wording``), background music
+ducked to -25 dB (graceful skip if the file is missing) and loudnorm
+I=-16:TP=-1.5:LRA=11. Exports final.mp4
 (H.264+AAC), final.mp3 (its soundtrack — the radio fallback), final.srt and a
 ``ComposeTimeline`` (per-turn offsets in final.mp4 + the listener mode).
 The commands are validated on ffmpeg 5.1 (Debian bookworm) and 7.1 (Debian
@@ -128,6 +130,35 @@ LISTENER_RANK = {"none": -1, "still": 0, "procedural": 1, "idle_loop": 2}
 SIGNATURE_VF = "crop=iw*0.6:ih*0.6:iw*0.2:ih*0.2,scale=64:64:flags=area,format=gray"
 
 DEFAULT_LAYOUT = "split_screen_with_slides"
+
+
+@dataclass(frozen=True)
+class CardWording:
+    """Viewer-facing words burned into the video, in the language of the episode."""
+    tagline: str        # subtitle of both title cards
+    outro: str          # headline of the closing card
+    interviewer: str    # role label under the interviewer's name
+    expert: str         # role label under the expert's name
+
+
+_ENGLISH = CardWording("AI Avatar Podcast", "Thanks for listening", "Interviewer", "Expert")
+# By primary language subtag. The render fonts (Liberation, DejaVu) only cover Latin
+# scripts, so zh and ja keep the English words rather than draw missing-glyph boxes.
+# Role labels avoid gendered forms where the language has a neutral word.
+CARD_WORDING = {
+    "en": _ENGLISH,
+    "fr": CardWording("Podcast d’avatars IA", "Merci de votre écoute", "Journaliste", "Expert"),
+    "es": CardWording("Pódcast con avatares de IA", "Gracias por escuchar", "Periodista", "Especialista"),
+    "de": CardWording("KI-Avatar-Podcast", "Danke fürs Zuhören", "Interviewer", "Experte"),
+    "it": CardWording("Podcast con avatar IA", "Grazie per l’ascolto", "Giornalista", "Specialista"),
+    "pt": CardWording("Podcast com avatares de IA", "Obrigado por ouvir", "Jornalista", "Especialista"),
+}
+
+
+def card_wording(language: Optional[str]) -> CardWording:
+    """Cards and role labels for an episode language (``fr-FR``, ``fr_CA``, ``FR``…); English when unknown."""
+    primary = re.split(r"[-_]", (language or "").strip().lower(), maxsplit=1)[0]
+    return CARD_WORDING.get(primary, _ENGLISH)
 
 
 def _find_font() -> Optional[str]:
@@ -340,6 +371,7 @@ def compose_podcast(
     geo = get_layout(layout)
     clips_sorted = sorted(clips, key=lambda c: c.turn_idx)
     turn_by_idx = {t.idx: t for t in script.turns}
+    language = getattr(script, "language", None)   # cards and role labels follow the episode
     warnings: list[str] = []
 
     # 1) Probe each clip's actual duration.
@@ -456,6 +488,7 @@ def compose_podcast(
                     listener=lsrc,
                     reactions=rx,
                     prev_frame=pf,
+                    language=language,
                 )
             except RuntimeError as exc:
                 last_exc = exc
@@ -489,12 +522,14 @@ def compose_podcast(
         seg_durations.append(_probe_video_duration(seg_out) or _safe_probe_duration(seg_out) or total)
 
     # 4) Title cards carry the sonic logo (a longer logo stretches its card).
+    wording = card_wording(language)
     intro_sec = max(INTRO_SEC, jingle_duration("intro")) if intro else 0.0
     outro_sec = max(OUTRO_SEC, jingle_duration("outro")) if intro else 0.0
     extras: list[Path] = []
     if intro:
         intro_card = out_dir / "intro.mp4"
-        _render_card_with_jingle(intro_card, "Oz Radio", intro_sec, "intro", out_dir)
+        _render_card_with_jingle(intro_card, "Oz Radio", intro_sec, "intro", out_dir,
+                                 subtitle=wording.tagline)
         extras.append(intro_card)
 
     body_concat = out_dir / "body.mp4"
@@ -502,7 +537,8 @@ def compose_podcast(
 
     if intro:
         outro_card = out_dir / "outro.mp4"
-        _render_card_with_jingle(outro_card, "Thanks for listening", outro_sec, "outro", out_dir)
+        _render_card_with_jingle(outro_card, wording.outro, outro_sec, "outro", out_dir,
+                                 subtitle=wording.tagline)
         full_concat = out_dir / "full.mp4"
         _concat([body_concat, outro_card], full_concat)
     else:
@@ -1038,9 +1074,10 @@ def _drawtext(text: str, x: str, y: int | str, size: int, color: str) -> str:
 
 
 def _label_filters(geo: LayoutGeometry, active_speaker: str,
-                   names: dict[str, str]) -> list[str]:
+                   names: dict[str, str], language: Optional[str] = None) -> list[str]:
     """drawbox/drawtext filters for the speaker name labels (same sizes for both)."""
-    roles = {"interviewer": "Interviewer", "expert": "Expert"}
+    wording = card_wording(language)
+    roles = {"interviewer": wording.interviewer, "expert": wording.expert}
     lz = geo.label_zone
     parts: list[str] = []
     if geo.slide is not None:
@@ -1112,6 +1149,7 @@ def _build_segment_filter(
     listener: Optional[ListenerSource] = None,
     reactions: Sequence[SegmentReaction] = (),
     dissolve: bool = False,
+    language: Optional[str] = None,
 ) -> str:
     """Pure builder of the per-segment ``-filter_complex`` graph.
 
@@ -1120,7 +1158,8 @@ def _build_segment_filter(
     single still frame for the sway, or idle loop; absent when ``has_idle``
     is False), two inputs per reaction (clip video, clip audio) and finally
     the previous segment's last frame when ``dissolve``. ``listener``
-    defaults to the plain still. Outputs ``[vout]`` and ``[aout]``.
+    defaults to the plain still. ``language`` (the episode's) picks the role
+    labels (English when absent or unknown). Outputs ``[vout]`` and ``[aout]``.
     """
     geo = get_layout(layout)
     idle_speaker = _other(active_speaker)
@@ -1185,7 +1224,7 @@ def _build_segment_filter(
         f"drawbox=x={i_tile.x}:y={i_tile.y}:w={i_tile.w}:h={i_tile.h}:"
         f"color={LISTENER_BORDER_COLOR}:t={LISTENER_BORDER_PX}",
     ]
-    deco += _label_filters(geo, active_speaker, names)
+    deco += _label_filters(geo, active_speaker, names, language)
     if geo.slide and slide_counter:
         gx = geo.slide.x + geo.slide.w   # right gutter
         deco.append(_drawtext(
@@ -1305,6 +1344,7 @@ def _render_segment(
     listener: Optional[ListenerSource] = None,
     reactions: Sequence[SegmentReaction] = (),
     prev_frame: Optional[Path] = None,
+    language: Optional[str] = None,
 ) -> None:
     """Render a single dialogue segment to MP4 (see module docstring for layout).
 
@@ -1313,8 +1353,8 @@ def _render_segment(
     footage, which would make it gesture/lip-sync during the active turn.
     ``reactions`` overlay backchannel clips on the listener tile and mix
     their audio; ``prev_frame`` (the previous segment's last frame) opens
-    the segment with a dissolve. If ``lead_in > 0`` leading silence is added
-    so the first word isn't clipped.
+    the segment with a dissolve; ``language`` picks the role labels. If
+    ``lead_in > 0`` leading silence is added so the first word isn't clipped.
     """
     geo = get_layout(layout)
     total_dur = duration + lead_in
@@ -1363,6 +1403,7 @@ def _render_segment(
         listener=listener,
         reactions=reactions,
         dissolve=dissolve,
+        language=language,
     )
 
     cmd = [
@@ -1540,13 +1581,14 @@ def _extract_mp3(src: Path, out: Path) -> None:
     ])
 
 
-def _render_card(out: Path, title: str, duration: float, audio: Optional[Path] = None) -> None:
+def _render_card(out: Path, title: str, duration: float, audio: Optional[Path] = None,
+                 subtitle: str = _ENGLISH.tagline) -> None:
     """Branded title card; ``audio`` (the sonic logo) is padded/trimmed to the card."""
     fc = (
         f"color=c={BG_COLOR}:s={VIDEO_W}x{VIDEO_H}:r={FPS}:d={duration:.3f},"
         f"drawtext=text='{_esc(title)}':fontcolor=#C8412B:fontsize=96{_font_arg()}:"
         "x=(w-text_w)/2:y=(h-text_h)/2-40,"
-        f"drawtext=text='AI Avatar Podcast':fontcolor=white:fontsize=36{_font_arg()}:"
+        f"drawtext=text='{_esc(subtitle)}':fontcolor=white:fontsize=36{_font_arg()}:"
         "x=(w-text_w)/2:y=(h-text_h)/2+80[v]"
     )
     if audio is not None:
@@ -1570,15 +1612,15 @@ def _render_card(out: Path, title: str, duration: float, audio: Optional[Path] =
 
 
 def _render_card_with_jingle(out: Path, title: str, duration: float, kind: str,
-                             out_dir: Path) -> None:
+                             out_dir: Path, subtitle: str = _ENGLISH.tagline) -> None:
     """Title card carrying the ``kind`` sonic logo; a silent card if the logo fails."""
     try:
         jingle = render_jingle(kind, out_dir / f"_jingle_{kind}.wav")  # type: ignore[arg-type]
-        _render_card(out, title, duration, audio=jingle)
+        _render_card(out, title, duration, audio=jingle, subtitle=subtitle)
         return
     except Exception as exc:  # noqa: BLE001 — a silent card beats a failed render
         log.warning("podcast compose: %s sonic logo failed — silent card (%s)", kind, type(exc).__name__)
-    _render_card(out, title, duration)
+    _render_card(out, title, duration, subtitle=subtitle)
 
 
 # ---------------------------------------------------------------------------
@@ -1905,11 +1947,14 @@ def _srt_time(t: float) -> str:
 
 # Re-expose for tests
 __all__ = [
+    "CARD_WORDING",
+    "CardWording",
     "ComposeResult",
     "LAYOUTS",
     "ListenerSource",
     "MUSIC_DEFAULT",
     "SegmentReaction",
+    "card_wording",
     "choose_loop_offset",
     "compose_podcast",
     "get_layout",

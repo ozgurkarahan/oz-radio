@@ -904,3 +904,120 @@ def test_ingest_pptx_forwards_libreoffice_path_and_aligns_images(tmp_path, monke
 
     podcast_ingest.ingest_pptx(src)
     assert seen["lo"] == "soffice"
+
+
+# ---------------------------------------------------------------------------
+# Title cards and role labels follow the episode's language (F5)
+# ---------------------------------------------------------------------------
+
+ENGLISH = ("AI Avatar Podcast", "Thanks for listening", "Interviewer", "Expert")
+
+
+def _wording(language):
+    w = pc.card_wording(language)
+    return (w.tagline, w.outro, w.interviewer, w.expert)
+
+
+@pytest.mark.parametrize("language", ["fr-FR", "fr", "FR", "fr_CA", " fr-FR "])
+def test_card_wording_is_french_for_french_episodes(language):
+    assert _wording(language) == ("Podcast d’avatars IA", "Merci de votre écoute", "Journaliste", "Expert")
+
+
+@pytest.mark.parametrize("language", [None, "", "en-US", "en-GB", "zh-CN", "ja-JP", "xx", "nl-NL"])
+def test_card_wording_falls_back_to_english(language):
+    # zh and ja stay English on purpose: the render fonts have no CJK glyphs.
+    assert _wording(language) == ENGLISH
+
+
+def test_every_wording_is_complete_and_drawable_with_the_latin_render_fonts():
+    assert set(pc.CARD_WORDING) == {"en", "fr", "es", "de", "it", "pt"}
+    assert _wording("en") == ENGLISH
+    for code, wording in pc.CARD_WORDING.items():
+        texts = (wording.tagline, wording.outro, wording.interviewer, wording.expert)
+        assert all(t.strip() for t in texts)
+        assert all(ord(ch) < 0x250 or ch == "\u2019" for t in texts for ch in t), code
+        if code != "en":
+            assert wording.outro != "Thanks for listening" and wording.tagline != "AI Avatar Podcast"
+
+
+def test_role_labels_default_to_english_and_follow_the_language():
+    english = _build()
+    assert "Interviewer" in english and "Expert" in english and "Journaliste" not in english
+    for fc in (_build(language="en-US"), _build(language="zh-CN"), _build(language=None)):
+        assert fc == english
+    french = _build(language="fr-FR")
+    assert "text='Journaliste'" in french and "text='Expert'" in french and "Interviewer" not in french
+    assert "Dr. Harry Chen" in french and "Dr. Lisa Patel" in french      # names are never translated
+
+
+def test_localized_role_labels_keep_the_geometry_of_both_layouts():
+    for layout in ("split_screen_with_slides", "split_screen_only"):
+        for active in ("interviewer", "expert"):
+            fr = _build(layout=layout, active_speaker=active, language="fr-FR")
+            en = _build(layout=layout, active_speaker=active)
+            assert fr.replace("Journaliste", "Interviewer") == en
+    one_line = _build(layout="split_screen_only", language="fr-FR")
+    assert "Dr. Harry Chen \u00b7 Journaliste" in one_line and "Dr. Lisa Patel \u00b7 Expert" in one_line
+    sizes = dict(_label_sizes(_build(language="fr-FR")))
+    assert sizes["Journaliste"] == sizes["Expert"] == pc.LABEL_ROLE_SIZE
+
+
+def test_title_card_text_is_a_parameter(monkeypatch, tmp_path):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(pc, "_run", lambda cmd, timeout=None: seen.append(cmd))
+    pc._render_card(tmp_path / "a.mp4", "Oz Radio", 2.0)
+    pc._render_card(tmp_path / "b.mp4", "Merci de votre écoute", 2.0, subtitle="Podcast d’avatars IA")
+    english, french = (cmd[cmd.index("-filter_complex") + 1] for cmd in seen)
+    assert "text='Oz Radio'" in english and "text='AI Avatar Podcast'" in english
+    assert "text='Merci de votre écoute'" in french and "text='Podcast d’avatars IA'" in french
+    assert "AI Avatar Podcast" not in french and "Thanks for listening" not in french
+
+
+def test_card_with_jingle_passes_the_subtitle_on_both_paths(monkeypatch, tmp_path):
+    seen: list[tuple] = []
+    monkeypatch.setattr(pc, "_render_card",
+                        lambda out, title, duration, audio=None, subtitle="": seen.append((title, audio, subtitle)))
+    monkeypatch.setattr(pc, "render_jingle", lambda kind, path: path)
+    pc._render_card_with_jingle(tmp_path / "o.mp4", "Merci", 2.0, "outro", tmp_path, subtitle="S")
+
+    def no_logo(kind, path):
+        raise RuntimeError("no logo")
+
+    monkeypatch.setattr(pc, "render_jingle", no_logo)
+    pc._render_card_with_jingle(tmp_path / "o.mp4", "Merci", 2.0, "outro", tmp_path, subtitle="S")
+    assert seen == [("Merci", tmp_path / "_jingle_outro.wav", "S"), ("Merci", None, "S")]
+
+
+@pytest.mark.parametrize("language,tagline,outro", [
+    ("fr-FR", "Podcast d’avatars IA", "Merci de votre écoute"),
+    ("en-US", "AI Avatar Podcast", "Thanks for listening"),
+    ("ja-JP", "AI Avatar Podcast", "Thanks for listening"),
+])
+def test_compose_podcast_wires_the_episode_language_into_cards_and_labels(tmp_path, monkeypatch,
+                                                                         language, tagline, outro):
+    cards: list[tuple] = []
+    segments: list[dict] = []
+    monkeypatch.setattr(pc, "_require_tool", lambda name: None)
+    monkeypatch.setattr(pc, "_probe_duration", lambda path: 1.0)
+    monkeypatch.setattr(pc, "_safe_probe_duration", lambda path: 3.0)
+    monkeypatch.setattr(pc, "_probe_video_duration", lambda path: 1.0)
+    monkeypatch.setattr(pc, "_resolve_slides", lambda document, script, out_dir: {})
+    monkeypatch.setattr(pc, "_fallback_slide", lambda document, out_dir: out_dir / "_fallback_slide.png")
+    monkeypatch.setattr(pc, "_extract_frame", lambda *a, **k: None)
+    monkeypatch.setattr(pc, "_extract_last_frame", lambda *a, **k: None)
+    monkeypatch.setattr(pc, "_render_segment", lambda **kw: segments.append(kw))
+    monkeypatch.setattr(pc, "jingle_duration", lambda kind: 0.0)
+    monkeypatch.setattr(pc, "_render_card_with_jingle", lambda *a, **kw: cards.append((a, kw)))
+    for name in ("_concat", "_write_ass", "_write_srt", "_finalize", "_extract_mp3"):
+        monkeypatch.setattr(pc, name, lambda *a, **k: None)
+    turns = [DialogueTurn(idx=0, speaker="interviewer", text="Bonjour", slide_idx=0),
+             DialogueTurn(idx=1, speaker="expert", text="Salut", slide_idx=0)]
+    clips = [ClipManifest(turn_idx=t.idx, speaker=t.speaker, blob_url=f"{t.idx}.mp4") for t in turns]
+    script = Script(id="s", document_id="d", language=language, turns=turns)
+
+    pc.compose_podcast(clips, None, script, _roles(), tmp_path, intro=True)
+
+    assert [kw["language"] for kw in segments] == [language, language]
+    (intro_args, intro_kw), (outro_args, outro_kw) = cards
+    assert intro_args[1] == "Oz Radio" and intro_kw["subtitle"] == tagline      # the brand is a name: kept
+    assert outro_args[1] == outro and outro_kw["subtitle"] == tagline

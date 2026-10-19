@@ -28,8 +28,10 @@ broadcast-style programme:
    ratio low enough for a *linear* two-pass ``loudnorm`` (I −16, TP −1.5,
    LRA 11; raw TTS would silently fall back to dynamic mode; single pass
    when the measurement is unusable) → CBR MP3 128 kb/s, 44.1 kHz stereo,
-   ID3v2.3 from an allow-list + the cover re-encoded as APIC (a 128 kb/s MP3
-   measures ≈ 0.4 LU under its source: ≈ −16.3 LUFS).
+   ID3v2.3 text frames from an allow-list and no embedded picture (an APIC
+   cover put ≈ 125 KB in front of the first audio frame, which delayed the
+   start of playback on slow links; the cover is the separate ``cover.jpg``).
+   A 128 kb/s MP3 measures ≈ 0.4 LU under its source: ≈ −16.3 LUFS.
 6. **Sidecars**: ``transcript.json`` (``podcast_models.Transcript`` on the
    radio timeline: turns with video offsets, speech + reaction cues, waveform
    peaks) and the radio-timed ``audio.srt`` (SCORM) in the video SRT style.
@@ -134,7 +136,6 @@ LINEAR_TP_MARGIN_DB = 0.1
 
 MP3_BITRATE = "128k"
 MP3_SAMPLE_RATE = 44100
-COVER_QSCALE = 2               # APIC re-encoded (never stream-copied: drops EXIF/COM)
 PEAKS_RATE = 8000
 PEAK_BUCKETS = 240
 FFMPEG_TIMEOUT_SEC = 900
@@ -727,23 +728,18 @@ def program_graph(
 
 def mp3_encode_args(
     source: Path,
-    cover: Optional[Path],
     out: Path,
     audio_filter: str,
     metadata: Mapping[str, str],
 ) -> list[str]:
-    """ffmpeg arguments: CBR MP3 44.1 kHz stereo, ID3v2.3 allow-list + APIC cover."""
-    args = ["-i", str(source)]
-    if cover is not None:
-        args += ["-i", str(cover)]
-    args += ["-map", "0:a:0"]
-    if cover is not None:
-        args += ["-map", "1:v:0"]
-    args += ["-af", audio_filter,
-             "-c:a", "libmp3lame", "-b:a", MP3_BITRATE, "-ar", str(MP3_SAMPLE_RATE), "-ac", "2"]
-    if cover is not None:
-        args += ["-c:v", "mjpeg", "-q:v", str(COVER_QSCALE), "-disposition:v:0", "attached_pic",
-                 "-metadata:s:v:0", "title=Cover", "-metadata:s:v:0", "comment=Cover (front)"]
+    """ffmpeg arguments: CBR MP3 44.1 kHz stereo, ID3v2.3 text allow-list, no embedded picture.
+
+    The cover stays a separate file (``cover.jpg``): an APIC frame put ≈ 125 KB in
+    front of the first audio frame and delayed the start of playback on slow links.
+    """
+    args = ["-i", str(source), "-map", "0:a:0",
+            "-af", audio_filter,
+            "-c:a", "libmp3lame", "-b:a", MP3_BITRATE, "-ar", str(MP3_SAMPLE_RATE), "-ac", "2"]
     args += ["-map_metadata", "-1", "-map_chapters", "-1"]
     for key in ID3_KEYS:
         value = metadata.get(key)
@@ -978,12 +974,12 @@ def _mix(turn_audio, placements, clips, script, roles, hosts, *, title, language
         _build_program(program_wav, voice_wav, layout, intro_wav, outro_wav, logo_gains, None, None, pre_gain)
     voice_wav.unlink(missing_ok=True)
 
-    # 5) Cover, loudness, MP3.
+    # 5) Cover (a separate file, never embedded in the MP3), loudness, MP3.
     show_hosts = ordered_hosts(hosts, roles)
     cover = _make_cover(title, show_hosts, out_dir / "cover.jpg", avatar_images, warnings)
     mp3 = out_dir / "audio.mp3"
     metadata = id3_metadata(title, show_hosts, language, datetime.now(timezone.utc).year)
-    normalization = _normalize_and_encode(program_wav, cover, mp3, metadata, work)
+    normalization = _normalize_and_encode(program_wav, mp3, metadata, work)
 
     # 6) Transcript + radio SRT.
     duration = layout.total / sr
@@ -1113,7 +1109,7 @@ def _measure_loudnorm(path: Path) -> Optional[LoudnormStats]:
     return loudnorm_stats(parse_loudnorm_json(proc.stderr))
 
 
-def _normalize_and_encode(program: Path, cover: Optional[Path], mp3: Path,
+def _normalize_and_encode(program: Path, mp3: Path,
                           metadata: Mapping[str, str], work: Path) -> str:
     """Two-pass loudnorm + MP3 encode; returns the normalisation type used."""
     source = program
@@ -1144,13 +1140,7 @@ def _normalize_and_encode(program: Path, cover: Optional[Path], mp3: Path,
     audio_filter = f"{loudnorm_filter(stats)},aresample={MP3_SAMPLE_RATE}"
     tmp = mp3.with_name(f".{mp3.stem}.{uuid.uuid4().hex}.tmp.mp3")
     try:
-        try:
-            proc = _ffmpeg(mp3_encode_args(source, cover, tmp, audio_filter, metadata), loglevel="info")
-        except RuntimeError:
-            if cover is None:
-                raise
-            log.warning("podcast radio: cover not embeddable — MP3 without APIC")
-            proc = _ffmpeg(mp3_encode_args(source, None, tmp, audio_filter, metadata), loglevel="info")
+        proc = _ffmpeg(mp3_encode_args(source, tmp, audio_filter, metadata), loglevel="info")
         os.replace(tmp, mp3)
     finally:
         tmp.unlink(missing_ok=True)

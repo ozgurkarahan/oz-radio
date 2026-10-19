@@ -3,8 +3,9 @@
 A 1400×1400 JPEG drawn with Pillow: dark brand gradient (#0B1220 → #16213A),
 clay accent (#B8461E), the "Oz Radio" wordmark, the wrapped episode title
 (≤ 3 lines, auto-sized), two circular host portraits with their names and a
-small "AI-generated voices" note. It is the APIC picture of the radio MP3 and
-the thumbnail of audio-only library items.
+small "AI-generated voices" note. It is published next to the radio MP3 as a
+separate file (not embedded: an APIC picture delayed the first audio frame on
+slow links) and is the thumbnail of audio-only library items.
 
 Portraits come from ``avatar_images`` (role → image path). Green-screen
 (#00FF00) backgrounds — the photo avatars' render background — are keyed out

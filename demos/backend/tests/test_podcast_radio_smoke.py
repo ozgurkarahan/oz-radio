@@ -277,7 +277,7 @@ def test_outputs_exist_and_only_the_deliverables_remain(radio):
     assert sorted(p.name for p in out.iterdir()) == ["audio.mp3", "audio.srt", "cover.jpg", "transcript.json"]
 
 
-def test_mp3_is_cbr_44k1_stereo_with_cover_art(radio):
+def test_mp3_is_cbr_44k1_stereo_without_embedded_cover(radio):
     result, _, _ = radio
     info = _probe(result.mp3)
     audio = next(s for s in info["streams"] if s["codec_type"] == "audio")
@@ -285,9 +285,14 @@ def test_mp3_is_cbr_44k1_stereo_with_cover_art(radio):
     assert int(audio["sample_rate"]) == 44100 and int(audio["channels"]) == 2
     assert int(audio["bit_rate"]) == 128000
     assert _first_frame_tag(result.mp3) == "Info"          # LAME/Xing header of a CBR stream
-    cover = next(s for s in info["streams"] if s["codec_type"] == "video")
-    assert cover["disposition"]["attached_pic"] == 1
-    assert cover["codec_name"] == "mjpeg" and (cover["width"], cover["height"]) == (1400, 1400)
+    # F7: no picture in the MP3 (an APIC cover delayed the first audio frame on slow links);
+    # the cover is the separate 1400 px cover.jpg.
+    assert not [s for s in info["streams"] if s["codec_type"] == "video"]
+    data = result.mp3.read_bytes()
+    assert data[:3] == b"ID3" and 10 + ((data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]) < 2048
+    from PIL import Image
+
+    assert Image.open(result.cover).size == (1400, 1400)
 
 
 def test_id3_tags_are_allow_listed(radio):
@@ -297,13 +302,13 @@ def test_id3_tags_are_allow_listed(radio):
     keys = {k.lower() for k in _probe(result.mp3)["format"].get("tags", {})}
     assert keys <= set(ID3_KEYS)
     frames = dict(_id3_frames(result.mp3))
-    # ffmpeg writes the comment as TXXX:comment (no COMM) and, bit-exact, no TSSE.
-    assert set(frames) == {"TIT2", "TPE1", "TPE2", "TALB", "TCON", "TYER", "TLAN", "TXXX:comment", "APIC"}
+    # ffmpeg writes the comment as TXXX:comment (no COMM) and, bit-exact, no TSSE; no APIC.
+    assert set(frames) == {"TIT2", "TPE1", "TPE2", "TALB", "TCON", "TYER", "TLAN", "TXXX:comment"}
     assert frames["TIT2"] == "Radio mixes — les détails"
     assert frames["TPE1"] == "Sofia & Lucas" and frames["TPE2"] == "Oz Radio"
     assert frames["TALB"] == "Oz Radio Podcasts" and frames["TCON"] == "Podcast"
     assert frames["TLAN"] == "fra" and re.fullmatch(r"20\d\d", frames["TYER"])
-    assert frames["TXXX:comment"] == "AI-generated voices" and frames["APIC"] == "image/jpeg"
+    assert frames["TXXX:comment"] == "AI-generated voices"
     raw = result.mp3.read_bytes()
     for secret in SECRET_VOICES:
         assert secret.encode() not in raw and secret.split(":")[0].encode() not in raw
@@ -452,27 +457,19 @@ def test_peaky_programme_still_normalizes_linearly(tmp_path):
     raw = _measure_loudnorm(program)
     assert raw is not None and not linear_feasible(raw)     # as raw TTS: PLR too high
     mp3 = tmp_path / "audio.mp3"
-    mode = _normalize_and_encode(program, None, mp3, {"title": "t"}, tmp_path)
+    mode = _normalize_and_encode(program, mp3, {"title": "t"}, tmp_path)
     assert mode == "linear"
     integrated, true_peak = _ebur128(mp3)
     assert integrated == pytest.approx(-16.0, abs=1.0) and true_peak <= -1.0
 
 
-def test_cover_is_reencoded_without_exif_or_comments(tmp_path):
-    """Stream-copying the cover would carry its EXIF/COM segments into the APIC."""
-    from PIL import Image
-
+def test_encode_writes_a_small_id3_tag_and_no_picture(tmp_path):
+    """F7: an embedded cover (about 125 KB of APIC) delayed the first audio frame on slow links."""
     from services.podcast_radio import _normalize_and_encode
 
-    cover = tmp_path / "cover.jpg"
-    exif = Image.Exif()
-    exif[0x010E] = "SENTINEL-EXIF-description"
-    Image.new("RGB", (64, 64), (11, 18, 32)).save(cover, "JPEG", exif=exif.tobytes(),
-                                                  comment=b"SENTINEL-COM-segment")
-    assert b"SENTINEL-EXIF" in cover.read_bytes() and b"SENTINEL-COM" in cover.read_bytes()
     program = _write_wav(tmp_path / "program.wav", _tone(300.0, 2.0))
     mp3 = tmp_path / "audio.mp3"
-    _normalize_and_encode(program, cover, mp3, {"title": "t"}, tmp_path)
-    raw = mp3.read_bytes()
-    assert dict(_id3_frames(mp3))["APIC"] == "image/jpeg"
-    assert b"SENTINEL" not in raw
+    _normalize_and_encode(program, mp3, {"title": "t"}, tmp_path)
+    data = mp3.read_bytes()
+    assert data[:3] == b"ID3" and 10 + ((data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]) < 2048
+    assert "APIC" not in dict(_id3_frames(mp3)) and dict(_id3_frames(mp3))["TIT2"] == "t"
