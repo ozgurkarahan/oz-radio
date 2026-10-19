@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Eye, Mic, Presentation as PresentationIcon } from 'lucide-react';
 import SlideViewer from '../components/SlideViewer';
 import AvatarPanel from '../components/AvatarPanel';
+import DemoOutcome from '../components/DemoOutcome';
 import LanguageSelector from '../components/LanguageSelector';
 import { type Presentation } from '../services/api';
 import {
@@ -14,22 +15,64 @@ import {
 } from '../services/decksApi';
 import { isPhotoAvatar, pickAvatarForGender, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import { useAuth } from '../services/auth';
-import { useDemoConfig } from '../services/demo';
+import { fetchBootFallback, pickDemoDeck, readBoot } from '../services/boot';
+import { lookupRecording, useDemoConfig } from '../services/demo';
+import { DEMO_FALLBACK_LINKS, demoDeckPath, type Recording } from '../services/demoProtocol';
 import {
-  Alert, Chip, EmptyState, Field, LivePill, PageHeader, Select, Spinner,
-  humanizeTitle, languageName, pluralize,
+  Alert, Button, ButtonLink, Chip, EmptyState, Field, LivePill, PageHeader, Select, Spinner,
+  classifyLoadError, humanizeTitle, languageName, loadErrorMessage, pluralize,
 } from '../ui';
 import '../styles/pages/presenter.css';
 
-function deckToPresentation(d: DeckDetail): Presentation {
+function deckToPresentation(d: DeckDetail, admin: boolean): Presentation {
   return {
     id: d.id ?? d.deck_id,
-    filename: d.filename ?? d.title,
+    // Visitors see the deck's title, never an uploaded file name.
+    filename: admin ? (d.filename ?? d.title) : humanizeTitle(d.title),
     slide_count: d.slide_count ?? d.slides?.length ?? 0,
     language: d.language,
     // Slides keep `translated_notes` (admin payload) so narration follows the selected language.
     slides: presenterSlides(d.slides),
   };
+}
+
+/** The sentence under "This deck couldn't be loaded": the cause, never a raw transport message. */
+function deckErrorMessage(err: unknown): string {
+  return classifyLoadError(err) === 'not-found' ? 'Deck not found' : loadErrorMessage(err, 'this deck');
+}
+
+/**
+ * Where "Start the live demo" leads for this visitor — the live-demo deck of the first browser language that has one —
+ * read from the boot block, or (without one) with a single bounded request. `undefined` while it is being found, `null`
+ * when the live demo cannot run. Nothing is fetched unless `needed`.
+ */
+function useLiveDemoPath(needed: boolean): string | null | undefined {
+  const resolve = (boot: ReturnType<typeof readBoot>) => {
+    const target = boot && boot.demo.enabled ? pickDemoDeck(boot) : null;
+    return target ? demoDeckPath(target.deck_id) : null;
+  };
+  const [path, setPath] = useState<string | null | undefined>(() => {
+    const boot = readBoot();
+    return boot ? resolve(boot) : undefined;
+  });
+  useEffect(() => {
+    if (!needed || path !== undefined) return;
+    let cancelled = false;
+    void fetchBootFallback().then((boot) => { if (!cancelled) setPath(resolve(boot)); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needed, path]);
+  return path;
+}
+
+/** The deck's own recording (a video or an episode with its title), found once `enabled`; null while unknown or when none. */
+function useDeckRecording(deck: DeckDetail | null, enabled: boolean): Recording | null {
+  const [recording, setRecording] = useState<Recording | null>(null);
+  useEffect(() => {
+    if (!deck || !enabled) return;
+    return lookupRecording({ deck_id: deck.deck_id, title: deck.title, language: deck.language }, setRecording);
+  }, [deck, enabled]);
+  return recording;
 }
 
 export default function DeckPresentPage() {
@@ -39,7 +82,8 @@ export default function DeckPresentPage() {
   const autoplay = sp.get('autoplay') === '1';
 
   const [deck, setDeck] = useState<DeckDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [currentSlide, setCurrentSlide] = useState(initialSlide);
   const [language, setLanguage] = useState('en-US');
@@ -64,11 +108,18 @@ export default function DeckPresentPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setDeck(null);
+    setError(null);
     getDeck(deckId)
       .then((d) => { if (!cancelled) { setDeck(d); if (d.language) setLanguage(d.language); } })
-      .catch((e) => { if (!cancelled) setError(String(e?.message ?? e)); });
+      .catch((e) => { if (!cancelled) setError(e ?? new Error('Deck not found')); });
     return () => { cancelled = true; };
-  }, [deckId]);
+  }, [deckId, reloadKey]);
+
+  // The route sets a generic title; once the deck is known the tab, history and screen readers name it.
+  useEffect(() => {
+    if (deck?.title) document.title = `${humanizeTitle(deck.title)} · Oz Radio`;
+  }, [deck?.title]);
 
   useEffect(() => {
     // Clamp current slide when deck arrives
@@ -116,9 +167,15 @@ export default function DeckPresentPage() {
     return map;
   }, []);
 
-  const presentation = deck ? deckToPresentation(deck) : null;
+  const presentation = deck ? deckToPresentation(deck, isAdmin) : null;
   // Anonymous narration-only live demo: kill switch on + deck marked "Live demo".
   const demoMode = !auth.loading && !isAdmin && !demo.loading && demo.enabled && deck?.live_demo === true;
+  // A visitor on a page where the live avatar cannot run (demo switched off, or a deck that is not a live-demo deck):
+  // the cause and the recording instead of a sign-in wall that does not apply to them.
+  const railLoading = auth.loading || (!isAdmin && demo.loading);
+  const demoUnavailable = !!presentation && !railLoading && !isAdmin && !demoMode;
+  const liveDemoPath = useLiveDemoPath(error != null || (demoUnavailable && demo.enabled));
+  const unavailableRecording = useDeckRecording(deck, demoUnavailable);
   // The demo avatar is chosen server-side (registry default).
   const avatarMode = isPhotoAvatar(
     demoMode ? pickDefaultAvatar(avatars) : avatars.find((a) => a.id === selectedAvatar),
@@ -137,6 +194,12 @@ export default function DeckPresentPage() {
     )
   ) : null;
 
+  const errorKind = error != null ? classifyLoadError(error) : null;
+  // "Start the live demo" where it can run; otherwise the recording. Always something public to do next.
+  const startLiveDemo = liveDemoPath
+    ? <ButtonLink to={liveDemoPath} variant="primary" data-testid="deck-start-live-demo">Start the live demo</ButtonLink>
+    : null;
+
   return (
     <div className="container page presenter">
       <PageHeader
@@ -146,17 +209,32 @@ export default function DeckPresentPage() {
         actions={accessBadge}
       />
 
-      {error && (
+      {error != null && (
         presentation ? (
-          <Alert tone="error" className="presenter__alert">{error}</Alert>
+          <Alert tone="error" className="presenter__alert">{deckErrorMessage(error)}</Alert>
         ) : (
-          <EmptyState icon={PresentationIcon} title="This deck couldn't be loaded">
-            <Alert tone="error">{error}</Alert>
+          <EmptyState
+            icon={PresentationIcon}
+            title="This deck couldn't be loaded"
+            action={(
+              <div className="presenter__actions">
+                {errorKind !== 'not-found' && (
+                  <Button data-testid="deck-retry" onClick={() => setReloadKey((k) => k + 1)}>Try again</Button>
+                )}
+                {startLiveDemo}
+                {liveDemoPath === null && (
+                  <ButtonLink to="/video/library" variant="primary">Watch a recorded demo</ButtonLink>
+                )}
+                <ButtonLink to="/podcast/library" variant="outline">Listen to an episode</ButtonLink>
+              </div>
+            )}
+          >
+            <Alert tone="error">{deckErrorMessage(error)}</Alert>
           </EmptyState>
         )
       )}
 
-      {!presentation && !error && (
+      {!presentation && error == null && (
         <div className="presenter__loading"><Spinner label="Loading deck…" /></div>
       )}
 
@@ -202,6 +280,7 @@ export default function DeckPresentPage() {
                 onSlideChange={setCurrentSlide}
                 language={language}
                 autoPlayVideo={autoPlayVideo}
+                showFile={isAdmin}
                 onVideoPlayingChange={(playing) => {
                   setVideoPlaying(playing);
                   if (playing) setAutoPlayVideo(false);
@@ -209,22 +288,39 @@ export default function DeckPresentPage() {
               />
             </div>
             <aside className="presenter-grid__rail" aria-label="Now presenting">
-              <AvatarPanel
-                key={demoMode ? 'demo' : 'admin'}
-                presentation={presentation}
-                currentSlide={currentSlide}
-                language={language}
-                onSlideChange={setCurrentSlide}
-                videoPlaying={videoPlaying}
-                onRequestVideoAutoPlay={() => setAutoPlayVideo(true)}
-                selectedAvatar={selectedAvatar}
-                selectedVoice={selectedVoice}
-                mode={avatarMode}
-                access={demoMode ? 'demo' : 'admin'}
-                demoSessionSeconds={demo.session_seconds}
-                demoQa={demo.qa}
-                deckId={demoMode ? undefined : deck?.deck_id}
-              />
+              {railLoading ? (
+                <div className="presenter__loading"><Spinner label="Loading…" /></div>
+              ) : demoUnavailable ? (
+                <DemoOutcome
+                  kind="unavailable"
+                  tone="info"
+                  role="status"
+                  title={demo.enabled ? "The live avatar isn't available for this deck" : "The live demo isn't available right now"}
+                  detail={demo.enabled
+                    ? 'Only the live-demo deck can be presented by the avatar. Start it, or watch the recording.'
+                    : "A live session can't start at the moment. The recording shows the same demo."}
+                  recording={unavailableRecording}
+                  actions={demo.enabled ? startLiveDemo : null}
+                />
+              ) : (
+                <AvatarPanel
+                  key={demoMode ? `demo-${presentation.id}` : 'admin'}
+                  presentation={presentation}
+                  currentSlide={currentSlide}
+                  language={language}
+                  onSlideChange={setCurrentSlide}
+                  videoPlaying={videoPlaying}
+                  onRequestVideoAutoPlay={() => setAutoPlayVideo(true)}
+                  selectedAvatar={selectedAvatar}
+                  selectedVoice={selectedVoice}
+                  mode={avatarMode}
+                  access={demoMode ? 'demo' : 'admin'}
+                  demoSessionSeconds={demo.session_seconds}
+                  demoQa={demo.qa}
+                  deckTitle={deck?.title}
+                  deckId={demoMode ? undefined : deck?.deck_id}
+                />
+              )}
             </aside>
           </div>
         </>

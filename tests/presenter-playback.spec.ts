@@ -480,6 +480,7 @@ test.describe('Presenter playback (UI)', () => {
 });
 
 test.describe('Demo countdown (UI)', () => {
+  // `mockVoice` is an older (protocol v1) demo server; ux-demo.spec.ts covers the v2 protocol and every ending.
   test('server remaining_ms re-syncs the countdown; narration estimate is a separate label', async ({ page }) => {
     await mockApi(page, 'visitor', { demoSessionSeconds: 300 });
     await mockVoice(page, { demoRemainingMs: 150_000, narrationChars: [1300, 1300, 1300] });
@@ -491,11 +492,12 @@ test.describe('Demo countdown (UI)', () => {
     // 3 × 1300 chars at 1/13 s ≈ 300 s of narration > 150 s left → about 1 slide fits.
     await expect(page.getByTestId('demo-coverage-note')).toHaveText('This demo covers about 1 of 3 slides');
     await avatar.connected(page);
-    await expect(page.getByTestId('narration-left')).toHaveText('Slide 1/3 · ~5:00 narration left');
+    // The presentation starts by itself: the server's acknowledgement of slide 1 (130 characters) refines the estimate.
+    await expect(page.getByTestId('narration-left')).toHaveText('Slide 1/3 · ~3:30 narration left');
     await expect(left).toHaveText(/^Demo time left 2:(2\d|30)$/);
   });
 
-  test('demo: the slide stays visible when the session ends', async ({ page }) => {
+  test('demo: the slide stays visible when the session ends, and the card says it ended', async ({ page }) => {
     await mockApi(page, 'visitor');
     const voice = await mockVoice(page);
     await page.goto('/decks/deck-live/present');
@@ -503,11 +505,15 @@ test.describe('Demo countdown (UI)', () => {
     await page.getByTestId('slide-next').click();
     await page.getByTestId('demo-start').click();
     await avatar.connected(page);
-    await page.getByRole('button', { name: 'Present this slide' }).click();
+    // One Start tap presents from the slide on screen: no "Present this slide" for visitors.
     await expect.poll(() => voice.ofType('demo.speak')).toEqual([{ type: 'demo.speak', slide: 1 }]);
     await page.evaluate(() => (window as any).__ozRadioTest.playback()).then((s) => expect(s).toMatchObject({ kind: 'slide', chars: 130 }));
     voice.close(4408, 'time limit');
-    await expect(page.getByText('Demo time limit reached')).toBeVisible();
+    const ended = page.getByTestId('demo-outcome');
+    await expect(ended).toHaveAttribute('data-outcome', 'cap');
+    await expect(page.getByTestId('demo-outcome-title')).toHaveText('Your live session has ended');
+    await expect(ended.getByTestId('demo-outcome-fallback')).toHaveCount(2); // no same-deck recording in this catalog
+    await expect(page.getByText('Demo time limit reached')).toHaveCount(0);
     await expect(page.getByTestId('slide-counter')).toContainText('Slide 2 of 3');
     await expect(page.getByText('Slide title 2').first()).toBeVisible();
     await expect(page.getByTestId('demo-time-left')).toHaveCount(0);

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { type Presentation } from '../services/api';
+import { useAuth } from '../services/auth';
 import { narrationFor } from '../services/narration';
 import { Button, Chip, Segments, languageName } from '../ui';
 import '../styles/shared/slide-viewer.css';
@@ -12,6 +13,22 @@ interface Props {
   language: string;
   onVideoPlayingChange?: (playing: boolean) => void;
   autoPlayVideo?: boolean;
+  /** Show the file name above the slide (default). Only ever for the owner: a visitor never sees it, whatever the caller passes. */
+  showFile?: boolean;
+}
+
+const ALT_MAX_CHARS = 250;
+
+/**
+ * Alt text of a slide picture: "{title}: {text}" — the slide's visible text (public payload `text`) is what the picture
+ * shows, so a screen-reader user gets the content, not only the title. Truncated at a word; the title alone without it.
+ */
+function slideAlt(slide: { title?: string; text?: string }, index: number): string {
+  const title = (slide.title ?? '').trim() || `Slide ${index + 1}`;
+  const text = (slide.text ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return title;
+  const full = `${title}: ${text}`;
+  return full.length <= ALT_MAX_CHARS ? full : `${full.slice(0, ALT_MAX_CHARS).replace(/\s+\S*$/, '')}…`;
 }
 
 function formatBody(body: string) {
@@ -27,8 +44,9 @@ function formatBody(body: string) {
   );
 }
 
-export default function SlideViewer({ presentation, currentSlide, onSlideChange, language, onVideoPlayingChange, autoPlayVideo = false }: Props) {
+export default function SlideViewer({ presentation, currentSlide, onSlideChange, language, onVideoPlayingChange, autoPlayVideo = false, showFile = true }: Props) {
   const slide = presentation.slides[currentSlide];
+  const isOwner = useAuth().is_admin;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [imgError, setImgError] = React.useState(false);
 
@@ -61,9 +79,11 @@ export default function SlideViewer({ presentation, currentSlide, onSlideChange,
 
   return (
     <div className="slide-viewer">
-      <div className="slide-viewer__head">
-        <span className="eyebrow slide-viewer__file" title={presentation.filename}>{presentation.filename}</span>
-      </div>
+      {showFile && isOwner && (
+        <div className="slide-viewer__head">
+          <span className="eyebrow slide-viewer__file" title={presentation.filename}>{presentation.filename}</span>
+        </div>
+      )}
 
       <div className="media-frame">
         {slide.video_url ? (
@@ -84,7 +104,7 @@ export default function SlideViewer({ presentation, currentSlide, onSlideChange,
             <img
               key={slide.image_url}
               src={slide.image_url}
-              alt={slide.title || `Slide ${currentSlide + 1}`}
+              alt={slideAlt(slide, currentSlide)}
               onError={() => setImgError(true)}
             />
           </div>
@@ -101,7 +121,7 @@ export default function SlideViewer({ presentation, currentSlide, onSlideChange,
           <div className="media-frame__screen">
             <div className="slide-text">
               {slide.title && <div className="slide-text__title">{slide.title}</div>}
-              {formatBody(slide.body)}
+              {formatBody(slide.body || slide.text || '')}
               <div className="slide-text__num">Slide {currentSlide + 1}</div>
             </div>
           </div>

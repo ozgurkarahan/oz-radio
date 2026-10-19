@@ -2,12 +2,23 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { type Presentation, type QaMode } from '../services/api';
 import { useAuth } from '../services/auth';
 import { pickDefaultAvatar, useAvatars } from '../services/avatars';
-import { Mic, Pause, PhoneOff, Play, RotateCcw, Square, StepForward } from 'lucide-react';
-import { Alert, Button, HostDisc, LivePill, Waveform, languageName } from '../ui';
+import { Mic, Pause, PhoneOff, Play, RotateCcw, Square, StepForward, Volume2 } from 'lucide-react';
+import { Alert, Button, HostDisc, LivePill, Waveform, langAttr, languageName } from '../ui';
 import { GateNotice } from './AuthGate';
 import RaiseHandPanel, { type QaAnswerView, type QaPhase } from './RaiseHandPanel';
+import DemoOutcome, { DemoNarrationDone } from './DemoOutcome';
+import LiveCaptions from './LiveCaptions';
 import '../styles/shared/avatar-panel.css';
-import { demoCloseMessage, formatClock, formatMinutes, slidesThatFit, type DemoQaConfig } from '../services/demo';
+import {
+  DEMO_COPY, coverageNote, fetchDemoConfigFresh, formatClock, formatMinutes, loadRecordingLists, lookupRecording,
+  timeWarningText, type DemoQaConfig,
+} from '../services/demo';
+import {
+  DEMO_CLOSE_CODES, DEMO_PROTOCOL_VERSION, DEMO_QA_LIMIT_MESSAGES, DEMO_TIMING, DEMO_WARN_AT_SECONDS,
+  outcomeFor, type DemoOutcome as DemoOutcomeInfo, type DemoQaLimitScope, type Recording,
+} from '../services/demoProtocol';
+import { CaptionPacer, type CaptionView } from '../services/demoCaptions';
+import { ICE_WAIT_FOR_GATHERING, IceOfferPlanner } from '../services/demoIce';
 import { narrationFor } from '../services/narration';
 import { AvatarPlayback, NarrationRate, rmsDbfs, type Completion, type TurnSnapshot } from '../services/avatarPlayback';
 import { VoiceCapture, micErrorMessage, type CaptureEnd } from '../services/voiceCapture';
@@ -41,6 +52,8 @@ interface Props {
   demoSessionSeconds?: number;
   /** Demo only: raise-hand Q&A settings (from `GET /api/demo/config`). */
   demoQa?: DemoQaConfig;
+  /** Demo only: the deck's own title, to find its recording when the session ends ("the same demo, recorded"). */
+  deckTitle?: string;
   /** Admin: catalog deck bound to the voice session (`session.deck_id`, `context.switch`). */
   deckId?: string;
   /** Admin: legacy Live upload bound to the voice session (`session.presentation_id`). */
@@ -68,7 +81,7 @@ const QA_IDLE: QaRun = {
 const QA_ERROR_TEXT: Record<string, string> = {
   no_speech: "I didn't catch a question. Press Continue to go on.",
   too_long: 'That question was too long. Try a shorter one.',
-  limit: 'No more questions are available in this session.',
+  limit: DEMO_QA_LIMIT_MESSAGES.session,
   rate: 'Please wait a moment before asking another question.',
   stt_failed: "Your question couldn't be transcribed. Try again.",
   answer_failed: "The presenter couldn't answer that question.",
@@ -79,6 +92,10 @@ const QA_ERROR_TEXT: Record<string, string> = {
 };
 
 const PRESENT_GAP_MS = 500;
+/** A dropped media link gets this long to come back before the session is declared interrupted (T3-08b). */
+const MEDIA_RECONNECT_MS = 8000;
+/** "Finish demo" waits this long for the server's 4001 before ending the session locally. */
+const FINISH_CLOSE_WAIT_MS = 3000;
 
 function newRequestId(): string {
   const c = (globalThis as any).crypto;
@@ -93,7 +110,7 @@ function monoNow(): number {
 export default function AvatarPanel({
   presentation, currentSlide, language, onSlideChange, videoPlaying = false, onRequestVideoAutoPlay,
   selectedAvatar, selectedVoice, autoStart = false, mode = 'wide', access = 'admin', demoSessionSeconds = 180,
-  demoQa, deckId, presentationId,
+  demoQa, deckTitle, deckId, presentationId,
 }: Props) {
   const [connected, setConnected] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -113,10 +130,13 @@ export default function AvatarPanel({
   const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingReconnectSpeakRef = useRef(false);
   const stopSessionRef = useRef<() => void>(() => {});
+  // The one <audio> element of the avatar's voice. It lives in the JSX for the whole life of the panel (not created per
+  // session) so the Start tap can bank the user activation on it.
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
   const handleMessageRef = useRef<(event: MessageEvent) => void>(() => {});
+  const handleMediaStateRef = useRef<(state: string) => void>(() => {});
   const prevVideoPlayingRef = useRef(videoPlaying);
   const auth = useAuth();
   const isDemo = access === 'demo';
@@ -145,6 +165,35 @@ export default function AvatarPanel({
   // Narration length per slide in the demo (the visitor never receives notes):
   // `narration_chars` from `demo.started` when provided, else `demo.speaking` acks.
   const [demoChars, setDemoChars] = useState<Record<number, number>>({});
+  // How the demo session ends or fails, and what the visitor still gets from it (contracts §4.5–4.6).
+  const [outcome, setOutcome] = useState<DemoOutcomeInfo | null>(null);
+  const [recording, setRecording] = useState<Recording | null>(null);
+  const [narrationDone, setNarrationDone] = useState<null | 'complete' | 'limit'>(null);
+  const [finishing, setFinishing] = useState(false);
+  const [quotaBlocked, setQuotaBlocked] = useState(false);
+  const [soundBlocked, setSoundBlocked] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [avatarPlaying, setAvatarPlaying] = useState(false);
+  const [captionView, setCaptionView] = useState<CaptionView | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const [timeWarning, setTimeWarning] = useState('');
+  const [draft, setDraft] = useState('');
+  // `demo.started.protocol`: v2 servers send captions, accept typed questions and honour `demo.finish`; a v1 server does not.
+  const [protocolV2, setProtocolV2] = useState(false);
+  const protocolV2Ref = useRef(false);
+  const startRef = useRef<HTMLButtonElement>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+  const openedRef = useRef(false);
+  const sessionSeqRef = useRef(0);
+  const sawServiceErrorRef = useRef(false);
+  const mediaEverConnectedRef = useRef(false);
+  const autoPresentedRef = useRef(false);
+  const announcedWarningsRef = useRef(new Set<number>());
+  const setupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaDropTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deckTitleRef = useRef(deckTitle);
+  useEffect(() => { deckTitleRef.current = deckTitle; }, [deckTitle]);
   const { avatars } = useAvatars();
   const defaultAvatarIdRef = useRef<string>('');
   useEffect(() => { defaultAvatarIdRef.current = pickDefaultAvatar(avatars)?.id ?? ''; }, [avatars]);
@@ -155,6 +204,20 @@ export default function AvatarPanel({
   // ── Playback controller (WS3) ─────────────────────────────────────────
   const rateRef = useRef(new NarrationRate());
   const [secondsPerChar, setSecondsPerChar] = useState(rateRef.current.secondsPerChar);
+  // Captions revealed at the pace of the avatar's audio (contracts §4.3).
+  const pacerRef = useRef<CaptionPacer | null>(null);
+  if (!pacerRef.current) {
+    pacerRef.current = new CaptionPacer({
+      secondsPerChar: () => rateRef.current.secondsPerChar,
+      onChange: (view) => setCaptionView(view),
+      // An answer is already written out (and announced) by the question panel: announce narration and invites only.
+      // The same sentence twice in a row (a second invitation) still has to be read: the trailing no-break space makes it a change.
+      onSentence: (sentence, view) => {
+        if (view.kind !== 'answer') setAnnouncement((prev) => (prev === sentence ? `${sentence}\u00A0` : sentence));
+      },
+    });
+  }
+  const pacer = pacerRef.current;
   const fns = useRef<{
     onTurnComplete: (c: Completion) => void;
     onTurnStalled: (s: TurnSnapshot) => void;
@@ -166,8 +229,11 @@ export default function AvatarPanel({
       onStalled: (s) => fns.current.onTurnStalled(s),
       onChange: (s) => {
         setSpeaking(!!s && (s.phase === 'waiting' || s.phase === 'playing' || s.phase === 'stalled'));
+        setAvatarPlaying(!!s && s.phase === 'playing');
         setStalled(!!s && s.phase === 'stalled');
       },
+      onPlay: (p) => pacerRef.current?.start(p.responseId, p.at),
+      onCancel: (c) => pacerRef.current?.cancel(c.responseId),
       log: (m, d) => console.info(m, d ?? ''),
     });
   }
@@ -273,8 +339,9 @@ export default function AvatarPanel({
       } else {
         playback.tick();
       }
+      pacer.tick();
     }, 50);
-  }, [playback]);
+  }, [playback, pacer]);
 
   const stopTicker = useCallback(() => {
     if (tickerRef.current) { clearInterval(tickerRef.current); tickerRef.current = null; }
@@ -308,7 +375,8 @@ export default function AvatarPanel({
     } else {
       presentingRef.current = false;
       setPresenting(false);
-      setStatus('Presentation complete!');
+      // Demo: the visitor chooses what happens next (ask, or finish) instead of facing an idle avatar.
+      if (isDemoRef.current) { setNarrationDone('complete'); setStatus(''); } else setStatus('Presentation complete!');
     }
   }, [scheduleSpeak]);
 
@@ -327,6 +395,24 @@ export default function AvatarPanel({
       startSessionRef.current();
     }, 500);
   }, [language, connected]);
+
+  // The avatar's voice: one persistent <audio> element. `why`: 'start' = inside the Start tap (banks the user activation;
+  // the element has no stream yet, so its rejection says nothing), 'track' = the remote audio arrived, 'user' = the visitor
+  // asked for sound. A refusal by the browser's autoplay policy is what "Sound is blocked or muted" reports.
+  const playRemoteAudio = useCallback((why: 'start' | 'track' | 'user') => {
+    const el = audioRef.current;
+    if (!el) return;
+    if (why !== 'start') { el.muted = false; if (el.volume === 0) el.volume = 1; }
+    const played = el.play();
+    if (!played) return;
+    played.then(() => { if (why !== 'start') setSoundBlocked(false); }).catch((err: unknown) => {
+      if (why !== 'start' && (err as { name?: string } | null)?.name === 'NotAllowedError') setSoundBlocked(true);
+    });
+  }, []);
+
+  const clearDemoTimer = useCallback((ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
+    if (ref.current) { clearTimeout(ref.current); ref.current = null; }
+  }, []);
 
   // Set up WebRTC peer connection with ICE servers from Azure
   const setupWebRTC = useCallback((iceServers: any, username?: string, credential?: string) => {
@@ -360,6 +446,8 @@ export default function AvatarPanel({
       iceTransportPolicy: 'relay',
     });
     peerConnectionRef.current = pc;
+    // The ICE servers arrived: the avatar is coming up, the setup watchdog (no ICE servers at all) is done.
+    clearDemoTimer(setupTimerRef);
 
     pc.oniceconnectionstatechange = () => {
       console.log('[WebRTC] ICE state:', pc.iceConnectionState);
@@ -368,21 +456,10 @@ export default function AvatarPanel({
     // Report the real media state: signalling success does not mean video flows.
     pc.onconnectionstatechange = () => {
       if (peerConnectionRef.current !== pc) return;
-      // A dropped link is silent too: never read that silence as the end of speech.
-      playback.setMediaInterrupted(pc.connectionState === 'disconnected');
-      if (pc.connectionState === 'connected') {
-        setConnected(true);
-        setStatus((s) => (s.startsWith('Reconnected') ? s : 'Avatar connected — ready to present'));
-      } else if (pc.connectionState === 'failed') {
-        stopSessionRef.current();
-        setStatus('Video connection failed — your network blocks the avatar stream. Try another network.');
-      }
+      handleMediaStateRef.current(pc.connectionState);
     };
     setTimeout(() => {
-      if (peerConnectionRef.current === pc && pc.connectionState !== 'connected') {
-        stopSessionRef.current();
-        setStatus('Video connection timed out — your network blocks the avatar stream. Try another network.');
-      }
+      if (peerConnectionRef.current === pc && pc.connectionState !== 'connected') handleMediaStateRef.current('timeout');
     }, 20000);
 
     // Avatar lifecycle events (TURN_START / TURN_END / SWITCH_TO_IDLE) arrive on
@@ -398,37 +475,35 @@ export default function AvatarPanel({
       };
     };
 
-    // Helper: send the current local SDP offer to the backend (idempotent)
+    // Non-trickle ICE: one complete offer. The demo sends it when gathering completes, or soon after the first (TCP/TLS)
+    // relay candidate — a UDP-blocked network no longer waits for the UDP attempts to time out; the admin presenter keeps
+    // the old rule (gathering complete, or 5 s). Candidates are relay-only either way (iceTransportPolicy).
+    const planner = new IceOfferPlanner(performance.now(), isDemoRef.current ? undefined : ICE_WAIT_FOR_GATHERING);
     let sdpSent = false;
-    const sendSdpOffer = () => {
+    let offerTimer: ReturnType<typeof setTimeout> | null = null;
+    const sendSdpOffer = (reason: string) => {
       if (sdpSent || !pc.localDescription) return;
       sdpSent = true;
+      if (offerTimer) { clearTimeout(offerTimer); offerTimer = null; }
       const sdp = btoa(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
-      console.log('[WebRTC] Sending SDP offer (ICE gathering state:', pc.iceGatheringState, ')');
+      console.log(`[WebRTC] Sending SDP offer (${reason}; ICE gathering state: ${pc.iceGatheringState})`);
       wsRef.current?.send(JSON.stringify({ type: 'session.avatar.connect', client_sdp: sdp }));
     };
-
-    // When ICE gathering is complete, send the SDP offer to backend
-    pc.onicecandidate = (e) => {
-      if (!e.candidate && pc.localDescription) {
-        console.log('[WebRTC] ICE gathering complete, sending SDP offer');
-        sendSdpOffer();
-      }
+    const scheduleOffer = () => {
+      if (sdpSent) return;
+      if (offerTimer) clearTimeout(offerTimer);
+      const { at, reason } = planner.due();
+      offerTimer = setTimeout(() => { offerTimer = null; sendSdpOffer(reason); }, Math.max(0, at - performance.now()));
     };
-
-    // Safety fallback: if ICE gathering doesn't complete in 5 s, send whatever we have
+    pc.onicecandidate = (e) => {
+      if (e.candidate) planner.candidate(e.candidate, performance.now()); else planner.complete(performance.now());
+      scheduleOffer();
+    };
     pc.onicegatheringstatechange = () => {
       console.log('[WebRTC] ICE gathering state:', pc.iceGatheringState);
-      if (pc.iceGatheringState === 'complete') {
-        sendSdpOffer();
-      }
+      if (pc.iceGatheringState === 'complete') { planner.complete(performance.now()); scheduleOffer(); }
     };
-    setTimeout(() => {
-      if (pc.iceGatheringState !== 'complete' && pc.localDescription) {
-        console.warn('[WebRTC] ICE gathering timeout — sending SDP with gathered candidates');
-        sendSdpOffer();
-      }
-    }, 5000);
+    scheduleOffer();
 
     // Receive video/audio tracks from avatar
     pc.ontrack = (e) => {
@@ -437,17 +512,10 @@ export default function AvatarPanel({
         videoRef.current.srcObject = e.streams[0];
         videoRef.current.play().catch(() => {});
       } else if (e.track.kind === 'audio') {
-        // Remove any previous audio element
         if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.remove();
+          audioRef.current.srcObject = e.streams[0];
+          playRemoteAudio('track');
         }
-        const audio = document.createElement('audio');
-        audio.srcObject = e.streams[0];
-        audio.autoplay = true;
-        audio.style.display = 'none';
-        document.body.appendChild(audio);
-        audioRef.current = audio;
         attachAnalyser(e.streams[0]);
       }
     };
@@ -461,10 +529,11 @@ export default function AvatarPanel({
     pc.createDataChannel('eventChannel');
 
     // Create and set local SDP offer
-    pc.createOffer().then((offer) => {
-      pc.setLocalDescription(offer);
-    });
-  }, [attachAnalyser, playback]);
+    pc.createOffer()
+      .then((offer) => pc.setLocalDescription(offer))
+      .then(scheduleOffer)
+      .catch((err) => console.warn('[WebRTC] Could not create the offer', err));
+  }, [attachAnalyser, playback, playRemoteAudio, clearDemoTimer]);
 
   // Handle SDP answer from Azure (via backend proxy)
   const handleAnswer = useCallback((msg: any) => {
@@ -483,7 +552,7 @@ export default function AvatarPanel({
 
   // ── Q&A flow ──────────────────────────────────────────────────────────
 
-  const performResume = useCallback((action: ResumeAction) => {
+  const performResume = useCallback((action: ResumeAction, afterError = false) => {
     if (action === 'next') {
       presentingRef.current = true;
       setPresenting(true);
@@ -495,7 +564,8 @@ export default function AvatarPanel({
       setStatus('Back to the presentation');
       scheduleSpeak(currentSlideRef.current, 800);
     } else {
-      setStatus('Question answered');
+      // After a refused question nothing was answered: do not claim it was.
+      setStatus(afterError ? '' : 'Question answered');
     }
   }, [goNext, scheduleSpeak]);
 
@@ -515,7 +585,8 @@ export default function AvatarPanel({
     const kind = playback.activeKind;
     if (kind === 'qa_invite' || kind === 'qa_answer') playback.cancel();
     setQa({ ...q, phase: 'error', error: message });
-    setStatus(message);
+    // The demo shows a refused question once, in the question panel (not again in the status line).
+    setStatus(isDemoRef.current ? '' : message);
   }, [clearQaTimer, sendWs, releaseCapture, playback, setQa]);
 
   const armQaTimer = useCallback((ms: number, message: string) => {
@@ -537,6 +608,25 @@ export default function AvatarPanel({
     sendWs({ type: 'qa.begin', request_id: requestId, slide: currentSlideRef.current, mode: qaMode });
     armQaTimer(12000, 'The presenter did not respond. Try again in a moment.');
   }, [failQa, setQa, sendWs, armQaTimer]);
+
+  // Demo: a typed question goes out directly (`qa.ask_text`): no invite and no listening, the server accepts it within a
+  // second (`qa.accepted`) or refuses it (`qa.error`). The panel says "Sending your question…" the moment it is submitted.
+  const sendAskText = useCallback(() => {
+    const q = qaRef.current;
+    if (!q.typed) return;
+    const requestId = newRequestId();
+    setQa({ ...q, phase: 'sending', requestId, transcript: q.typed });
+    if (!sendWs({ type: 'qa.ask_text', request_id: requestId, slide: currentSlideRef.current, text: q.typed })) {
+      failQa(DEMO_COPY.sendFailed);
+      return;
+    }
+    armQaTimer(DEMO_TIMING.askTextAckTimeoutMs, DEMO_COPY.sendFailed);
+  }, [setQa, sendWs, failQa, armQaTimer]);
+
+  /** A raised hand (or, in the demo, a queued typed question) is taken now that nothing is being said. */
+  const takeRaisedQuestion = useCallback(() => {
+    if (isDemoRef.current && qaRef.current.typed) sendAskText(); else beginQa('after_slide');
+  }, [sendAskText, beginQa]);
 
   const onCaptureEnd = useCallback((requestId: string, end: CaptureEnd) => {
     captureRef.current = null;
@@ -572,7 +662,7 @@ export default function AvatarPanel({
       ...(lim.maxMs ? { maxMs: lim.maxMs } : {}),
     }).catch((e) => {
       console.warn('[QA] capture failed', e);
-      failQa('The microphone could not be started.', true);
+      failQa(DEMO_COPY.micStartFailed, true);
     });
   }, [failQa, setQa, sendWs, onCaptureEnd]);
 
@@ -601,7 +691,7 @@ export default function AvatarPanel({
   const afterSlideNarration = useCallback(() => {
     const q = qaRef.current;
     if (q.phase === 'raised') {
-      if (q.typed || captureRef.current) beginQa('after_slide');
+      if (q.typed || captureRef.current) takeRaisedQuestion();
       else setStatus('Waiting for the microphone…');
       return;
     }
@@ -609,14 +699,14 @@ export default function AvatarPanel({
       setStatus(`Paused after slide ${currentSlideRef.current + 1}`);
       return;
     }
-    setStatus('Done speaking');
+    if (!isDemoRef.current) setStatus('Done speaking');
     if (presentingRef.current) goNext();
-  }, [beginQa, goNext]);
+  }, [takeRaisedQuestion, goNext]);
 
   const cancelQa = useCallback((resume: boolean) => {
     const q = qaRef.current;
     clearQaTimer();
-    const live = q.phase === 'inviting' || q.phase === 'listening' || q.phase === 'thinking' || q.phase === 'answering';
+    const live = q.phase === 'sending' || q.phase === 'inviting' || q.phase === 'listening' || q.phase === 'thinking' || q.phase === 'answering';
     if (q.requestId && live) sendWs({ type: 'qa.cancel', request_id: q.requestId });
     releaseCapture('cancel');
     const kind = playback.activeKind;
@@ -644,10 +734,10 @@ export default function AvatarPanel({
     const pendingSpeak = advanceTimerRef.current != null;
     if (pendingSpeak) clearAdvance();
     const resume: ResumeAction = !presentingRef.current || pausedRef.current ? 'stay' : pendingSpeak ? 'same' : 'next';
-    setQa({ ...QA_IDLE, phase: 'raised', resume, typed: typed ?? null });
+    setQa({ ...QA_IDLE, phase: 'raised', resume, typed: typed ?? null, transcript: isDemoRef.current ? (typed ?? null) : null });
     setStatus(narrating ? 'Hand raised — the presenter takes your question after this slide' : 'Hand raised');
     const proceed = () => {
-      if (qaRef.current.phase === 'raised' && playback.activeKind !== 'slide') beginQa('after_slide');
+      if (qaRef.current.phase === 'raised' && playback.activeKind !== 'slide') takeRaisedQuestion();
     };
     if (!micPromise) { proceed(); return; }
     micPromise.then((cap) => {
@@ -662,7 +752,7 @@ export default function AvatarPanel({
       setStatus('Microphone unavailable');
       if (playback.activeKind !== 'slide' && resume !== 'stay') performResume(resume);
     });
-  }, [qaAvailable, qaDisabled, ensureAudioContext, playback, clearAdvance, setQa, beginQa, performResume]);
+  }, [qaAvailable, qaDisabled, ensureAudioContext, playback, clearAdvance, setQa, takeRaisedQuestion, performResume]);
 
   // Admin: interrupt the narration and take the question right away.
   const askNow = useCallback(() => {
@@ -707,7 +797,7 @@ export default function AvatarPanel({
   const continueAfterQaError = useCallback(() => {
     const q = qaRef.current;
     setQa(QA_IDLE);
-    performResume(pausedRef.current ? 'stay' : q.resume);
+    performResume(pausedRef.current ? 'stay' : q.resume, true);
   }, [setQa, performResume]);
 
   /** qa.* / context.* server messages. Returns true when handled. */
@@ -740,6 +830,17 @@ export default function AvatarPanel({
         setStatus('The presenter is inviting your question…');
         return true;
       }
+      case 'qa.accepted': {
+        // The typed question was taken (it counts now): the answer follows.
+        if (q.phase !== 'sending') return true;
+        clearQaTimer();
+        if (typeof msg.remaining_questions === 'number') setRemainingQuestions(msg.remaining_questions);
+        setDraft('');
+        setQa({ ...q, phase: 'thinking' });
+        setStatus('Finding the answer in the deck…');
+        armQaTimer(30000, 'The answer is taking too long. Try again.');
+        return true;
+      }
       case 'qa.transcript': {
         if (typeof msg.text !== 'string') return true;
         setQa({ ...q, transcript: msg.text });
@@ -758,11 +859,21 @@ export default function AvatarPanel({
       }
       case 'qa.error': {
         const code = typeof msg.code === 'string' ? msg.code : '';
-        if (code === 'limit') { setRemainingQuestions(0); setQaDisabled('No more questions are available in this session.'); }
+        let text = (typeof msg.message === 'string' && msg.message.trim()) || QA_ERROR_TEXT[code] || 'The question could not be answered.';
+        if (code === 'limit') {
+          // Which limit refused the question: the session's, today's budget, or a hiccup of the quota store. A server
+          // that sends no scope (v1) means the session's. The server's own words are shown, not a paraphrase.
+          const scope: DemoQaLimitScope = msg.scope === 'daily' || msg.scope === 'unavailable' ? msg.scope : 'session';
+          text = (typeof msg.message === 'string' && msg.message.trim()) || DEMO_QA_LIMIT_MESSAGES[scope];
+          if (scope === 'session') { setRemainingQuestions(0); setQaDisabled(text); }
+          else if (scope === 'daily') setQaDisabled(text);
+          // 'unavailable' is temporary: Raise hand stays enabled for another try.
+        }
         if (code === 'time_low') setQaDisabled('Not enough demo time is left for a question.');
         if (code === 'disabled') setQaDisabled('Questions are turned off for this session.');
         if (code === 'bad_deck') setQaDisabled("Questions aren't available for this presentation.");
-        const text = (typeof msg.message === 'string' && msg.message.trim()) || QA_ERROR_TEXT[code] || 'The question could not be answered.';
+        // The presenter could not answer a question that was heard: it goes back into the field to ask again.
+        if (code === 'answer_failed' && q.transcript) setDraft(q.transcript);
         if (q.phase === 'idle' || q.phase === 'resumed' || q.phase === 'error' || q.phase === 'raised') {
           if (code !== 'bad_deck') setStatus(text);
           return true;
@@ -773,11 +884,13 @@ export default function AvatarPanel({
       default:
         return true;
     }
-  }, [failQa, clearQaTimer, playback, setQa]);
+  }, [failQa, clearQaTimer, armQaTimer, playback, setQa]);
 
   // Completion callbacks from the playback controller.
   fns.current.onTurnComplete = (c: Completion) => {
     console.log(`[Playback] ${c.kind} turn complete (${c.reason})`);
+    // Whatever ended the turn (the audio, the visitor's Continue), its captions show in full.
+    if (c.responseId) pacer.end(c.responseId);
     if (c.kind === 'slide') {
       if (c.reason !== 'manual') {
         rateRef.current.record(c.chars, c.audibleMs);
@@ -793,6 +906,7 @@ export default function AvatarPanel({
     }
   };
   fns.current.onTurnStalled = (s: TurnSnapshot) => {
+    pacer.end();
     setStatus(s.kind === 'qa_invite'
       ? 'Press Continue when the presenter has finished the invitation'
       : 'The avatar seems to have stopped — press Continue to go on');
@@ -804,11 +918,21 @@ export default function AvatarPanel({
       const msg = JSON.parse(event.data);
       console.log('[WS] Message:', msg.type || 'unknown');
       playback.onServerEvent(msg);
-      if (isDemoRef.current && typeof msg.remaining_ms === 'number') syncDemoClock(msg.remaining_ms);
+      if (isDemoRef.current) {
+        if (typeof msg.remaining_ms === 'number') syncDemoClock(msg.remaining_ms);
+        // Captions follow the audio (contracts §4.3): the text of what is said, and when each word starts.
+        if (msg.type === 'demo.caption') pacer.caption(msg);
+        else if (msg.type === 'response.audio_timestamp.delta' || msg.type === 'response.output_audio_timestamp.delta') pacer.word(msg);
+        else if (msg.type === 'response.done' && msg.response?.status === 'cancelled') pacer.cancel(msg.response.id);
+      }
       if (handleQaMessage(msg)) return;
 
       // Demo-only acks / notices from the server-side message filter.
       if (msg.type === 'demo.started') {
+        // A server that sends no `protocol` speaks v1: no captions, no typed questions, no `demo.finish`.
+        const v2 = typeof msg.protocol === 'number' && msg.protocol >= DEMO_PROTOCOL_VERSION;
+        protocolV2Ref.current = v2;
+        setProtocolV2(v2);
         if (Array.isArray(msg.narration_chars)) {
           const chars: Record<number, number> = {};
           msg.narration_chars.forEach((n: unknown, i: number) => { if (typeof n === 'number' && n >= 0) chars[i] = n; });
@@ -823,6 +947,11 @@ export default function AvatarPanel({
         }
         return;
       }
+      if (msg.type === 'demo.narration_complete') {
+        // The server has asked for the last slide. The visitor is offered "Ask a question / Finish demo" when the avatar
+        // has *finished saying* it (own playback), which is later: nothing to do here but the clock re-sync above.
+        return;
+      }
       if (msg.type === 'demo.notice') {
         if (playback.activeKind === 'slide') playback.cancel();
         const slideNo = (typeof msg.slide === 'number' ? msg.slide : currentSlideRef.current) + 1;
@@ -832,15 +961,21 @@ export default function AvatarPanel({
           if (presentingRef.current) goNext(1100);
         } else if (msg.code === 'rate_limited' && presentingRef.current) {
           scheduleSpeak(currentSlideRef.current, 1200);
+        } else if (msg.code === 'speak_limit') {
+          presentingRef.current = false;
+          setPresenting(false);
+          setNarrationDone('limit');
+          setStatus('');
         } else {
-          if (msg.code === 'speak_limit') { presentingRef.current = false; setPresenting(false); }
           setStatus(typeof msg.message === 'string' ? msg.message : 'Request ignored');
         }
         return;
       }
 
+      // Visitors read about the presenter, never about the services behind it.
+      const progress = (adminText: string) => setStatus(isDemoRef.current ? DEMO_COPY.gettingReady : adminText);
       if (msg.type === 'proxy.connected') {
-        setStatus('Connected to Azure Voice API');
+        progress('Connected to Azure Voice API');
       } else if (msg.type === 'session.updated' || msg.type === 'session.avatar.connecting') {
         const session = msg.session || msg;
         const servers = session?.avatar?.ice_servers || session?.rtc?.ice_servers || session?.ice_servers;
@@ -848,7 +983,7 @@ export default function AvatarPanel({
         const cred = session?.avatar?.credential || session?.avatar?.ice_credential || session?.rtc?.ice_credential || session?.ice_credential;
         if (servers) {
           console.log('[WS] Got ICE servers from', msg.type, ', setting up WebRTC');
-          setStatus('Setting up video connection...');
+          progress('Setting up video connection...');
           setupWebRTC(servers, username, cred);
         }
         // session.avatar.connecting may also carry the server SDP answer
@@ -857,7 +992,7 @@ export default function AvatarPanel({
           console.log('[WS] server SDP received in', msg.type);
           handleAnswer(msg);
           retryCountRef.current = 0;
-          setStatus('Connecting video…');
+          progress('Connecting video…');
         }
       } else if ((msg.server_sdp || msg.sdp || msg.answer) && (!msg.type || msg.type === 'session.avatar.connected')) {
         handleAnswer(msg);
@@ -867,14 +1002,17 @@ export default function AvatarPanel({
           setStatus('Reconnected — speaking in new language...');
           scheduleSpeak(currentSlideRef.current, 1000);
         } else {
-          setStatus('Connecting video…');
+          progress('Connecting video…');
         }
       } else if (msg.type === 'error') {
         const errMsg = msg.error?.message || 'Unknown error';
         console.error('[WS] Error:', msg.error);
         if (/output_audio_buffer|no active response/i.test(errMsg)) {
           // Best-effort interrupt (Ask now / cancel) when nothing was playing — not user-facing.
-        } else if (errMsg.toLowerCase().includes('capacity') && retryCountRef.current < 3 && !isDemoRef.current) {
+        } else if (isDemoRef.current) {
+          // The server closes the socket next: the outcome card then says what happened (never the service's own words).
+          sawServiceErrorRef.current = true;
+        } else if (errMsg.toLowerCase().includes('capacity') && retryCountRef.current < 3) {
           retryCountRef.current += 1;
           const delay = retryCountRef.current * 5;
           setStatus(`Avatar busy — retrying in ${delay}s (attempt ${retryCountRef.current}/3)...`);
@@ -888,7 +1026,7 @@ export default function AvatarPanel({
     } catch (err) {
       console.error('[WS] Parse error:', err);
     }
-  }, [setupWebRTC, handleAnswer, playback, syncDemoClock, handleQaMessage, goNext, scheduleSpeak]);
+  }, [setupWebRTC, handleAnswer, playback, pacer, syncDemoClock, handleQaMessage, goNext, scheduleSpeak]);
 
   // Keep handleMessage ref in sync so the WS handler always uses the latest version
   useEffect(() => { handleMessageRef.current = handleMessage; }, [handleMessage]);
@@ -902,6 +1040,24 @@ export default function AvatarPanel({
     setMicLevel(0);
   }, [clearQaTimer, releaseCapture, setQa]);
 
+  // ── Demo session: how it ends ─────────────────────────────────────────
+
+  /** Demo state that belongs to one session: watchdogs, captions, prompts. */
+  const resetDemoSession = useCallback(() => {
+    clearDemoTimer(setupTimerRef);
+    clearDemoTimer(mediaDropTimerRef);
+    clearDemoTimer(finishTimerRef);
+    pacer.reset();
+    autoPresentedRef.current = false;
+    setNarrationDone(null);
+    setFinishing(false);
+    setReconnecting(false);
+    setSoundBlocked(false);
+    setAvatarPlaying(false);
+    setTimeWarning('');
+    setAnnouncement('');
+  }, [clearDemoTimer, pacer]);
+
   // Demo: release media + timers after the server ends the session (time cap, quota...).
   // The slide stays where it is.
   const teardownDemoMedia = useCallback(() => {
@@ -913,7 +1069,7 @@ export default function AvatarPanel({
       peerConnectionRef.current?.close();
       peerConnectionRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
-      document.querySelectorAll('audio[autoplay]').forEach((el) => el.remove());
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current.srcObject = null; }
     } catch {}
     setConnected(false);
     setSpeaking(false);
@@ -921,38 +1077,138 @@ export default function AvatarPanel({
     setPaused(false);
     setDemoConnecting(false);
     setDemoEndsAt(null);
-  }, [clearAdvance, playback, stopTicker, resetQa]);
+    resetDemoSession();
+  }, [clearAdvance, playback, stopTicker, resetQa, resetDemoSession]);
+
+  /** The recording of this deck (else the public fallback links) is what every ending offers; never blocks the card. */
+  const resolveRecording = useCallback(() => {
+    const pres = presentationRef.current;
+    const seq = sessionSeqRef.current;
+    lookupRecording(
+      { deck_id: pres.id, title: deckTitleRef.current ?? pres.filename, language: pres.language ?? languageRef.current },
+      (found) => { if (seq === sessionSeqRef.current) setRecording(found); },
+    );
+  }, []);
+
+  const showOutcome = useCallback((next: DemoOutcomeInfo) => {
+    setOutcome(next);
+    if (next.kind === 'quota') setQuotaBlocked(true);
+    resolveRecording();
+  }, [resolveRecording]);
+
+  /**
+   * Ends the demo from this side — setup or media failed, "Finish demo" — and closes the socket so the avatar is free for
+   * the next visitor. `wsRef` is cleared first: the socket's own `onclose` must not produce a second outcome.
+   */
+  const endDemoLocally = useCallback((next: DemoOutcomeInfo) => {
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws) {
+      try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'demo.finish' })); } catch {}
+      try { ws.close(1000); } catch {}
+    }
+    teardownDemoMedia();
+    showOutcome(next);
+  }, [teardownDemoMedia, showOutcome]);
+
+  /** "Finish demo": a v2 server closes with 4001 at once; if that does not arrive in 3 s (or the server is v1) end it here. */
+  const finishDemo = useCallback(() => {
+    if (!wsRef.current || finishTimerRef.current) return;
+    setFinishing(true);
+    const finished = outcomeFor(DEMO_CLOSE_CODES.FINISHED, true);
+    if (!protocolV2Ref.current) { endDemoLocally(finished); return; }
+    sendWs({ type: 'demo.finish' });
+    finishTimerRef.current = setTimeout(() => { finishTimerRef.current = null; endDemoLocally(finished); }, FINISH_CLOSE_WAIT_MS);
+  }, [sendWs, endDemoLocally]);
+
+  // The media link (WebRTC) changed state. Signalling success does not mean video flows: the demo gives a dropped link
+  // 8 s to come back ("Reconnecting…"), then reports an interrupted session; a link that never came up is the network's.
+  const handleMediaState = useCallback((state: string) => {
+    // A dropped link is silent too: never read that silence as the end of speech.
+    playback.setMediaInterrupted(state === 'disconnected');
+    if (state === 'connected') {
+      mediaEverConnectedRef.current = true;
+      clearDemoTimer(mediaDropTimerRef);
+      setReconnecting(false);
+      setConnected(true);
+      if (!isDemoRef.current) setStatus((s) => (s.startsWith('Reconnected') ? s : 'Avatar connected — ready to present'));
+    } else if (state === 'disconnected') {
+      if (!isDemoRef.current || !mediaEverConnectedRef.current) return;
+      setReconnecting(true);
+      if (!mediaDropTimerRef.current) {
+        mediaDropTimerRef.current = setTimeout(() => {
+          mediaDropTimerRef.current = null;
+          endDemoLocally(outcomeFor(DEMO_CLOSE_CODES.ABNORMAL, true));
+        }, MEDIA_RECONNECT_MS);
+      }
+    } else if (state === 'failed' || state === 'timeout') {
+      if (isDemoRef.current) {
+        endDemoLocally(outcomeFor(DEMO_CLOSE_CODES.ABNORMAL, mediaEverConnectedRef.current));
+        return;
+      }
+      stopSessionRef.current();
+      setStatus(state === 'failed'
+        ? 'Video connection failed — your network blocks the avatar stream. Try another network.'
+        : 'Video connection timed out — your network blocks the avatar stream. Try another network.');
+    }
+  }, [playback, clearDemoTimer, endDemoLocally]);
+  useEffect(() => { handleMediaStateRef.current = handleMediaState; }, [handleMediaState]);
 
   const startDemoSession = useCallback(() => {
     if (wsRef.current) return;
-    setStatus('Connecting to the demo avatar...');
+    sessionSeqRef.current += 1;
+    const seq = sessionSeqRef.current;
+    openedRef.current = false;
+    sawServiceErrorRef.current = false;
+    mediaEverConnectedRef.current = false;
+    announcedWarningsRef.current.clear();
+    protocolV2Ref.current = false;
+    setProtocolV2(false);
+    resetDemoSession();
+    setOutcome(null);
+    setRecording(null);
+    setDraft('');
+    // Progress within a second of the tap: the first thing the visitor reads, before any network answer.
+    setStatus(DEMO_COPY.starting);
     setDemoConnecting(true);
     setQaDisabled(null);
     setRemainingQuestions(demoQa?.enabled ? demoQa.max_questions : null);
+    void loadRecordingLists(); // warm the cache: the recording is what every ending offers
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${location.host}/ws/voice/demo?deck_id=${encodeURIComponent(presentation.id)}`);
     wsRef.current = ws;
-    let opened = false;
     ws.onopen = () => {
-      opened = true;
+      openedRef.current = true;
       // No session.update: the server owns the whole demo session config.
       // The server's cap starts at accept; `demo.started` re-syncs it.
-      setStatus('Starting the avatar...');
       setDemoEndsAt(monoNow() + demoSecondsRef.current * 1000);
       startTicker();
+      // The avatar service never handed out its connection details: give up (and free the avatar) instead of letting
+      // the countdown burn to the cap.
+      setupTimerRef.current = setTimeout(() => {
+        setupTimerRef.current = null;
+        endDemoLocally(outcomeFor(DEMO_CLOSE_CODES.ABNORMAL, false));
+      }, DEMO_TIMING.setupTimeoutMs);
     };
     ws.onmessage = (event) => handleMessageRef.current(event);
     ws.onerror = (e) => { console.error('[WS] Demo error:', e); };
     ws.onclose = (e) => {
       console.log('[WS] Demo closed:', e.code, e.reason);
-      if (wsRef.current !== ws) return; // user pressed Stop
+      if (wsRef.current !== ws) return; // we closed it ourselves (Stop, "Finish demo", a local failure)
       wsRef.current = null;
       teardownDemoMedia();
-      const friendly = demoCloseMessage(e.code, opened);
-      setStatus((prev) => friendly
-        ?? (prev.startsWith('Error') ? prev : opened ? 'Demo ended' : 'Could not start the demo, try again later'));
+      const ctx = { sawServiceError: sawServiceErrorRef.current };
+      const next = outcomeFor(e.code, openedRef.current, ctx);
+      showOutcome(next);
+      if (next.kind === 'connect') {
+        // A socket that never opened is ambiguous (a blocked network, or the demo was switched off): ask the server.
+        void fetchDemoConfigFresh().then((cfg) => {
+          if (!cfg || cfg.enabled || seq !== sessionSeqRef.current) return;
+          showOutcome(outcomeFor(e.code, false, { ...ctx, configEnabled: false }));
+        });
+      }
     };
-  }, [presentation.id, teardownDemoMedia, startTicker, demoQa]);
+  }, [presentation.id, teardownDemoMedia, startTicker, demoQa, resetDemoSession, endDemoLocally, showOutcome]);
 
   useEffect(() => { if (connected) setDemoConnecting(false); }, [connected]);
 
@@ -1049,7 +1305,7 @@ export default function AvatarPanel({
     const q = qaRef.current.phase;
     if (q !== 'idle' && q !== 'resumed' && q !== 'error' && q !== 'raised') return;
     if (q === 'raised') {
-      if (qaRef.current.typed || captureRef.current) beginQa('after_slide');
+      if (qaRef.current.typed || captureRef.current) takeRaisedQuestion();
       return;
     }
     const pres = presentationRef.current;
@@ -1058,7 +1314,7 @@ export default function AvatarPanel({
       // The server looks up and reads the stored narration for this slide;
       // the visitor never sends text. The length arrives with `demo.speaking`.
       playback.begin('slide', { chars: 0, meta: slideIndex });
-      setStatus(`Speaking slide ${slideIndex + 1} of ${pres.slide_count}...`);
+      setStatus(`Presenting slide ${slideIndex + 1} of ${pres.slide_count}`);
       wsRef.current.send(JSON.stringify({ type: 'demo.speak', slide: slide?.index ?? slideIndex }));
       return;
     }
@@ -1104,7 +1360,7 @@ export default function AvatarPanel({
     }));
     wsRef.current.send(JSON.stringify({ type: 'response.create' }));
     // Completion comes from the playback controller (data channel + analyser).
-  }, [playback, beginQa, goNext, onRequestVideoAutoPlay]);
+  }, [playback, takeRaisedQuestion, goNext, onRequestVideoAutoPlay]);
 
   // Keep speakSlideRef in sync so stale closures (timers) call the latest version
   useEffect(() => { speakSlideRef.current = speakSlide; }, [speakSlide]);
@@ -1206,9 +1462,9 @@ export default function AvatarPanel({
       peerConnectionRef.current?.close();
       peerConnectionRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
-      // Clean up any orphaned audio elements
-      document.querySelectorAll('audio[autoplay]').forEach((el) => el.remove());
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current.srcObject = null; }
     } catch {}
+    if (isDemoRef.current) resetDemoSession();
     boundDeckRef.current = null;
     setConnected(false);
     setSpeaking(false);
@@ -1219,7 +1475,7 @@ export default function AvatarPanel({
     setDemoConnecting(false);
     setDemoEndsAt(null);
     setStatus('Disconnected');
-  }, [clearAdvance, sendWs, resetQa, playback, stopTicker]);
+  }, [clearAdvance, sendWs, resetQa, playback, stopTicker, resetDemoSession]);
 
   useEffect(() => { stopSessionRef.current = stopSession; }, [stopSession]);
 
@@ -1230,6 +1486,21 @@ export default function AvatarPanel({
       audioCtxRef.current = null;
     };
   }, []);
+
+  // Demo: one Start tap = connect + present every slide. The session starts presenting by itself the moment the avatar's
+  // media is up (never before the visitor's tap); admins keep "Present all" and the per-slide controls.
+  useEffect(() => {
+    if (!isDemo || !connected || autoPresentedRef.current) return;
+    autoPresentedRef.current = true;
+    startPresenting();
+  }, [isDemo, connected, startPresenting]);
+
+  // Demo: land on the page with the Start control focused (Home's CTA brings the visitor here); never start by itself.
+  useEffect(() => {
+    if (!isDemo) return;
+    const active = document.activeElement;
+    if (startRef.current && (!active || active === document.body || active.id === 'main')) startRef.current.focus({ preventScroll: true });
+  }, [isDemo]);
 
   // Auto-start: connect on mount, and auto-present whenever the deck changes (playlist mode)
   const autoStartedForRef = useRef<string | null>(null);
@@ -1283,19 +1554,46 @@ export default function AvatarPanel({
     if (!(import.meta.env.DEV || import.meta.env.MODE === 'test')) return;
     const w = window as any;
     w.__ozRadioTest = {
-      mediaConnected: () => { setConnected(true); setStatus('Avatar connected — ready to present'); },
+      // What a real connection does when the media is up: the setup watchdog is done, the remote audio starts playing.
+      mediaConnected: () => { clearDemoTimer(setupTimerRef); handleMediaStateRef.current('connected'); playRemoteAudio('track'); },
+      // WebRTC connectionState: 'disconnected' | 'connected' | 'failed' (and the pseudo state 'timeout').
+      mediaState: (state: string) => handleMediaStateRef.current(state),
       dataChannel: (payload: unknown) => playback.onDataChannelMessage(typeof payload === 'string' ? payload : JSON.stringify(payload)),
       audioLevel: (db: number) => { playback.setAnalyserAvailable(true); playback.onAudioLevel(db); },
       playback: () => playback.snapshot(),
     };
     return () => { if (w.__ozRadioTest) delete w.__ozRadioTest; };
-  }, [playback]);
+  }, [playback, clearDemoTimer, playRemoteAudio]);
+
+  // The voice element must really be playing while the avatar speaks: if the browser blocked or muted it (autoplay policy,
+  // the visitor's mute), say so — a "Speaking" avatar nobody can hear is the worst state (T3-10).
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!isDemo || !connected || !el) return;
+    const check = () => {
+      if (!el.srcObject) return; // no stream attached (yet)
+      setSoundBlocked(el.paused || el.muted || el.volume === 0);
+    };
+    const timer = setInterval(check, 1000);
+    el.addEventListener('playing', check);
+    el.addEventListener('pause', check);
+    el.addEventListener('volumechange', check);
+    return () => {
+      clearInterval(timer);
+      el.removeEventListener('playing', check);
+      el.removeEventListener('pause', check);
+      el.removeEventListener('volumechange', check);
+    };
+  }, [isDemo, connected]);
 
   const host = (!isDemo && selectedAvatar ? avatars.find((a) => a.id === selectedAvatar) : undefined)
     ?? pickDefaultAvatar(avatars) ?? null;
   const hostName = host?.display_name?.trim() || 'AI host';
-  // The idle stage already says the avatar is offline; skip the redundant default statuses.
-  const statusText = status === 'Not connected' || (!connected && status === 'Disconnected') ? '' : status;
+  const qaBusy = qa.phase !== 'idle' && qa.phase !== 'resumed' && qa.phase !== 'error';
+  // The idle stage already says the avatar is offline; skip the redundant default statuses. The demo also stays quiet
+  // while a question is in flight (the question panel says where it is) and after an ending (the outcome card does).
+  const statusText = status === 'Not connected' || (!connected && status === 'Disconnected') || (isDemo && (qaBusy || outcome))
+    ? '' : status;
   const statusIsError = /^(Error|Connection (failed|closed)|Video connection|WebSocket connection failed|Could not)/.test(statusText);
   const connecting = !connected && (demoConnecting || /^(Connecting|Configuring|Setting up|Starting|Avatar busy)/.test(status));
   // The server's hard cap starts when the demo socket opens (connection setup
@@ -1305,6 +1603,16 @@ export default function AvatarPanel({
   const demoSecondsLeft = isDemo && demoEndsAt
     ? Math.min(demoSecondsRef.current, Math.max(0, Math.ceil((demoEndsAt - demoNow) / 1000)))
     : null;
+
+  // Countdown warnings (WCAG 2.2.1): shown and announced once at 60 s and 20 s before the cap. The server's
+  // `remaining_ms` is the truth (it re-syncs the clock); this only reads the countdown.
+  useEffect(() => {
+    if (!isDemo || demoSecondsLeft == null) return;
+    const crossed = DEMO_WARN_AT_SECONDS.filter((t) => demoSecondsLeft <= t && !announcedWarningsRef.current.has(t));
+    if (crossed.length === 0) return;
+    crossed.forEach((t) => announcedWarningsRef.current.add(t));
+    setTimeWarning(timeWarningText(Math.min(...crossed)));
+  }, [isDemo, demoSecondsLeft]);
 
   // Narration estimate: remaining slides' narration length × measured pace.
   const slideCount = presentation.slide_count;
@@ -1323,16 +1631,22 @@ export default function AvatarPanel({
   const narrationKnown = slideSeconds.length > 0 && slideSeconds.every((s) => s != null);
   const narrationLeft = narrationKnown ? Math.ceil((slideSeconds as number[]).reduce((a, b) => a + b, 0)) : null;
   const showTiming = connected || demoSecondsLeft != null;
-  const coverageNote = isDemo && !presenting && demoSecondsLeft != null && narrationLeft != null && narrationLeft > demoSecondsLeft
-    ? `This demo covers about ${slidesThatFit(slideSeconds as number[], demoSecondsLeft)} of ${slideSeconds.length} slides`
+  // Demo: the coverage note belongs to the run-up (connecting); once the presentation is over it would be stale.
+  const coverageText = isDemo && !presenting && !narrationDone && !outcome && demoSecondsLeft != null && narrationKnown
+    ? coverageNote(slideSeconds as number[], demoSecondsLeft)
     : null;
 
-  const qaBusy = qa.phase !== 'idle' && qa.phase !== 'resumed' && qa.phase !== 'error';
   const narrating = speaking && playback.activeKind === 'slide';
   const showRaiseHand = connected && qaAvailable;
+  const canAskMore = qaAvailable && !qaDisabled && remainingQuestions !== 0;
+  // The voice and the stage: what the avatar is doing right now, never claimed when nobody can hear it.
+  const avatarSpeaking = isDemo ? avatarPlaying : speaking;
+  const pillLabel = isDemo && soundBlocked ? 'Sound off'
+    : isDemo && reconnecting ? DEMO_COPY.reconnecting
+      : qa.phase === 'listening' ? 'Listening' : avatarSpeaking ? 'Speaking' : 'Live';
 
   const idleLine = isDemo
-    ? (demoConnecting ? 'Starting the avatar…' : 'Live avatar demo')
+    ? (demoConnecting ? 'Starting…' : 'Live avatar demo')
     : canUseAvatar && !authBlock
       ? (connecting ? 'Connecting…' : 'Connect to start the avatar')
       : 'Live avatar preview';
@@ -1345,10 +1659,13 @@ export default function AvatarPanel({
       {demoSecondsLeft != null && (
         <span data-testid="demo-time-left" title="Demo time remaining">Demo time left {formatClock(demoSecondsLeft)}</span>
       )}
-      {connected && narrationLeft != null && (
+      {connected && narrationLeft != null && !narrationDone && (
         <span data-testid="narration-left">
           Slide {currentSlide + 1}/{slideCount} · ~{formatClock(narrationLeft)} narration left
         </span>
+      )}
+      {isDemo && (
+        <span className="avatar-rail__warning" role="status" aria-live="polite" data-testid="demo-time-warning">{timeWarning}</span>
       )}
     </div>
   );
@@ -1359,14 +1676,32 @@ export default function AvatarPanel({
     </Button>
   );
 
+  // "Ask a question" after the presentation: the typed field when there is one, else the spoken question.
+  const askAfterNarration = () => {
+    const input = dockRef.current?.querySelector<HTMLInputElement>('[data-testid="qa-text-input"]');
+    if (input) input.focus(); else raiseHand();
+  };
+
+  // One Start tap = connect + present. The same tap banks the audio permission on the persistent <audio> element and
+  // unlocks the audio context (a later, programmatic play() is then allowed on iOS and by autoplay policies).
+  const startDemo = () => {
+    ensureAudioContext();
+    playRemoteAudio('start');
+    void startSession();
+  };
+
   const raiseHandPanel = showRaiseHand && (
     <RaiseHandPanel
       phase={qa.phase}
       available={!qaDisabled && remainingQuestions !== 0}
-      disabledReason={qaDisabled}
+      disabledReason={qaDisabled ?? (isDemo && remainingQuestions === 0 ? DEMO_QA_LIMIT_MESSAGES.session : null)}
       narrating={narrating}
       canAskNow={!isDemo}
-      canType={!isDemo}
+      canType={isDemo ? protocolV2 : true}
+      demo={isDemo}
+      typedQueued={isDemo && !!qa.typed}
+      draft={draft}
+      onDraftChange={setDraft}
       remaining={isDemo ? remainingQuestions : null}
       level={micLevel}
       transcript={qa.transcript}
@@ -1375,24 +1710,83 @@ export default function AvatarPanel({
       notice={qaNotice}
       onRaise={() => raiseHand()}
       onAskNow={askNow}
-      onSubmitText={(t) => raiseHand(t)}
+      onSubmitText={(t) => { if (!isDemo) setDraft(''); raiseHand(t); }}
       onDone={() => captureRef.current?.finish()}
       onCancel={() => cancelQa(true)}
       onContinue={continueAfterQaError}
     />
   );
 
+  // Phones: the demo controls are a fixed bar at the bottom of the screen (see avatar-panel.css). Publish its height so
+  // the end of the page stays clear of it and keyboard focus never lands underneath it (WCAG 2.4.11).
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!isDemo || !el || typeof ResizeObserver === 'undefined') return;
+    const root = document.documentElement;
+    const update = () => {
+      if (getComputedStyle(el).position === 'fixed') {
+        root.style.setProperty('--demo-dock-h', `${Math.ceil(el.getBoundingClientRect().height)}px`);
+        root.dataset.demoDock = '';
+      } else {
+        root.style.removeProperty('--demo-dock-h');
+        delete root.dataset.demoDock;
+      }
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    window.addEventListener('resize', update);
+    update();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+      root.style.removeProperty('--demo-dock-h');
+      delete root.dataset.demoDock;
+    };
+  }, [isDemo]);
+
+  // The recording is the value left when the presentation stops on the narration limit.
+  useEffect(() => { if (narrationDone === 'limit') resolveRecording(); }, [narrationDone, resolveRecording]);
+
+  const quotaReasonId = React.useId();
+  const startButton = (
+    <Button
+      ref={startRef}
+      data-testid="demo-start"
+      variant="primary"
+      icon={Play}
+      busy={demoConnecting}
+      disabled={quotaBlocked}
+      aria-describedby={quotaBlocked ? quotaReasonId : undefined}
+      className="avatar-rail__start"
+      onClick={startDemo}
+    >
+      {demoConnecting ? 'Starting…' : 'Start the live demo'}
+    </Button>
+  );
+  const demoControls = (
+    <div className="avatar-rail__controls">
+      {!connected && startButton}
+      {stalledButton}
+      {(connected || demoConnecting) && (
+        <Button data-testid="demo-stop" size={connected ? 'sm' : 'md'} variant="ghost" icon={Square} onClick={stopSession}>
+          Stop
+        </Button>
+      )}
+    </div>
+  );
+
   return (
     <section
-      className={['avatar-rail', `avatar-rail--${mode}`, connected && 'is-live', speaking && 'is-speaking'].filter(Boolean).join(' ')}
+      className={['avatar-rail', `avatar-rail--${mode}`, isDemo && 'avatar-rail--demo', connected && 'is-live', avatarSpeaking && !(isDemo && soundBlocked) && 'is-speaking']
+        .filter(Boolean).join(' ')}
       aria-label="AI presenter"
     >
       <div className="avatar-rail__head">
         <span className="eyebrow">{connected ? 'Now presenting' : 'Ready to present'}</span>
         {connected ? (
           <span className="avatar-rail__live">
-            <Waveform active={speaking} />
-            <LivePill>{qa.phase === 'listening' ? 'Listening' : speaking ? 'Speaking' : 'Live'}</LivePill>
+            <Waveform active={avatarSpeaking && !(isDemo && soundBlocked)} />
+            <LivePill>{pillLabel}</LivePill>
           </span>
         ) : demoSecondsLeft != null && (
           <span className="avatar-rail__live">
@@ -1400,10 +1794,13 @@ export default function AvatarPanel({
           </span>
         )}
       </div>
-      {timing}
+      {/* The demo's countdown lives with its controls (in view on a phone, where they are a bar at the bottom). */}
+      {!isDemo && timing}
 
       <div className="stage avatar-rail__stage">
         <video ref={videoRef} className="avatar-rail__video" autoPlay playsInline />
+        {/* The avatar's voice: always in the page, so the Start tap can unlock it and the stream is just attached later. */}
+        <audio ref={audioRef} className="avatar-rail__audio" autoPlay playsInline />
         {!connected && (
           <div className="avatar-rail__idle">
             <HostDisc host={host} ring={connecting} label="" />
@@ -1421,45 +1818,75 @@ export default function AvatarPanel({
       )}
 
       {isDemo ? (
-        <div data-testid="demo-avatar-controls" className="avatar-rail__panel">
-          <div className="avatar-rail__controls">
-            {!connected ? (
-              <Button
-                data-testid="demo-start"
-                variant="primary"
-                icon={Play}
-                busy={demoConnecting}
-                className="avatar-rail__start"
-                onClick={() => { ensureAudioContext(); void startSession(); }}
-              >
-                {demoConnecting ? 'Starting…' : 'Try the live demo'}
-              </Button>
+        <>
+          {outcome && (
+            <DemoOutcome
+              key={outcome.kind}
+              title={outcome.title}
+              detail={outcome.detail}
+              tone={outcome.tone}
+              role={outcome.role}
+              kind={outcome.kind}
+              recording={recording}
+              retry={outcome.retry !== 'none' ? { label: outcome.retryLabel ?? 'Try again', onClick: startDemo } : null}
+              autoFocus
+            />
+          )}
+          <div ref={dockRef} data-testid="demo-avatar-controls" role="group" aria-label="Live demo controls" className="avatar-rail__panel avatar-dock">
+            {timing}
+            {connected ? (
+              <>
+                {protocolV2 && (
+                  <LiveCaptions
+                    view={captionView}
+                    announcement={announcement}
+                    lang={langAttr(language)}
+                    suppressed={!!qa.answer && (qa.phase === 'answering' || qa.phase === 'resumed')}
+                  />
+                )}
+                {soundBlocked && (
+                  <div className="avatar-rail__sound" role="status" data-testid="demo-sound-blocked">
+                    <span>{DEMO_COPY.soundBlocked}</span>
+                    <Button size="sm" variant="primary" icon={Volume2} data-testid="demo-sound-on" onClick={() => { ensureAudioContext(); playRemoteAudio('user'); }}>
+                      {DEMO_COPY.turnSoundOn}
+                    </Button>
+                  </div>
+                )}
+                {reconnecting && <p className="avatar-rail__status" role="status" data-testid="demo-reconnecting">{DEMO_COPY.reconnecting}</p>}
+                {narrationDone && (
+                  <DemoNarrationDone
+                    title={narrationDone === 'limit' ? DEMO_COPY.narrationLimit : 'The presentation is complete'}
+                    secondsLeft={demoSecondsLeft}
+                    canAsk={canAskMore}
+                    onAsk={askAfterNarration}
+                    onFinish={finishDemo}
+                    finishing={finishing}
+                    recording={narrationDone === 'limit' ? recording : null}
+                  />
+                )}
+                {statusText && <p className="avatar-rail__status" role="status" data-testid="demo-status">{statusText}</p>}
+                {raiseHandPanel}
+                {demoControls}
+              </>
             ) : (
               <>
-                <Button size="sm" icon={Mic} disabled={speaking || qaBusy} onClick={speak}>
-                  Present this slide
-                </Button>
-                {!presenting && (
-                  <Button size="sm" variant="primary" icon={Play} disabled={speaking || qaBusy} onClick={startPresenting}>
-                    Present all
-                  </Button>
+                {demoControls}
+                {quotaBlocked && (
+                  <p id={quotaReasonId} className="avatar-rail__note" data-testid="demo-start-reason">
+                    Today&rsquo;s live allowance has been reached.
+                  </p>
                 )}
-                {stalledButton}
+                {coverageText && <p className="avatar-rail__note" data-testid="demo-coverage-note">{coverageText}</p>}
+                {!outcome && (
+                  <p className="avatar-rail__note">
+                    {demoQa?.enabled ? 'Narration demo with questions' : 'Narration-only demo'} · up to {formatMinutes(demoSessionSeconds)} · no uploads
+                  </p>
+                )}
+                {statusText && <p className="avatar-rail__status" role="status" data-testid="demo-status">{statusText}</p>}
               </>
             )}
-            {(connected || demoConnecting) && (
-              <Button size={connected ? 'sm' : 'md'} variant="ghost" icon={Square} onClick={stopSession}>
-                Stop
-              </Button>
-            )}
           </div>
-          {coverageNote && <p className="avatar-rail__note" data-testid="demo-coverage-note">{coverageNote}</p>}
-          <p className="avatar-rail__note">
-            {demoQa?.enabled ? 'Narration demo with questions' : 'Narration-only demo'} · up to {formatMinutes(demoSessionSeconds)} · no uploads
-          </p>
-          {raiseHandPanel}
-          {statusIsError ? statusLine : <p className="avatar-rail__status" role="status">{statusText}</p>}
-        </div>
+        </>
       ) : !auth.loading && (!canUseAvatar || authBlock) ? (
         <div className="avatar-rail__panel">
           <GateNotice action="try the live avatar" force={authBlock ?? undefined} />

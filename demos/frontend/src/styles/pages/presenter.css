@@ -13,6 +13,26 @@
   margin-bottom: var(--sp-5);
 }
 
+/* What to do when the deck cannot be loaded: always a public next step. */
+.presenter__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+
+/* Phones: the live-demo controls are a bar fixed to the bottom (avatar-panel.css); keep the end of the page and
+   keyboard focus clear of it. --demo-dock-h is published by AvatarPanel while the bar exists. */
+@media (max-width: 960px) {
+  .page.presenter {
+    padding-bottom: calc(var(--sp-8) + var(--demo-dock-h, 0px));
+  }
+
+  html:root[data-demo-dock] {
+    scroll-padding-bottom: calc(var(--demo-dock-h, 0px) + var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 /* ---------- Settings bar (avatar · voice · language) ---------- */
 .presenter-settings {
   display: flex;
