@@ -21,6 +21,42 @@
   margin-top: var(--sp-2);
 }
 
+/* The public ways out of a dead end (live demo, the other library, decks): never a sign-in first. */
+.library__links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+/* A list that failed to load: the cause + "Try again", then the same ways out as an empty library. */
+.library__failure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+
+.library__failure .library__alert,
+.library__open-error .library__alert {
+  margin-bottom: 0;
+}
+
+.library__failure .library__links {
+  justify-content: flex-start;
+}
+
+/* A failed open sits next to the list and takes focus. */
+.library__open-error {
+  margin-bottom: var(--sp-5);
+  border-radius: var(--r-md);
+}
+
+.library__alert .btn--link {
+  color: inherit;
+  font-weight: 600;
+}
+
 /* The page header already draws the rule above. */
 .library .empty {
   border-top: 0;
@@ -29,6 +65,26 @@
 /* ---------- Rows ---------- */
 .library-row .episode-row__meta .chip {
   padding-block: 1px;
+}
+
+/* The duration column is hidden on phones (the generic row): the same length rides the meta line there. */
+.library-row__duration {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.library-row__duration svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .library-row__duration {
+    display: inline-flex;
+  }
 }
 
 /* Listening progress ("Resume · 1:12 left", "Played"): a narrow meta column (thumbnail rows on
@@ -109,6 +165,11 @@
   background: var(--c-stage);
 }
 
+/* A failed video stays in the DOM under its fault panel (the next refresh mounts a fresh one). */
+.library-player__screen video[hidden] {
+  display: none;
+}
+
 .library-player__status {
   display: grid;
   place-items: center;
@@ -121,6 +182,39 @@
 .library-player__status .muted {
   color: inherit;
   opacity: 0.75;
+}
+
+.library-player__status audio {
+  width: min(100%, 28rem);
+}
+
+/* A video that cannot play: the cause, "Try again" and — when the other medium exists — "Listen instead". */
+.library-player__problem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-7) var(--sp-5);
+  text-align: center;
+}
+
+.library-player__problem-alert {
+  max-width: 36rem;
+  text-align: left;
+}
+
+.library-player__problem-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+
+/* "Watch instead" under a radio that cannot load the audio. */
+.library-player__instead {
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--sp-4) var(--sp-4);
 }
 
 .library-player__info {
@@ -179,19 +273,25 @@
   margin-top: var(--sp-3);
 }
 
-.library-player__downloads .btn:not(.btn--primary) {
+.library-player__downloads .btn:not(.btn--primary),
+.library-player__problem-actions .btn:not(.btn--primary),
+.library-player__instead .btn:not(.btn--primary) {
   background: transparent;
   border-color: color-mix(in srgb, var(--c-on-stage) 35%, transparent);
   color: var(--c-on-stage);
 }
 
-.library-player__downloads .btn:not(.btn--primary):hover {
+.library-player__downloads .btn:not(.btn--primary):hover,
+.library-player__problem-actions .btn:not(.btn--primary):hover,
+.library-player__instead .btn:not(.btn--primary):hover {
   background: var(--c-on-stage);
   border-color: var(--c-on-stage);
   color: var(--c-stage);
 }
 
-.library-player__downloads .btn:focus-visible {
+.library-player__downloads .btn:focus-visible,
+.library-player__problem-actions .btn:focus-visible,
+.library-player__instead .btn:focus-visible {
   outline-color: var(--c-on-stage);
 }
 
@@ -332,6 +432,10 @@
     border-radius: 0;
     box-shadow: none;
     overscroll-behavior: contain;
+    /* Keyboard focus never lands behind the pinned parts of the sheet (WCAG 2.4.11): the minimise button and the
+       format tabs on top, the dock at the bottom. RadioPlayer publishes the dock's height as --rp-dock-h. */
+    scroll-padding-top: calc(env(safe-area-inset-top, 0px) + var(--tap) + var(--sp-2));
+    scroll-padding-bottom: calc(var(--rp-dock-h, 0px) + var(--sp-2));
   }
 
   .library-player--podcast .modal__close {

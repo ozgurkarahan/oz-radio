@@ -166,6 +166,21 @@
   color: var(--c-danger);
 }
 
+/* Audience level of an episode row (EpisodeRow `level`): the word is the signal, the tint only helps scanning a series. */
+.episode-row__level {
+  background: transparent;
+  border-color: currentColor;
+  color: var(--c-ink);
+}
+
+.episode-row__level[data-level='beginner'] {
+  color: var(--c-sage);
+}
+
+.episode-row__level[data-level='expert'] {
+  color: var(--c-clay-ink);
+}
+
 .live-pill {
   display: inline-flex;
   align-items: center;
@@ -330,6 +345,12 @@
   color: var(--c-on-stage);
   border-radius: var(--r-md);
   overflow: hidden;
+}
+
+/* Keyboard focus on a dark surface: the light on-stage ring (≥ 15:1), not the clay one (2.75:1 on the stage colour). */
+.stage:focus-visible,
+.stage :focus-visible {
+  outline-color: var(--c-on-stage);
 }
 
 /* ---------- Alerts, toasts, empty states ---------- */

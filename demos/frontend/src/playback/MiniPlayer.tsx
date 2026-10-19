@@ -13,12 +13,24 @@
 import { useId, useLayoutEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Headphones, Pause, Play, X } from 'lucide-react';
-import { Button, humanizeTitle } from '../ui';
+import { Button, humanizeTitle, langAttr } from '../ui';
+import { useTransitionAnnouncement } from './announce';
 import { usePlaybackCommands, usePlaybackState } from './PlaybackProvider';
 import { OPENED_HERE, nowPlayingPath } from './types';
 import '../styles/shared/mini-player.css';
 
 const OPEN_ATTR = 'data-mini-player-open';
+
+/**
+ * What the bar's polite status region says when the radio's state changes while the bar is the only player on screen
+ * (the sheet's own region is parked with the radio): problems and waiting states, never the time left or the speaker.
+ */
+const ANNOUNCEMENTS: Record<string, string> = {
+  'Reconnecting…': 'Reconnecting…',
+  'Loading…': 'Loading…',
+  'Audio unavailable': 'Audio unavailable',
+  'Press play': 'Press play to start listening',
+};
 
 /**
  * Focus target when a dialog's opener is gone: the mini-player's open button when shown, else
@@ -38,6 +50,7 @@ export function MiniPlayer() {
   const barRef = useRef<HTMLDivElement>(null);
   const { current, playing, time, duration, status, finished } = state;
   const visible = !!current && state.presentation === 'mini' && !state.miniSuppressed;
+  const announcement = useTransitionAnnouncement(visible ? ANNOUNCEMENTS[status] ?? '' : '');
 
   // --mini-player-h: the bar's height above the safe-area inset (with a unit, "0px" when hidden).
   useLayoutEffect(() => {
@@ -84,6 +97,9 @@ export function MiniPlayer() {
           <span style={{ transform: `scaleX(${Math.round(progress * 1000) / 1000})` }} />
         </div>
         <div ref={barRef} className="mini-player__bar">
+          <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="mini-player-announcer">
+            {announcement}
+          </div>
           <button
             type="button"
             className="mini-player__open"
@@ -94,10 +110,11 @@ export function MiniPlayer() {
             onClick={open}
           >
             <span className="mini-player__thumb" aria-hidden>
-              {cover ? <img src={cover} alt="" decoding="async" draggable={false} /> : <Headphones />}
+              {/* Not loaded while the bar is hidden (the sheet is open): the cover must not compete with the audio for the connection. */}
+              {visible && cover ? <img src={cover} alt="" decoding="async" draggable={false} /> : <Headphones />}
             </span>
             <span className="mini-player__text">
-              <span className="mini-player__title">{title}</span>
+              <span className="mini-player__title" lang={langAttr(item.language)}>{title}</span>
               <span className="mini-player__status" id={statusId} data-testid="mini-player-status">{status}</span>
             </span>
           </button>

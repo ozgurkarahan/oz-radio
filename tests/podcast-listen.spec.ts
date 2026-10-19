@@ -117,9 +117,12 @@ test.describe('Podcast library — rows', () => {
     await expect(d).toHaveCount(0);
     await expect(page).toHaveURL(/\/podcast\/library$/);
 
-    // A shared link to the audio-only episode is a 404 for visitors.
+    // A shared link to the audio-only episode is a 404 for visitors: the alert says it is gone and offers the way back.
     await page.goto(`/podcast/library?episode=${POD_AUDIO.job_id}&mode=listen`);
-    await expect(page.getByTestId('library-open-error')).toHaveText(/Failed to open: Library item not found/);
+    const gone = page.getByTestId('library-open-error');
+    await expect(gone).toContainText("This episode isn't available any more.");
+    await expect(gone).not.toContainText(/Failed to open|Library item not found/);
+    await expect(gone.getByRole('button', { name: 'Back to all episodes' })).toBeVisible();
     await expect(d).toHaveCount(0);
     await expect(page).toHaveURL(/\/podcast\/library$/);
     expect(errors).toEqual([]);
@@ -413,7 +416,9 @@ test.describe('Podcast library — deep links & loading', () => {
   test('an unknown episode shows an error and clears the deep link', async ({ page }) => {
     const { errors } = await openLibrary(page, 'visitor', {}, '/podcast/library?episode=pod-404&mode=listen');
     const error = page.getByTestId('library-open-error');
-    await expect(error).toHaveText(/Failed to open: Library item not found/);
+    await expect(error).toContainText("This episode isn't available any more.");
+    await expect(error).not.toContainText(/Failed to open|Library item not found/);
+    await expect(error.getByRole('button', { name: 'Back to all episodes' })).toBeVisible();
     await expect(dialog(page)).toHaveCount(0);
     await expect(page).toHaveURL(/\/podcast\/library$/);
     await expect(page.getByTestId('library-item')).toHaveCount(3);

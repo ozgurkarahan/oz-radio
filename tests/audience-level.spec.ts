@@ -177,11 +177,12 @@ test.describe('Audience level — library chip', () => {
     }]));
 
     await page.goto('/podcast/library');
-    await expect(page.getByTestId('audience-chip')).toHaveText('Beginner audience');
+    // Rows carry the level chip of EpisodeRow (contracts §5.2); the player's meta keeps `audience-chip`.
+    await expect(page.getByTestId('episode-level')).toHaveText('Beginner');
 
     await page.goto('/video/library');
     await expect(page.getByTestId('library-item')).toHaveCount(2);
-    await expect(page.getByTestId('audience-chip')).toHaveCount(1);
-    await expect(page.getByTestId('audience-chip')).toHaveText('Expert audience');
+    await expect(page.getByTestId('episode-level')).toHaveCount(1);
+    await expect(page.getByTestId('episode-level')).toHaveText('Expert');
   });
 });
