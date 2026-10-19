@@ -9,8 +9,8 @@ import { demoHooks, mockDemoSocket, refuseDemoHandshake, type DemoSocketMock, ty
 import { BOOT_TELEMETRY_IKEY, BOOT_TELEMETRY_INGESTION, normalizeBoot, type BootTelemetry } from '../demos/frontend/src/services/boot';
 import { DEMO_CLOSE_CODES as CLOSE } from '../demos/frontend/src/services/demoProtocol';
 import {
-  DEMO_OUTCOMES, DEMO_STAGES, FIRST_VALUE_KINDS, MEDIA_KINDS, TELEMETRY_FIELDS, TELEMETRY_ROUTES, UTM_KEYS, routeTemplate, sanitizeProps,
-  type TelemetryEvent,
+  DEMO_OUTCOMES, DEMO_STAGES, FIRST_VALUE_KINDS, MEDIA_KINDS, TELEMETRY_FIELDS, TELEMETRY_ROUTES, UTM_KEYS, ownScriptFile, routeTemplate,
+  sanitizeProps, type TelemetryEvent,
 } from '../demos/frontend/src/services/telemetryVitals';
 import { OPT_OUT_KEY } from '../demos/frontend/src/services/telemetry';
 
@@ -263,6 +263,25 @@ test.describe('contract (node)', () => {
     for (const [event, key, value] of drops) {
       expect(sanitizeProps(event, { [key]: value }), `${event}.${key}=${String(value).slice(0, 30)}`).toEqual({});
     }
+  });
+
+  test('ownScriptFile: only a script file of the app itself (origin and path), never the page or another site', () => {
+    const origin = 'https://app.example';
+    const page = '/playlists/0f8e5c1a-2b3c-4d5e-8f90-123456789abc';
+    expect(ownScriptFile(`${origin}/assets/index-ab12.js`, origin, page)).toBe('index-ab12.js');
+    expect(ownScriptFile(`${origin}/assets/vendor-x9.mjs?v=1`, origin, page)).toBe('vendor-x9.mjs');
+    expect(ownScriptFile(`${origin}/src/pages/PlaylistPlayerPage.tsx?t=1`, origin, page)).toBe('PlaylistPlayerPage.tsx');
+    expect(ownScriptFile(`${origin}/node_modules/.vite/deps/react-dom_client.js?v=abc`, origin, page)).toBe('react-dom_client.js');
+    for (const url of [
+      `${origin}${page}`, `${origin}${page}?q=secret`,                        // the page itself: an inline script
+      `${origin}/playlists/0f8e5c1a-2b3c-4d5e-8f90-123456789abc`,            // a page path, even when it is not the current one
+      `${origin}/boom.js`, `${origin}/x/secret.js`, `${origin}/assets/`,     // not where the app's scripts live
+      `${origin}/assets/a b.js`, `${origin}/assets/${'a'.repeat(81)}.js`, `${origin}/assets/data.json`,
+      'https://evil.example/assets/index-ab12.js', 'chrome-extension://abc/assets/x.js', 'not a url', '',
+    ]) {
+      expect(ownScriptFile(url, origin, page), url).toBeNull();
+    }
+    expect(ownScriptFile(`${origin}/assets/index-ab12.js`, origin, '/assets/index-ab12.js')).toBeNull();
   });
 
   test('routeTemplate: every route of the app has a template, ids never survive, everything else is "other"', () => {
@@ -638,15 +657,15 @@ test.describe('oz_media_error', () => {
 });
 
 test.describe('oz_ui_error', () => {
-  /** A script of this site's own (same origin), so its frame counts as ours. */
+  /** A script of this site's own: same origin and a built-chunk path, so its frame counts as ours. */
   async function serveScript(page: Page, file: string, body: string) {
-    await page.route(`**/${file}`, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body }));
+    await page.route(`**/assets/${file}`, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body }));
   }
   const inject = (page: Page, file: string) => page.evaluate((src) => {
     const script = document.createElement('script');
     script.src = src;
     document.head.appendChild(script);
-  }, `/${file}`);
+  }, `/assets/${file}`);
 
   test('a render crash caught by the route boundary: the error name, a file:line and the route — never the message', async ({ page }) => {
     const w = await watch(page);
@@ -697,6 +716,27 @@ test.describe('oz_ui_error', () => {
     });
     await page.waitForTimeout(500);
     expect((await w.events()).map((e) => e.name)).toEqual(['oz_load']);
+  });
+
+  test('an error of the page itself (an inline script) is not reported: the page path can carry an id', async ({ page }) => {
+    const w = await watch(page);
+    await mockApi(page, 'visitor');
+    await mockBoot(page, { telemetry: ON });
+    const id = '0f8e5c1a-2b3c-4d5e-8f90-123456789abc';
+    await page.goto(`/playlists/${id}`);
+    await w.next('oz_load');
+    // What an inline script of the page (or one an extension injects) reports: the page's own URL as its file.
+    await page.evaluate(() => {
+      const thrown = new TypeError('inline');
+      thrown.stack = `TypeError: inline\n    at ${location.href}:2:5`;
+      window.dispatchEvent(new ErrorEvent('error', { error: thrown, filename: location.href, lineno: 2, colno: 5 }));
+      const rejected = new RangeError('inline rejection');
+      rejected.stack = `RangeError: inline rejection\n    at ${location.href}:3:1`;
+      void Promise.reject(rejected);
+    });
+    await page.waitForTimeout(500);
+    expect(await w.named('oz_ui_error')).toEqual([]);
+    expect(await w.raw()).not.toContain(id);
   });
 
   test('the same error is reported once, and a page load reports at most five different ones', async ({ page }) => {

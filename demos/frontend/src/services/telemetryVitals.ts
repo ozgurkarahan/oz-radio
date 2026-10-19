@@ -392,18 +392,27 @@ export function trackDemoEnd(end: { code: number; telemetry: DemoOutcomeValue } 
 // ── oz_ui_error ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const STACK_LINE_RE = /(https?:\/\/[^\s()'"]+?):(\d+):\d+\)?$/;
+/** Where the app's own scripts live: the built chunks (`/assets/`) and, on the dev server, its modules and pre-bundled deps. */
+const OWN_SCRIPT_PATH_RE = /^\/(?:assets|src|node_modules\/\.vite\/deps)\/(?:[^/]+\/)*([A-Za-z0-9._-]{1,80}\.(?:m?js|jsx|tsx?))$/;
 const reportedErrors = new Set<string>();
 
-/** `https://site/assets/index-ab12.js` → `index-ab12.js`; null for any other origin (extensions, third parties). */
-function sameOriginFile(url: string): string | null {
+/**
+ * `https://site/assets/index-ab12.js` → `index-ab12.js`: a script file of the app itself, by origin AND path. Null for any
+ * other origin (extensions, third parties), any other path, and the page itself: an inline script — the shell's, or one an
+ * extension injects — reports the page's URL, whose path can carry an id (`/playlists/<id>`). Pure (exported for tests).
+ */
+export function ownScriptFile(url: string, origin: string, pagePath: string): string | null {
   try {
     const parsed = new URL(url);
-    if (parsed.origin !== location.origin) return null;
-    const file = parsed.pathname.split('/').pop() ?? '';
-    return /^[A-Za-z0-9._-]{1,80}$/.test(file) ? file : null;
+    if (parsed.origin !== origin || parsed.pathname === pagePath) return null;
+    return OWN_SCRIPT_PATH_RE.exec(parsed.pathname)?.[1] ?? null;
   } catch {
     return null;
   }
+}
+
+function sameOriginFile(url: string): string | null {
+  return typeof location === 'undefined' ? null : ownScriptFile(url, location.origin, location.pathname);
 }
 
 /** The first same-origin frame of a stack as `file:line`: the file and the line, never the function, column or address. */
