@@ -1,23 +1,61 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Eye, Layers, Mic, Play, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Eye, Headphones, Layers, Mic, Play, Radio, Trash2 } from 'lucide-react';
 import { Deck, deleteDeck, listDecks, publishDeck, setDeckLiveDemo, uploadDeck } from '../services/decksApi';
 import { useAuth } from '../services/auth';
-import { useDemoConfig } from '../services/demo';
-import { pickDefaultAvatar, useAvatars } from '../services/avatars';
-import { GateNotice, LiveDemoBadge, LiveDemoToggle, PublishBadge, PublishToggle } from '../components/AuthGate';
+import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import {
-  Alert, Button, Dropzone, EmptyState, EpisodeList, EpisodeRow, HostDisc, HostsMini, LivePill, PageHeader,
-  SectionHead, Spinner, episodeNumber, formatDate, humanizeTitle, languageName, pluralize,
+  DEMO_LIVE_LABEL, DEMO_RECORDED_LABEL, GateNotice, LiveDemoBadge, LiveDemoToggle, PublishBadge, PublishToggle,
+  liveSessionsLeft, recordedDemoReason, useDemoEntry, type DemoEntry,
+} from '../components/AuthGate';
+import {
+  Alert, Button, ButtonLink, Chip, Dropzone, EmptyState, EpisodeList, EpisodeRow, HostDisc, HostsMini, PageHeader,
+  SectionHead, Spinner, episodeNumber, formatDate, humanizeTitle, langAttr, languageName, loadErrorMessage, pluralize,
 } from '../ui';
 import '../styles/pages/decks.css';
 
 const PPTX_ACCEPT = '.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation';
-const DECK_KIND = { icon: Mic, label: 'Live presentation' };
+// "Live presentation" only labels a deck whose live demo can be started; the other decks are slides.
+const DECK_LIVE = { icon: Mic, label: 'Live presentation' };
+const DECK_SLIDES = { icon: Layers, label: 'Slides' };
+
+/** The live-demo entry of the page: final from the first paint (boot block), a same-size skeleton while it is read. */
+function DemoBanner({ entry, host }: { entry: DemoEntry; host: AvatarInfo | undefined }) {
+  if (entry.kind === 'pending') {
+    return <div className="decks-demo decks-demo--pending" data-testid="demo-cta-skeleton" aria-hidden />;
+  }
+  const live = entry.kind === 'live';
+  const hostName = host?.display_name;
+  return (
+    <Link to={entry.to} data-testid="try-live-demo-cta" className="decks-demo">
+      {host && <HostDisc host={host} size={72} speaking={live} label="" className="decks-demo__disc" />}
+      <span className="decks-demo__copy">
+        {live
+          ? <Chip tone="clay" icon={Radio} className="decks-demo__tag">Live demo · no sign-in</Chip>
+          : <Chip className="decks-demo__tag">Recorded demo</Chip>}
+        <span className="decks-demo__title">{live ? DEMO_LIVE_LABEL : DEMO_RECORDED_LABEL}</span>
+        <span className="decks-demo__text">
+          {live ? (
+            <>
+              {hostName ? `Watch ${hostName}, the real-time avatar, narrate` : 'Watch the real-time avatar narrate'}
+              {' '}<em lang={langAttr(entry.deckLanguage)}>{humanizeTitle(entry.deckTitle)}</em>.
+            </>
+          ) : `${recordedDemoReason(entry.reason)} The recording shows the same demo.`}
+        </span>
+        {live && entry.remaining !== null && (
+          <span className="decks-demo__quota" data-testid="decks-demo-quota">{liveSessionsLeft(entry.remaining)}</span>
+        )}
+      </span>
+      <ArrowRight aria-hidden className="decks-demo__arrow" />
+    </Link>
+  );
+}
 
 export default function DecksPage() {
-  const navigate = useNavigate();
   const [decks, setDecks] = useState<Deck[] | null>(null);
+  // A failed list is not an empty list: it keeps its reason (only ever read through loadErrorMessage) and a retry.
+  const [loadFailure, setLoadFailure] = useState<{ reason: unknown } | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -25,20 +63,29 @@ export default function DecksPage() {
   const isAdmin = auth.is_admin;
   const [publishing, setPublishing] = useState<string | null>(null);
   const [liveBusy, setLiveBusy] = useState<string | null>(null);
-  const demo = useDemoConfig();
+  const entry = useDemoEntry();
+  const liveNow = entry.kind === 'live';
   const { avatars } = useAvatars();
   const host = pickDefaultAvatar(avatars);
-  const firstLiveDemo = decks?.find((d) => d.live_demo);
-  const showDemoCta = !auth.loading && !isAdmin && demo.enabled && !!firstLiveDemo;
 
   const refresh = useCallback(async () => {
     setError(null);
-    try { setDecks(await listDecks()); }
-    catch (e: any) { setError(String(e?.message ?? e)); setDecks([]); }
+    try {
+      setDecks(await listDecks());
+      setLoadFailure(null);
+    } catch (e) {
+      setLoadFailure({ reason: e });
+    }
   }, []);
 
   // Re-fetch once identity is known: admins also see drafts.
   useEffect(() => { if (!auth.loading) refresh(); }, [refresh, auth.loading, auth.is_admin]);
+
+  async function retry() {
+    setRetrying(true);
+    await refresh();
+    setRetrying(false);
+  }
 
   async function handleTogglePublish(deckId: string, next: boolean) {
     setPublishing(deckId);
@@ -92,39 +139,20 @@ export default function DecksPage() {
     finally { setDeleting(null); }
   }
 
+  // The rows wait for the demo entry too, so a row's button never flips from "View slides" to "Start the live demo".
+  const rowsReady = decks !== null && (isAdmin || entry.kind !== 'pending');
+  const hasDecks = decks !== null && decks.length > 0;
+
   return (
     <div className="container page decks-page">
       <PageHeader
-        eyebrow="Library"
         title="Decks"
         lead={isAdmin
           ? 'Upload .pptx files to make them searchable and presentable by the avatar. Publish a deck to make it visible to anonymous visitors.'
           : 'Browse the published decks slide by slide.'}
       />
 
-      {showDemoCta && firstLiveDemo && (
-        <button
-          type="button"
-          data-testid="try-live-demo-cta"
-          className="decks-demo"
-          onClick={() => navigate(`/decks/${firstLiveDemo.deck_id}/present`)}
-        >
-          {host && <HostDisc host={host} size={72} speaking label="" className="decks-demo__disc" />}
-          <span className="decks-demo__copy">
-            <LivePill>Live demo · no sign-in</LivePill>
-            <span className="decks-demo__title">Try the live avatar demo</span>
-            <span className="decks-demo__text">
-              {host?.display_name ? `Watch ${host.display_name}, the real-time avatar, narrate` : 'Watch the real-time avatar narrate'}
-              {' '}<em>{humanizeTitle(firstLiveDemo.title)}</em>.
-            </span>
-          </span>
-          <ArrowRight aria-hidden className="decks-demo__arrow" />
-        </button>
-      )}
-
-      {!auth.loading && !isAdmin && (
-        <GateNotice action="upload decks and let the live avatar present them" className="decks-gate" />
-      )}
+      {!isAdmin && <DemoBanner entry={entry} host={host} />}
 
       {isAdmin && (
         <Dropzone
@@ -141,12 +169,31 @@ export default function DecksPage() {
 
       {error && <Alert tone="error" className="decks-alert">{error}</Alert>}
 
-      {decks === null ? (
+      {loadFailure && (
+        <Alert tone="error" className="decks-alert" data-testid="decks-load-error">
+          <div className="cluster">
+            <span>{loadErrorMessage(loadFailure.reason, 'the decks')}</span>
+            <Button size="sm" onClick={retry} busy={retrying}>Try again</Button>
+          </div>
+        </Alert>
+      )}
+
+      {loadFailure && !hasDecks ? (
+        <div className="decks-actions" role="group" aria-label="Meanwhile">
+          <ButtonLink to="/podcast/library" icon={Headphones}>Listen to an episode</ButtonLink>
+        </div>
+      ) : decks === null ? (
         <div className="decks-state"><Spinner label="Loading decks…" /></div>
       ) : decks.length === 0 ? (
-        <EmptyState icon={Layers} title={isAdmin ? 'No decks yet' : 'No published decks yet'}>
-          {isAdmin ? 'Upload a .pptx above to get started.' : 'Check back later.'}
+        <EmptyState
+          icon={Layers}
+          title={isAdmin ? 'No decks yet' : 'No published decks yet'}
+          action={isAdmin ? undefined : <ButtonLink to="/podcast/library" icon={Headphones}>Listen to an episode</ButtonLink>}
+        >
+          {isAdmin ? 'Upload a .pptx above to get started.' : 'Decks appear here once the owner publishes them. The live demo and the episodes are ready now.'}
         </EmptyState>
+      ) : !rowsReady ? (
+        <div className="decks-state"><Spinner label="Loading decks…" /></div>
       ) : (
         <section aria-labelledby="decks-list-title">
           <SectionHead
@@ -157,7 +204,7 @@ export default function DecksPage() {
             {decks.map((d, i) => {
               const title = humanizeTitle(d.title);
               const to = `/decks/${d.deck_id}/present`;
-              const live = demo.enabled && !!d.live_demo;
+              const live = !!d.live_demo && (isAdmin || liveNow);
               const tags = d.tags && d.tags.length > 0 ? (
                 <span className="decks-tags">
                   {d.tags.map((t) => <span key={t} className="decks-tag">#{t}</span>)}
@@ -190,26 +237,28 @@ export default function DecksPage() {
                   title={title}
                   to={to}
                   titleProps={{ title: d.title }}
+                  level={d.audience_level}
+                  lang={d.language}
                   meta={[
                     pluralize(d.slide_count, 'slide'),
                     languageName(d.language),
                     formatDate(d.uploaded_at),
                     tags,
                   ]}
-                  kind={DECK_KIND}
+                  kind={live ? DECK_LIVE : DECK_SLIDES}
                   hosts={host ? <HostsMini hosts={[host]} /> : null}
                   extra={extra}
                   actions={(
                     <>
-                      <Button
+                      <ButtonLink
+                        to={to}
                         size="sm"
                         data-testid="deck-open"
-                        variant={d.live_demo && (isAdmin || demo.enabled) ? 'primary' : 'outline'}
+                        variant={live ? 'primary' : 'outline'}
                         icon={isAdmin ? Mic : live ? Play : Eye}
-                        onClick={() => navigate(to)}
                       >
-                        {isAdmin ? 'Present' : live ? 'Try live demo' : 'View slides'}
-                      </Button>
+                        {isAdmin ? 'Present' : live ? DEMO_LIVE_LABEL : 'View slides'}
+                      </ButtonLink>
                       {isAdmin && (
                         <Button
                           size="sm"
@@ -229,6 +278,10 @@ export default function DecksPage() {
             })}
           </EpisodeList>
         </section>
+      )}
+
+      {!auth.loading && !isAdmin && (
+        <GateNotice action="upload decks and let the live avatar present them" className="decks-gate" />
       )}
     </div>
   );

@@ -1,8 +1,16 @@
+import logging
 import os
+import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
+
+from services import demo_protocol as dp
+
+logger = logging.getLogger(__name__)
 
 # Load .env from backend directory, then project root
 _backend_dir = Path(__file__).resolve().parent
@@ -61,3 +69,89 @@ def load_config() -> AzureConfig:
         search_key=os.environ.get("AZURE_SEARCH_KEY", ""),
         search_index=os.environ.get("AZURE_SEARCH_INDEX", "decks"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Cookieless telemetry (ships dark)
+# ---------------------------------------------------------------------------
+# Two settings, read on every page request so the kill switch is immediate:
+#   TELEMETRY_ENABLED            1 / true / yes / on turns it on; unset or anything else = off (the default)
+#   TELEMETRY_CONNECTION_STRING  an Application Insights connection string; unset = empty (the default). It is public by
+#                                design: the instrumentation key only says where events go, it grants nothing.
+# Telemetry is on only when the flag is true AND the connection string gives an https ingestion endpoint and a GUID key.
+# The result goes into the boot block of index.html (`telemetry_boot`); the browser still sends nothing to visitors who
+# signal Global Privacy Control, Do Not Track or the opt-out key. The infra default of both settings equals the code default.
+TELEMETRY_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Application Insights allows up to 4,096 characters in a connection string.
+TELEMETRY_CONNECTION_STRING_MAX_CHARS = 4096
+_TELEMETRY_IKEY_RE = re.compile(dp.BOOT_TELEMETRY_IKEY_PATTERN, re.IGNORECASE)
+_TELEMETRY_INGESTION_RE = re.compile(dp.BOOT_TELEMETRY_INGESTION_PATTERN)
+_TELEMETRY_ENDPOINT_RE = re.compile(r"(https://[^/?#\s]+)/?", re.IGNORECASE)
+
+# When this process started (the module is imported at startup): `server_cold` says a page was served in the first minute.
+PROCESS_STARTED = time.monotonic()
+_telemetry_misconfig_logged = False
+
+
+def telemetry_enabled() -> bool:
+    """The TELEMETRY_ENABLED flag (default off)."""
+    return (os.environ.get("TELEMETRY_ENABLED") or "").strip().lower() in TELEMETRY_TRUTHY
+
+
+def parse_telemetry_connection_string(raw: Optional[str]) -> Optional[tuple[str, str]]:
+    """``(ingestion origin, instrumentation key)`` of an Application Insights connection string, or ``None`` when it is
+    not usable (fail closed).
+
+    Only ``InstrumentationKey`` (a GUID) and ``IngestionEndpoint`` (``https://`` and a DNS name, an optional trailing
+    ``/`` and nothing else: no credentials, port, path, query or fragment) are read; other settings (``LiveEndpoint``,
+    ``ApplicationId`` ...) are ignored. Names are case-insensitive. A malformed or repeated setting makes the whole string
+    unusable. The origin is returned lower-case without the trailing slash, the key lower-case. Never raises.
+    """
+    try:
+        text = (raw or "").strip()
+        if not text or len(text) > TELEMETRY_CONNECTION_STRING_MAX_CHARS:
+            return None
+        settings: dict[str, str] = {}
+        for part in text.split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            name, separator, value = part.partition("=")
+            name = name.strip().lower()
+            if not separator or not name or name in settings:
+                return None
+            settings[name] = value.strip()
+        ikey = settings.get("instrumentationkey", "")
+        endpoint = _TELEMETRY_ENDPOINT_RE.fullmatch(settings.get("ingestionendpoint", ""))
+        if not endpoint or not _TELEMETRY_IKEY_RE.fullmatch(ikey):
+            return None
+        origin = endpoint.group(1).lower()
+        if not _TELEMETRY_INGESTION_RE.fullmatch(origin):
+            return None
+        return origin, ikey.lower()
+    except Exception:
+        return None
+
+
+def telemetry_boot() -> dict:
+    """The ``telemetry`` section of the boot block.
+
+    Off (the default, and any doubt) is exactly ``{"enabled": False}``. On it is ``{"enabled": True, "ingestion": …,
+    "ikey": …, "server_cold": …}`` with the values validated by :func:`parse_telemetry_connection_string`. Never raises:
+    a telemetry problem must not turn the whole boot block into the fail-closed one.
+    """
+    global _telemetry_misconfig_logged
+    try:
+        if not telemetry_enabled():
+            return {"enabled": False}
+        parsed = parse_telemetry_connection_string(os.environ.get("TELEMETRY_CONNECTION_STRING"))
+        if parsed is None:
+            if not _telemetry_misconfig_logged:
+                _telemetry_misconfig_logged = True
+                logger.warning("TELEMETRY_ENABLED is true but TELEMETRY_CONNECTION_STRING is missing or invalid: telemetry stays off")
+            return {"enabled": False}
+        ingestion, ikey = parsed
+        cold = time.monotonic() - PROCESS_STARTED < dp.BOOT_TELEMETRY_SERVER_COLD_SECONDS
+        return {"enabled": True, "ingestion": ingestion, "ikey": ikey, "server_cold": cold}
+    except Exception:
+        return {"enabled": False}

@@ -17,7 +17,8 @@ seed it as the "AI enablement path" playlist — see [content/ai-enablement/READ
 - Content understanding across a corpus of decks (hybrid vector + keyword search).
 - **Playlists**: ordered sequences of decks with per-user progress and resume.
 - **AI playlist recommendation**: GPT-4.1 selects a coherent sequence of decks from the catalog for a topic.
-- **Publication**: admins publish decks for anonymous visitors (slide images + titles only) and may mark a published
+- **Publication**: admins publish decks for anonymous visitors (slide images, titles and the visible slide text; never
+  speaker notes) and may mark a published
   deck as a **Live demo** (see [live-demo.md](live-demo.md)).
 
 ### Pages
@@ -269,8 +270,8 @@ let you run one feature at a time.
   may be shorter than requested (GPT currently respects "don't invent content").
 - **Playlist progress aggregation** — the player records progress per user, but there is no dashboard view of global
   playlist completion yet.
-- **Single admin role** — anonymous visitors only see **published** decks (slide images + titles) and, when enabled,
-  the narration-only live demo; uploads, search, playlists and the interactive avatar require a Microsoft Entra ID
+- **Single admin role** — anonymous visitors only see **published** decks (slide images, titles and the visible slide
+  text) and, when enabled, can run the live demo; uploads, search, playlists and the interactive avatar require a Microsoft Entra ID
   sign-in on the `ALLOWED_OBJECT_IDS` allowlist (see [README › Security model](../README.md#-security-model)). There
   is no per-user playlist ownership yet.
 

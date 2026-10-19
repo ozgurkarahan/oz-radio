@@ -94,7 +94,7 @@ Oz Radio is a web-based application that allows users to upload PowerPoint prese
 │  │   (PNG, SAS URLs) │  │ • React static   │  │ • Multi-stage build  │   │
 │  │ • Original PPTX   │  │ • System-assigned │  │                      │   │
 │  │   files           │  │   Managed Identity│  │                      │   │
-│  │ • Embedded videos │  │ • Auto-scale 1-3  │  │                      │   │
+│  │ • Embedded videos │  │ • 1 replica (max) │  │                      │   │
 │  └──────────────────┘  └──────────────────┘  └──────────────────────┘   │
 │                                                                          │
 │  ┌──────────────────┐  ┌──────────────────┐                             │
@@ -116,7 +116,7 @@ Oz Radio is a web-based application that allows users to upload PowerPoint prese
 | **Voice conversation** with the avatar | Agent chat (`/api/agent/chat`) + VoiceLive WebRTC | ✅ Implemented |
 | **Live** — avatar over PPT slides with Q&A | SlideViewer + AvatarPanel + Q&A RAG pipeline (`/live`) | ✅ Implemented |
 | **Decks, Search & Playlists** — multi-deck catalog + AI deck selection | `/decks`, `/search`, `/playlists` — Azure AI Search hybrid, playlists (Cosmos), AI playlist recommendation (GPT-4.1 JSON mode) | ✅ Implemented |
-| **Public live demo** — anonymous, narration-only | `/ws/voice/demo` with server-side guardrails (see [live-demo.md](live-demo.md)) | ✅ Implemented (off by default) |
+| **Public live demo** — anonymous, narrated | `/ws/voice/demo` (protocol v2: captions, typed and voice questions when enabled) with server-side guardrails (see [live-demo.md](live-demo.md)) | ✅ Implemented (off by default) |
 | **Video** — narrated batch video | Slide-first pipeline (`/video`) — Batch Avatar per slide + ffmpeg compose | ✅ Implemented |
 | **Podcast** — two-host video + radio | Two-host podcast (`/podcast`) — GPT-4.1 dialogue → Batch Avatar talking turns with a cached, alive listening loop and optional backchannels + ffmpeg compose, plus a radio mix (DragonHD TTS, sonic logo, −16 LUFS MP3 + transcript); *Audio only* format skips the avatars | ✅ Implemented |
 | **Multilingual** | 10 languages (6 native DragonHD + 4 multilingual fallback) | ✅ Implemented |
@@ -332,8 +332,8 @@ Region: Sweden Central (swedencentral)
 │   ├── Environment: cae-{token}
 │   ├── Identity: System-assigned Managed Identity
 │   ├── Ingress: external, port 8000, HTTPS only
-│   ├── Scale: 1-3 replicas (HTTP concurrency: 50 req/replica)
-│   ├── Resources: 1 vCPU, 2 GiB RAM per container
+│   ├── Scale: 0–1 replicas (`MIN_REPLICAS`; HTTP scale rule: 50 concurrent requests)
+│   ├── Resources: 2 vCPU, 4 GiB RAM per container
 │   └── Runtime: Gunicorn + Uvicorn + FastAPI + React static
 │       ├── LibreOffice Impress (headless, PPTX → PDF)
 │       ├── Poppler (PDF → PNG)
@@ -350,7 +350,9 @@ Region: Sweden Central (swedencentral)
     └── Storage Blob Data Contributor → Storage Account
 ```
 
-**SPA delivery** — FastAPI serves the Vite build copied into `demos/backend/static`. `index.html` and client routes stay `no-cache, no-store` so a deploy is picked up on the next load, while `/assets/*` goes through `StaticAssetDeliveryMiddleware` (`app.py`): gzip for text-like files ≥ 1 KB (never `Range` requests, API, media or the shell; `Vary: Accept-Encoding`, weak ETag when encoded) and `Cache-Control: public, max-age=31536000, immutable` for content-hashed `<name>-<hash>.<ext>` files (`max-age=3600` otherwise). The main JS bundle drops from ~665 KB to ~208 KB on the wire and is not re-requested between visits.
+**SPA delivery** — FastAPI serves the Vite build copied into `demos/backend/static`. `index.html` and client routes stay `no-cache, no-store` so a deploy is picked up on the next load, while `/assets/*` goes through `StaticAssetDeliveryMiddleware` (`app.py`): gzip for text-like files ≥ 1 KB (never `Range` requests, API, media or the shell; `Vary: Accept-Encoding`, weak ETag when encoded) and `Cache-Control: public, max-age=31536000, immutable` for content-hashed `<name>-<hash>.<ext>` files (`max-age=3600` otherwise). The main JS chunk is 290.75 kB (92.26 kB gzipped). Every page except Home is a lazy chunk (Home is in the main chunk), so a visit downloads only the routes it opens (the main chunk was 695 kB before the routes were split), and content-hashed chunks are cached for a year, so they are not re-requested between visits. `index.html` is served with the boot block in place of its `<!--OZ_BOOT-->` marker (see [live-demo.md](live-demo.md#how-it-works)).
+
+**Front door.** The first paint is the static shell in `index.html`: a branded "Opening Oz Radio…" page, a note and a Reload button after 10 s when the page is slow, a message with the Reload button when the app bundle fails to load, and `<noscript>` text. Every page except Home is a lazy route (its own chunk), React replaces the shell on its first render, every route sets its own document title, and the serif fallback face is metric-matched to Newsreader (`Newsreader Fallback`, size-adjusted to a local Georgia), which keeps the layout shift of the first paint low (lab CLS on a Pixel 7 profile, web fonts arriving after the first paint: 0.18 with the previous font stacks, 0.009 now).
 
 ---
 

@@ -15,10 +15,29 @@
   font-weight: 600;
 }
 
-.gate-notice .btn svg {
-  width: 16px;
-  height: 16px;
-  margin-top: 0;
+/* Sign-in is for the owner and invited users only: a quiet text link plus its hint, never a filled button. */
+.gate-notice__aside {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-2);
+}
+
+.gate-notice__signin {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.gate-notice__signin:hover {
+  color: var(--c-clay-ink);
+}
+
+.gate-notice__hint {
+  color: var(--c-muted);
+  font-weight: 400;
 }
 
 .gate-notice--compact {
@@ -49,6 +68,20 @@
   max-width: 560px;
 }
 
+/* The public actions come first; the sign-in notice is the quietest thing on the panel. */
+.gated-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+
+.gated-panel__demo,
+.sign-in__demo {
+  min-width: 15.5rem;
+}
+
 .gated-panel__notice {
   width: 100%;
   max-width: 520px;
@@ -62,6 +95,86 @@
   justify-content: center;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+
+.gated-panel__account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px var(--sp-3);
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
+}
+
+/* Same-size stand-in for a live-demo link while the bounded fallback read runs (no boot block). */
+.demo-skeleton {
+  display: inline-block;
+  min-width: 16.5rem;
+  height: var(--tap);
+  border: var(--bw) solid var(--c-line);
+  border-radius: var(--r-pill);
+  background: var(--c-info-50);
+  animation: ozradio-skeleton 1.2s var(--ease) infinite alternate;
+}
+
+.demo-skeleton--lg {
+  height: 52px;
+}
+
+.demo-skeleton.gated-panel__demo,
+.demo-skeleton.sign-in__demo {
+  min-width: 15.5rem;
+}
+
+@keyframes ozradio-skeleton {
+  to {
+    opacity: 0.5;
+  }
+}
+
+/* The "Owner sign-in" explainer (/sign-in): the public actions first, the owner's own way in second. */
+.sign-in .page-header__title:focus {
+  outline: none;
+}
+
+.sign-in__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  max-width: var(--maxw-text);
+}
+
+.sign-in__public {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.sign-in__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* "Back to where you were": the quietest action, still a full-height touch target. */
+.sign-in__back {
+  min-height: var(--tap);
+}
+
+.sign-in__owner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding-top: var(--sp-5);
+  border-top: var(--bw) solid var(--c-line);
+}
+
+.sign-in__note {
+  max-width: 36rem;
 }
 
 .live-demo-toggle.is-on {

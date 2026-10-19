@@ -11,6 +11,9 @@
     "backendImageName": {
       "value": "${SERVICE_BACKEND_IMAGE_NAME=}"
     },
+    "minReplicas": {
+      "value": "${MIN_REPLICAS=0}"
+    },
     "authClientId": {
       "value": "${AUTH_CLIENT_ID=}"
     },
@@ -109,6 +112,12 @@
     },
     "demoQaDailyPerIp": {
       "value": "${DEMO_QA_DAILY_PER_IP=6}"
+    },
+    "telemetryEnabled": {
+      "value": "${TELEMETRY_ENABLED=false}"
+    },
+    "telemetryConnectionString": {
+      "value": "${TELEMETRY_CONNECTION_STRING=}"
     },
     "useExternalAiServices": {
       "value": "${USE_EXTERNAL_AI_SERVICES=false}"

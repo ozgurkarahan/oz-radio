@@ -9,6 +9,7 @@
  */
 import type { LibraryItem } from '../services/podcast';
 import { hasAudio } from '../services/podcast';
+import type { RadioState } from '../components/RadioPlayer';
 
 /**
  * History state key of an entry pushed by opening an episode in-app (library rows, mini-player):
@@ -64,6 +65,8 @@ export interface PlaybackState {
   duration: number;
   /** Short status for the mini-player: "Lucas is speaking", "Paused · 3:12 left", "Finished"… */
   status: string;
+  /** The radio's own state ("playing", "error", "press-play"…); null while no episode is loaded or before it reports. */
+  radioState: RadioState | null;
   presentation: Presentation;
   /** The last episode ended and no next episode was ready. Cleared by any play / start. */
   finished: boolean;

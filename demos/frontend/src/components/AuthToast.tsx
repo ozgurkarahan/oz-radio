@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Lock, ShieldAlert, X } from 'lucide-react';
 import { AUTH_ERROR_EVENT, type AuthErrorDetail, signIn, useAuth } from '../services/auth';
-import { NOT_ENABLED_MESSAGE } from './AuthGate';
+import { NOT_ENABLED_MESSAGE, OwnerSignInLink } from './AuthGate';
 import { buttonClass } from '../ui';
 
 /** Global banner for 401/403 responses from the API (see installAuthErrorInterceptor). */
@@ -33,12 +33,14 @@ export default function AuthToast() {
       <Icon aria-hidden style={{ width: 18, height: 18, flex: 'none' }} />
       <span style={{ flex: 1 }}>
         {needsSignIn
-          ? 'Sign in required — this action is only available to signed-in demo users.'
+          ? 'Sign-in required — this action is only available to the site owner and invited users.'
           : toast.status === 401
             ? 'Your session has expired. Please sign in again.'
             : NOT_ENABLED_MESSAGE}
       </span>
-      {(needsSignIn || toast.status === 401) && auth.auth_mode !== 'disabled' && (
+      {/* Visitors cannot sign in, so they get the "Owner sign-in" text link, never a filled button. */}
+      {needsSignIn && auth.auth_mode !== 'disabled' && <OwnerSignInLink className="gate-notice__signin" />}
+      {!needsSignIn && toast.status === 401 && auth.auth_mode !== 'disabled' && (
         <button type="button" onClick={signIn} className={buttonClass({ size: 'sm', variant: 'primary' })}>
           Sign in
         </button>

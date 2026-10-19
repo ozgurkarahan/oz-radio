@@ -86,6 +86,18 @@
 .masthead__create .menu {
   top: calc(100% + 8px);
   left: 0;
+  min-width: 280px;
+}
+
+/* The tools list is a disclosure of links, not an ARIA menu. */
+.menu__list {
+  list-style: none;
+}
+
+.menu__hint {
+  padding: 6px 12px 8px;
+  color: var(--c-muted);
+  font-size: 0.78125rem;
 }
 
 .masthead__actions {
@@ -93,6 +105,31 @@
   align-items: center;
   gap: var(--sp-3);
   margin-left: auto;
+}
+
+/* "Owner sign-in": only the owner and invited users can sign in, so it is a quiet text link, not a button. */
+.masthead__signin {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 4px;
+  color: var(--c-ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  white-space: nowrap;
+}
+
+.masthead__signin:hover {
+  color: var(--c-clay-ink);
+}
+
+@media (pointer: coarse) {
+  .masthead__signin {
+    min-height: var(--tap);
+  }
 }
 
 .masthead__user {
@@ -158,6 +195,13 @@
 .sheet__group .eyebrow {
   padding-bottom: var(--sp-2);
   border-bottom: var(--bw) solid var(--c-line);
+}
+
+.sheet__hint {
+  padding-block: var(--sp-2);
+  border-bottom: var(--bw) solid var(--c-line);
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
 }
 
 .sheet__link {

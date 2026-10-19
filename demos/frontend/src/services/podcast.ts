@@ -185,9 +185,10 @@ export interface Transcript {
 
 // ---- Library ----------------------------------------------------------
 // Anonymous visitors receive a reduced public DTO (job_id, title, created_at,
-// duration_sec, language, thumbnail_url, video_url/mp4_url and, when public
-// audio is enabled, audio/cover/hosts/transcript) — other fields may be missing
-// or null. Legacy items lack format/has_* fields: use hasVideo/hasAudio/isAudioOnly.
+// duration_sec, language, audience_level, source_deck_id, captions_vtt_url,
+// thumbnail_url, video_url/mp4_url and, when public audio is enabled,
+// audio/cover/hosts/transcript) — other fields may be missing or null. Legacy
+// items lack format/has_* fields: use hasVideo/hasAudio/isAudioOnly.
 export interface LibrarySummary {
   job_id: string;
   title: string;
@@ -196,8 +197,12 @@ export interface LibrarySummary {
   duration_sec: number | null;
   language: string;
   style?: string | null;
-  /** Admins only (absent from the anonymous public DTO). */
+  /** Present in the public DTO too (contracts v1); null when the manifest does not know it. */
   audience_level?: AudienceLevel | null;
+  /** Deck the item was rendered from, when the manifest knows it (null today for every item). */
+  source_deck_id?: string | null;
+  /** Same-origin WebVTT of the video rendition (`/api/podcast/library/{id}/captions.vtt`); null when there is none. */
+  captions_vtt_url?: string | null;
   speaker_names?: string[] | null;
   turn_count?: number | null;
   thumbnail_url: string | null;

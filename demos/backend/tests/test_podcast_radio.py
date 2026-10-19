@@ -355,20 +355,48 @@ def test_program_graph():
     assert plain.startswith("[1:a]anull[v];[0:a][v]amix=inputs=2:normalize=0") and "alimiter" not in plain
 
 
-def test_mp3_encode_args_allow_list_and_reencoded_cover():
+def test_mp3_encode_args_allow_list_without_embedded_cover():
     meta = pr.id3_metadata("Episode", HOSTS, "fr-FR", 2026)
-    args = pr.mp3_encode_args(Path("p.wav"), Path("c.jpg"), Path("o.mp3"), "loudnorm=I=-16", {**meta, "voice": "x"})
+    args = pr.mp3_encode_args(Path("p.wav"), Path("o.mp3"), "loudnorm=I=-16", {**meta, "voice": "x"})
     joined = " ".join(args)
     assert "-c:a libmp3lame -b:a 128k -ar 44100 -ac 2" in joined
-    assert "-c:v mjpeg" in joined and "copy" not in args          # stream copy would carry EXIF
-    assert "-disposition:v:0 attached_pic" in joined and "-map 1:v:0" in joined
     assert "-id3v2_version 3 -write_id3v1 0" in joined and "-map_metadata -1" in joined
     assert "-fflags +bitexact" in joined                          # no TSSE encoder tag
     keys = [args[i + 1].split("=", 1)[0] for i, a in enumerate(args) if a == "-metadata"]
     assert keys == list(pr.ID3_KEYS)
     assert args[-1] == "o.mp3" and args[-3:-1] == ["-f", "mp3"]
-    no_cover = pr.mp3_encode_args(Path("p.wav"), None, Path("o.mp3"), "anull", meta)
-    assert "1:v:0" not in no_cover and "-c:v" not in no_cover
+    # F7: one audio input and no picture. An APIC cover (about 125 KB) in front of the first
+    # audio frame delayed the start of playback on slow links; cover.jpg stays a separate file.
+    assert args.count("-i") == 1 and args.count("-map") == 1 and args[args.index("-map") + 1] == "0:a:0"
+    for token in ("-c:v", "mjpeg", "attached_pic", "-disposition:v:0", "1:v:0", "-q:v", "copy"):
+        assert token not in joined
+
+
+def test_the_cover_is_not_part_of_the_mp3_encode():
+    import inspect
+
+    assert "cover" not in inspect.signature(pr.mp3_encode_args).parameters
+    assert "cover" not in inspect.signature(pr._normalize_and_encode).parameters
+
+
+def test_normalize_and_encode_writes_an_mp3_without_picture(monkeypatch, tmp_path):
+    import subprocess
+
+    calls: list[list[str]] = []
+
+    def fake_ffmpeg(args, *, loglevel="error", check=True):
+        calls.append(list(args))
+        Path(args[-1]).write_bytes(b"ID3")             # the encode writes its temporary MP3
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(pr, "_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(pr, "_measure_loudnorm", lambda path: None)
+    mp3 = tmp_path / "audio.mp3"
+    pr._normalize_and_encode(tmp_path / "program.wav", mp3, {"title": "t", "comment": "c"}, tmp_path)
+    (encode,) = calls
+    assert encode.count("-i") == 1 and "1:v:0" not in encode and "mjpeg" not in encode
+    assert "title=t" in encode and "comment=c" in encode      # the text frames stay
+    assert mp3.read_bytes() == b"ID3" and [p.name for p in tmp_path.iterdir()] == ["audio.mp3"]
 
 
 # ---------------------------------------------------------------------------

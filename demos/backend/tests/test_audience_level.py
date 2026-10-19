@@ -15,12 +15,15 @@ LEVELS = ["beginner", "practitioner", "expert"]
 VOICE = "en-US-Ava:DragonHDLatestNeural"
 VIDEO_DOC_ID = "0b5f2a7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 
-# SHA-256 of the system prompts for the fixtures below with audience_level=None,
-# which must stay byte-for-byte. PODCAST_BASELINE_SHA was re-pinned deliberately
-# when the radio-safe directive and the optional listener `reaction` hint were
-# added to the podcast prompt (video prompt unchanged).
-PODCAST_BASELINE_SHA = "0aa1d245da430d4962016021b3c01ede253d364527c8df8b5f7bf42f9be4ab50"
-VIDEO_BASELINE_SHA = "972809be83f98e7ae23534bdfdb18a9ed970972eee27dfd6225a76270c00be4d"
+# SHA-256 of the system prompts for the fixtures below with audience_level=None.
+# Both were re-pinned deliberately, never by accident:
+# * PODCAST_BASELINE_SHA when the radio-safe directive and the optional listener
+#   `reaction` hint joined the podcast prompt, then for the content-quality fix
+#   (F5: grounding, recorded-episode, language, coverage and wrap-up rules);
+# * VIDEO_BASELINE_SHA for the same fix (grounding, recorded-video and language
+#   rules; no "add the why", no invented examples).
+PODCAST_BASELINE_SHA = "766a25b36ae3de5fd11e2bb5666fe89b72334bdb06379f58b0fe0a98c74195c2"
+VIDEO_BASELINE_SHA = "ced71a8c70e53c854578ac8e7a43354a9539bc81ba3442279fe7e2518d14f14c"
 
 LEVEL_MARKERS = {
     "beginner": ["no prior AI or technical knowledge", "plain words", "everyday analogies",
@@ -100,7 +103,7 @@ def test_video_prompt_unchanged_when_none():
 
 @pytest.mark.parametrize("level", LEVELS)
 def test_podcast_prompt_contains_level_directive(level):
-    from services.podcast_script import _audience_line, _build_system_prompt
+    from services.podcast_script import _audience_line, _build_system_prompt, _coverage_line
 
     doc = _podcast_doc()
     base = _build_system_prompt(PodcastScriptRequest(document_id="doc-1", style="formal", focus="cost"), doc)
@@ -110,10 +113,12 @@ def test_podcast_prompt_contains_level_directive(level):
         assert marker in prompt
     others = [m for lv, ms in LEVEL_MARKERS.items() if lv != level for m in ms[:1]]
     assert not any(m in prompt for m in others)
-    # Composes with style/focus/language and only adds the audience line:
-    # slide assignment + output format rules are untouched.
+    # Composes with style/focus/language: the level only swaps the audience line and the
+    # coverage line (a 2-slide deck keeps the requested 8 turns at every level); the
+    # slide assignment, grounding and output-format rules are untouched.
     assert "Polished, measured tone" in prompt and "Conversation angle: cost" in prompt
-    assert prompt.replace(_audience_line(level), "") == base
+    assert prompt.replace(_audience_line(level), "").replace(
+        _coverage_line(level, 2, 8), _coverage_line(None, 2, 8)) == base
 
 
 @pytest.mark.parametrize("level", LEVELS)
@@ -249,16 +254,16 @@ class _Lib:
                      "published": True, "audience_level": "expert"}
         self.url_key = url_key
 
-    def list(self, *, published_only: bool = False):
+    def list(self, *, published_only: bool = False, strict: bool = False):
         return [dict(self.item)]
 
-    def get(self, job_id, *, public: bool = False):
+    def get(self, job_id, *, public: bool = False, strict: bool = False):
         return {**self.item, self.url_key: "https://blob/v?sas"} if job_id == self.item["job_id"] else None
 
 
 @pytest.mark.parametrize("kind,job,url_key", [("podcast", "job-0000aaaa", "mp4_url"),
                                                ("video", "sv-0000aaaa", "video_url")])
-def test_library_api_exposes_level_to_admins_only(client, easyauth, monkeypatch, kind, job, url_key):
+def test_library_api_exposes_level_to_everyone(client, easyauth, monkeypatch, kind, job, url_key):
     import routers.podcast as pc
     import routers.video as rv
 
@@ -267,5 +272,8 @@ def test_library_api_exposes_level_to_admins_only(client, easyauth, monkeypatch,
     admin_list = client.get(f"/api/{kind}/library", headers=easyauth()).json()
     assert admin_list[0]["audience_level"] == "expert"
     assert client.get(f"/api/{kind}/library/{job}", headers=easyauth()).json()["audience_level"] == "expert"
-    # Anonymous public DTO keeps its fixed shape.
-    assert "audience_level" not in client.get(f"/api/{kind}/library").json()[0]
+    # The anonymous public DTO carries the level too (C2.3: visible before play) — and still nothing else private.
+    anon_list = client.get(f"/api/{kind}/library").json()
+    assert anon_list[0]["audience_level"] == "expert"
+    assert client.get(f"/api/{kind}/library/{job}").json()["audience_level"] == "expert"
+    assert "document_title" not in anon_list[0] and "voice" not in anon_list[0]

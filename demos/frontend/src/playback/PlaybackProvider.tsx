@@ -58,6 +58,7 @@ const INITIAL_STATE: PlaybackState = {
   time: 0,
   duration: 0,
   status: '',
+  radioState: null,
   presentation: 'hidden',
   finished: false,
   lastAdvance: null,
@@ -195,7 +196,10 @@ interface RootRadioProps {
 const RootRadio = memo(function RootRadio({ episode, radioRef, ...handlers }: RootRadioProps) {
   const { avatars } = useAvatars();
   const { item } = episode;
-  const hosts = useMemo(() => toRadioHosts(item.hosts, avatars, item.speaker_names ?? []), [item, avatars]);
+  const hosts = useMemo(
+    () => toRadioHosts(item.hosts, avatars, item.speaker_names ?? [], item.language),
+    [item, avatars],
+  );
   return (
     <RadioPlayer
       ref={radioRef}
@@ -203,8 +207,11 @@ const RootRadio = memo(function RootRadio({ episode, radioRef, ...handlers }: Ro
       episodeKey={episode.jobId}
       src={episode.src}
       title={humanizeTitle(item.title)}
+      language={item.language}
+      level={item.audience_level ?? null}
       transcript={item.transcript ?? null}
       coverUrl={item.cover_url ?? null}
+      deferCover
       hosts={hosts}
       autoPlay={episode.autoPlay}
       initialTime={episode.start}
@@ -251,6 +258,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     next.presentation = internal.slotMounted ? 'dialog' : next.current ? 'mini' : 'hidden';
     next.miniSuppressed = internal.suppress > 0;
     next.status = miniStatus(next, internal.radioStatus);
+    next.radioState = internal.radioStatus?.state ?? null;
     store.replace(next);
   }, [store]);
 

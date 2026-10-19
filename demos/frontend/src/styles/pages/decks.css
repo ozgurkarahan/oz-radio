@@ -11,16 +11,26 @@
   background: var(--c-clay-50);
   color: var(--c-ink);
   text-align: left;
+  text-decoration: none;
   transition: border-color var(--dur) var(--ease);
 }
 
 .decks-demo:hover {
   border-color: var(--c-clay);
+  color: var(--c-ink);
 }
 
 .decks-demo:focus-visible {
   outline: 2px solid var(--c-focus);
   outline-offset: 2px;
+}
+
+/* Same-size stand-in while the demo entry is read (no boot block): the banner never changes height. */
+.decks-demo--pending {
+  min-height: 7.5rem;
+  border-color: var(--c-line);
+  background: var(--c-info-50);
+  animation: ozradio-skeleton 1.2s var(--ease) infinite alternate;
 }
 
 .decks-demo__disc {
@@ -31,6 +41,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
   min-width: 0;
 }
@@ -51,6 +62,12 @@
   font-size: 1.0625rem;
 }
 
+.decks-demo__quota {
+  color: var(--c-ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
 .decks-demo__arrow {
   flex: none;
   width: 22px;
@@ -63,10 +80,20 @@
   transform: translateX(4px);
 }
 
-.decks-gate,
 .decks-upload,
 .decks-alert {
   margin-bottom: var(--sp-6);
+}
+
+/* Sign-in is the quietest thing on the page: after the list, never above it. */
+.decks-gate {
+  margin-top: var(--sp-6);
+}
+
+.decks-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
 }
 
 .decks-state {
@@ -106,6 +133,10 @@
   .decks-demo {
     gap: var(--sp-3);
     padding: var(--sp-3) var(--sp-4);
+  }
+
+  .decks-demo--pending {
+    min-height: 6.5rem;
   }
 
   .decks-demo__disc {

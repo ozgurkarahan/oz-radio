@@ -8,9 +8,15 @@
  * users, who have the transcript on demand), a collapsible click-to-seek transcript,
  * a seekable peaks waveform (role="slider", turn ticks), ±15 s, speed, keyboard
  * shortcuts (Space/K, J/L), Media Session (through playback/mediaSession.ts),
- * autoplay-rejection handling and SAS-expiry recovery (at most one source refresh per
- * minute and per episode; position and play state are restored). Parents drive it
- * through the imperative handle (Watch ↔ Listen).
+ * autoplay-rejection handling and SAS-expiry recovery (at most one automatic source refresh
+ * per minute and per episode; "Try again" always fetches a fresh source; position and play
+ * state are restored). Parents drive it through the imperative handle (Watch ↔ Listen).
+ *
+ * Language and level: `language` (BCP-47) marks the title, caption and transcript with their
+ * own `lang` (WCAG 3.1.2) and picks the host role labels ("Journaliste" for French); `level`
+ * shows the audience level in the header. State changes (loading, reconnecting, autoplay
+ * refused, paused) are announced through one polite `role="status"` region — the per-speaker
+ * status line and the captions are not.
  *
  * Works standalone (creator page) and as the app's persistent root player
  * (playback/PlaybackProvider): there it is never remounted per episode — `episodeKey`
@@ -26,7 +32,11 @@ import {
   AudioLines, ChevronDown, Headphones, Pause, Play, Radio as RadioIcon, RotateCcw, RotateCw, ScrollText, Sparkles,
 } from 'lucide-react';
 import type { PodcastHost, Speaker, Transcript, TranscriptCue, TranscriptTurn } from '../services/podcast';
-import { Alert, Button, Field, HostDisc, LivePill, Select, Waveform } from '../ui';
+import {
+  Alert, Button, Chip, Field, HostDisc, LivePill, Select, Waveform,
+  isFrench, langAttr, languageName, levelLabel, loadErrorMessage,
+} from '../ui';
+import { useTransitionAnnouncement } from '../playback/announce';
 import {
   claimMediaSession, isMediaSessionOwner, releaseMediaSession, setMediaPositionState, updateMediaSession,
   type MediaMetadataInit, type MediaSessionHandlers,
@@ -91,6 +101,15 @@ export interface RadioPlayerProps {
   className?: string;
   /** Show the full transcript expanded initially (default: collapsed). */
   defaultTranscriptOpen?: boolean;
+  /**
+   * Language of the episode (BCP-47, e.g. "fr-FR"): sets `lang` on the title, caption and transcript, and
+   * localises the host role labels. Omitted: the document language applies and the labels stay English.
+   */
+  language?: string | null;
+  /** Audience level (`audience_level` of the library DTOs): shown as a chip in the header; nothing for null or an unknown value. */
+  level?: string | null;
+  /** Load the cover image only once the episode has played (slow connections: the audio gets the bandwidth first). */
+  deferCover?: boolean;
 }
 
 export type RadioState =
@@ -130,8 +149,22 @@ const REACTION_MIN_SEC = 0.9;
 const USER_SCROLL_GRACE_MS = 4000;
 const ROLES: Speaker[] = ['interviewer', 'expert'];
 const ROLE_LABEL: Record<Speaker, string> = { interviewer: 'Interviewer', expert: 'Expert' };
+/** Same wording as the French renders ("Journaliste" / "Expert", services/podcast_compose.py). */
+const ROLE_LABEL_FR: Record<Speaker, string> = { interviewer: 'Journaliste', expert: 'Expert' };
+const roleLabels = (language: string | null | undefined): Record<Speaker, string> => (isFrench(language) ? ROLE_LABEL_FR : ROLE_LABEL);
 const ALBUM = 'Oz Radio';
-const UNAVAILABLE = "The audio couldn't be loaded.";
+const UNAVAILABLE = 'Audio unavailable — the link expired or the connection dropped.';
+/** Offline wording shared with every other load failure (ui/format.ts `loadErrorMessage`). */
+const OFFLINE = loadErrorMessage('Failed to fetch');
+/** What the polite status region says for a state ("playing" and "idle" say nothing). */
+const ANNOUNCEMENTS: Partial<Record<RadioState, string>> = {
+  buffering: 'Loading…',
+  refreshing: 'Reconnecting…',
+  'press-play': 'Your browser blocked autoplay. Press play to start listening.',
+  paused: 'Paused',
+};
+/** The sticky dock's height, published on <html> for the phone sheet's scroll-padding (library.css). */
+const DOCK_HEIGHT_VAR = '--rp-dock-h';
 
 // Waveform geometry (SVG user units = CSS px once the width is measured).
 const BAR_AREA_H = 46;
@@ -267,12 +300,17 @@ function buildBars(peaks: number[], count: number): number[] {
   return values.map((v) => (max > 0 ? 0.08 + 0.92 * (v / max) : FLAT_LEVEL));
 }
 
-function resolveHost(role: Speaker, hosts: RadioHost[] | null | undefined, transcript: Transcript | null | undefined): RadioHost {
+function resolveHost(
+  role: Speaker,
+  hosts: RadioHost[] | null | undefined,
+  transcript: Transcript | null | undefined,
+  labels: Record<Speaker, string> = ROLE_LABEL,
+): RadioHost {
   const fromProps = Array.isArray(hosts) ? hosts.find((h) => h?.role === role) : undefined;
   const fromTranscript = Array.isArray(transcript?.hosts) ? transcript.hosts.find((h) => h?.role === role) : undefined;
   return {
     role,
-    display_name: fromProps?.display_name?.trim() || fromTranscript?.display_name?.trim() || ROLE_LABEL[role],
+    display_name: fromProps?.display_name?.trim() || fromTranscript?.display_name?.trim() || labels[role],
     thumbnail_url: fromProps?.thumbnail_url ?? null,
   };
 }
@@ -282,21 +320,30 @@ function resolveHost(role: Speaker, hosts: RadioHost[] | null | undefined, trans
  * portraits from the avatar catalog (`useAvatars()`) by `avatar_id`. An explicit
  * `avatar_id: null` means "no portrait" (monogram, e.g. audio-only). Without a host
  * entry (legacy items) the name comes from `fallbackNames` (interviewer first, e.g.
- * `speaker_names`) and the portrait from a catalog entry with the same display name.
+ * `speaker_names`) and the portrait from a catalog entry with the same display name;
+ * without any name the role label is used ("Journaliste" for a French `language`).
  */
 export function toRadioHosts(
   hosts: readonly PodcastHost[] | null | undefined,
   avatars: readonly RadioAvatarLike[] = [],
   fallbackNames: readonly (string | null | undefined)[] = [],
+  language?: string | null,
 ): RadioHost[] {
+  const labels = roleLabels(language);
   return ROLES.map((role, i) => {
     const host = hosts?.find((h) => h?.role === role);
-    const name = host?.display_name?.trim() || fallbackNames[i]?.trim() || ROLE_LABEL[role];
+    const name = host?.display_name?.trim() || fallbackNames[i]?.trim() || labels[role];
     let avatar: RadioAvatarLike | undefined;
     if (host?.avatar_id) avatar = avatars.find((a) => a.id === host.avatar_id);
     else if (host?.avatar_id !== null) avatar = avatars.find((a) => a.display_name?.trim() === name);
     return { role, display_name: name, thumbnail_url: avatar?.thumbnail_url ?? null };
   });
+}
+
+/** A language's name in its own words, marked with its own `lang` ("Français" is French text in an English page). */
+export function LanguageName({ code }: { code: string | null | undefined }) {
+  const name = languageName(code);
+  return <span lang={code && name !== code ? langAttr(code) : undefined}>{name}</span>;
 }
 
 /**
@@ -367,6 +414,33 @@ function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
   return width;
 }
 
+/**
+ * The phone sheet pins the transport (the dock) to the bottom edge of its scroll container, over the transcript. Its
+ * height is published on <html> so `library.css` can use it as `scroll-padding-bottom`: a cue (or any control) that
+ * takes keyboard focus scrolls clear of the dock instead of staying hidden behind it (WCAG 2.4.11). 0 when the dock
+ * is not sticky (desktop, light card) or not rendered (parked off screen).
+ */
+function usePublishedDockHeight(dockRef: React.RefObject<HTMLElement | null>, enabled: boolean) {
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    if (!enabled || !dock) return undefined;
+    const root = document.documentElement;
+    const publish = () => {
+      const sticky = getComputedStyle(dock).position === 'sticky';
+      root.style.setProperty(DOCK_HEIGHT_VAR, `${sticky ? Math.ceil(dock.getBoundingClientRect().height) : 0}px`);
+    };
+    publish();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
+    observer?.observe(dock);
+    window.addEventListener('resize', publish);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', publish);
+      root.style.removeProperty(DOCK_HEIGHT_VAR);
+    };
+  }, [dockRef, enabled]);
+}
+
 // ---- Presentational pieces ---------------------------------------------------------
 
 function CoverArt({ url, onNaturalSize }: { url: string | null; onNaturalSize?: (size: string | null) => void }) {
@@ -432,17 +506,22 @@ interface TranscriptListProps {
   onSeek: (seconds: number) => void;
   onUserScroll: () => void;
   listRef: React.RefObject<HTMLOListElement | null>;
+  /** `lang` of the cue texts (the episode's language). */
+  lang?: string;
+  /** Screen-reader suffix of a backchannel cue, in the transcript's language. */
+  reactionLabel: string;
 }
 
 /** Full transcript; re-renders only when the active cue changes. */
 const TranscriptList = memo(function TranscriptList({
-  cues, activeIndex, reactionIndex, names, onSeek, onUserScroll, listRef,
+  cues, activeIndex, reactionIndex, names, onSeek, onUserScroll, listRef, lang, reactionLabel,
 }: TranscriptListProps) {
   let previousSpeech: TranscriptCue | null = null;
   return (
     <ol
       ref={listRef}
       className="radio-player__cues"
+      lang={lang}
       onWheel={onUserScroll}
       onTouchMove={onUserScroll}
       onPointerDown={onUserScroll}
@@ -472,7 +551,7 @@ const TranscriptList = memo(function TranscriptList({
               <span className="radio-player__cue-body">
                 {reaction ? (
                   <span className="radio-player__cue-text">
-                    {name} · {cue.text}<span className="sr-only"> (reaction)</span>
+                    {name} · {cue.text}<span className="sr-only">{reactionLabel}</span>
                   </span>
                 ) : (
                   <>
@@ -497,12 +576,14 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   const {
     src, title, transcript = null, coverUrl = null, hosts, autoPlay = false, initialTime = 0,
     tone = 'light', className, defaultTranscriptOpen = false, episodeKey, parked = false, extraMediaActions,
+    language = null, level = null, deferCover = false,
   } = props;
 
   const uid = useId();
   const transcriptId = `${uid}-transcript`;
   const audioRef = useRef<HTMLAudioElement>(null);
   const waveRef = useRef<HTMLDivElement>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
 
   // Mutable runtime state read by media / DOM callbacks (kept out of React renders).
@@ -543,14 +624,20 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
   const [sliderFocused, setSliderFocused] = useState(false);
   const [ariaHeld, setAriaHeld] = useState<number | null>(null);
   const [coverSize, setCoverSize] = useState<{ for: string | null; size: string | null }>({ for: null, size: null });
+  const [coverArmed, setCoverArmed] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
   const waveWidth = useElementWidth(waveRef);
+  usePublishedDockHeight(dockRef, tone === 'stage');
 
   const transcriptDuration = isNum(transcript?.duration_sec) && transcript.duration_sec > 0 ? transcript.duration_sec : 0;
   const duration = audioDuration > 0 ? audioDuration : transcriptDuration;
 
-  const hostI = resolveHost('interviewer', hosts, transcript);
-  const hostE = resolveHost('expert', hosts, transcript);
+  // Language of the episode: its own `lang` on the content, French role labels for French items.
+  const contentLang = langAttr(language);
+  const french = isFrench(language);
+  const labels = roleLabels(language);
+  const hostI = resolveHost('interviewer', hosts, transcript, labels);
+  const hostE = resolveHost('expert', hosts, transcript, labels);
   const hostByRole: Record<Speaker, RadioHost> = { interviewer: hostI, expert: hostE };
   const nameI = hostI.display_name;
   const nameE = hostE.display_name;
@@ -657,14 +744,18 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     seekTo(currentTimeNow() + delta);
   }, [seekTo, currentTimeNow]);
 
-  /** Error recovery: refresh the source (≤ 1/min) or, on explicit retry, reload it once. */
+  /**
+   * Error recovery: refresh the source — automatically at most once a minute, always on an explicit retry ("Try
+   * again" fetches the episode afresh) — or, without a refresh callback, reload it once.
+   */
   const recover = useCallback(async (manual: boolean) => {
     const a = audioRef.current;
     if (!a || refreshingRef.current) return;
     const gen = srcGenRef.current;
     const resumeAt = lastTimeRef.current;
     const refresh = propsRef.current.onRefreshSource;
-    if (refresh && Date.now() - lastRefreshAtRef.current > REFRESH_MIN_INTERVAL_MS) {
+    const throttled = !manual && Date.now() - lastRefreshAtRef.current <= REFRESH_MIN_INTERVAL_MS;
+    if (refresh && !throttled) {
       lastRefreshAtRef.current = Date.now();
       refreshingRef.current = true;
       recoveringRef.current = true;
@@ -693,7 +784,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     resumeRef.current = null;
     if (!a.paused) a.pause();
     setBuffering(false);
-    setErrorMsg(UNAVAILABLE);
+    setErrorMsg(typeof navigator !== 'undefined' && navigator.onLine === false ? OFFLINE : UNAVAILABLE);
   }, []);
 
   const requestPlay = useCallback(async (): Promise<void> => {
@@ -781,6 +872,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
       setScrubTime(null);
       setAriaHeld(null);
       setRefreshed(null);
+      setCoverArmed(false);
     }
     const a = audioRef.current;
     if (!src) {
@@ -986,6 +1078,16 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     propsRef.current.onStatusChange?.({ state, text: status, speaker: speakerName });
   }, [state, status, speakerName]);
 
+  // Polite status region: state transitions only — never the per-speaker status line, which would talk over the audio.
+  const ended = duration > 0 && time >= duration - 0.5;
+  const announcement = useTransitionAnnouncement(state === 'paused' && ended ? '' : ANNOUNCEMENTS[state] ?? '');
+
+  // With `deferCover` the cover image is requested once the episode has played: the audio gets the bandwidth first.
+  useEffect(() => { if (playing) setCoverArmed(true); }, [playing, episodeKey]);
+  const shownCover = deferCover && !coverArmed ? null : coverUrl;
+  const levelText = levelLabel(level);
+  const languageText = language ? languageName(language) : '';
+
   // ---- Transcript auto-follow --------------------------------------------------------------
   const onCueSeek = useCallback((seconds: number) => {
     seekTo(seconds);
@@ -1142,11 +1244,26 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
         onError={onAudioError}
       />
 
+      {/* Polite status region: loading, reconnecting, autoplay refused, paused. Transitions only (see ANNOUNCEMENTS). */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="radio-announcer">
+        {announcement}
+      </div>
+
       <div className="radio-player__head">
-        <CoverArt url={coverUrl} onNaturalSize={onCoverSize} />
+        <CoverArt url={shownCover} onNaturalSize={onCoverSize} />
         <div className="radio-player__meta">
-          <p className="eyebrow radio-player__eyebrow"><Headphones aria-hidden />Podcast</p>
-          <p className="radio-player__title">{title}</p>
+          <div className="radio-player__tags">
+            <p className="eyebrow radio-player__eyebrow"><Headphones aria-hidden />Podcast</p>
+            {languageText && (
+              <span className="radio-player__lang" data-testid="radio-language">
+                <LanguageName code={language} />
+              </span>
+            )}
+            {levelText && (
+              <Chip className="radio-player__level" data-testid="radio-level" data-level={level ?? undefined}>{levelText}</Chip>
+            )}
+          </div>
+          <p className="radio-player__title" lang={contentLang}>{title}</p>
           <ul className="radio-player__hosts" aria-label="Hosts">
             {ROLES.map((role) => {
               const host = hostByRole[role];
@@ -1166,7 +1283,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
                       {host.display_name}
                       {isSpeaking && <AudioLines className="radio-player__host-icon" aria-hidden />}
                     </span>
-                    <span className="radio-player__host-role">{ROLE_LABEL[role]}</span>
+                    <span className="radio-player__host-role" lang={french ? 'fr' : undefined}>{labels[role]}</span>
                   </span>
                 </li>
               );
@@ -1176,13 +1293,16 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
             {(state === 'buffering' || state === 'refreshing') && <span className="spinner" aria-hidden />}
             {status}
           </p>
+          {state === 'press-play' && (
+            <p className="radio-player__hint" data-testid="radio-hint">Your browser blocked autoplay.</p>
+          )}
         </div>
       </div>
 
       {hasCues && (
         <div className="radio-player__caption">
           {/* Visible captions only: announcing them would talk over the audio (transcript on demand). */}
-          <p className="radio-player__caption-live" aria-live="off" data-testid="radio-caption">
+          <p className="radio-player__caption-live" aria-live="off" lang={contentLang} data-testid="radio-caption">
             {captionCue && (
               <>
                 <span className="radio-player__caption-name">{names[captionCue.speaker]}:</span>
@@ -1196,7 +1316,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
       )}
 
       {/* Seek + transport: one block, the sticky thumb zone of the phone sheet (library.css). */}
-      <div className="radio-player__dock">
+      <div ref={dockRef} className="radio-player__dock">
         <div className="radio-player__seek">
           <div
             ref={waveRef}
@@ -1309,6 +1429,8 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
                 onSeek={onCueSeek}
                 onUserScroll={onUserScroll}
                 listRef={listRef}
+                lang={contentLang}
+                reactionLabel={french ? ' (réaction)' : ' (reaction)'}
               />
             )}
           </div>

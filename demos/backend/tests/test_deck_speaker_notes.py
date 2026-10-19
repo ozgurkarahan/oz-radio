@@ -1,5 +1,6 @@
 """Speaker notes on the Decks present page: admin payload carries cached
-translations; the anonymous payload never carries body, notes or translations."""
+translations; the anonymous payload never carries body, notes or translations
+(only the slide's visible text, as ``text``)."""
 from __future__ import annotations
 
 import copy
@@ -9,7 +10,9 @@ import pytest
 DECK_PUB = "2d7f2a7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 DECK_PRIV = "3e8f2a7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 
-PUBLIC_SLIDE_KEYS = {"index", "title", "image_url"}
+# Anonymous slides gain the visible text (contracts v1.2 §2.2); the admin payload (body, notes, translations) is
+# deliberately unchanged: it has its own `body` and must never gain `text`.
+PUBLIC_SLIDE_KEYS = {"index", "title", "image_url", "text"}
 ADMIN_SLIDE_KEYS = {"index", "title", "image_url", "body", "notes", "translated_notes"}
 
 
@@ -32,7 +35,7 @@ class FakeDeckStore:
         }
         self.saved: list[dict] = []
 
-    def get_presentation(self, pid):
+    def get_presentation(self, pid, strict=False):
         return copy.deepcopy(self.docs.get(pid))
 
     def save_presentation(self, doc):
@@ -57,10 +60,14 @@ def test_anonymous_deck_has_no_notes_body_or_translations(client, easyauth, stor
     for slide in data["slides"]:
         assert set(slide) == PUBLIC_SLIDE_KEYS
         assert "notes" not in slide and "translated_notes" not in slide and "body" not in slide
-    for secret in ("NOTES-0", "NOTES-FR-0", "BODY-0", "translated_notes"):
+    # The body is visible slide text (served as `text`); the speaker notes and their translations never leak.
+    for secret in ("NOTES-0", "NOTES-FR-0", "NOTES-1", "translated_notes", '"notes"', '"body"'):
         assert secret not in r.text
-    assert data["slides"][0] == {"index": 0, "title": "Intro", "image_url": f"/api/slides/{DECK_PUB}/0.png"}
+    assert data["slides"][0] == {"index": 0, "title": "Intro", "image_url": f"/api/slides/{DECK_PUB}/0.png",
+                                 "text": "BODY-0"}
+    assert [s["text"] for s in data["slides"]] == ["BODY-0", "BODY-1", ""]
     assert data["live_demo"] is True and data["published"] is True
+    assert data["audience_level"] is None
 
 
 def test_admin_deck_includes_only_cached_translated_notes(client, easyauth, store):
@@ -68,6 +75,7 @@ def test_admin_deck_includes_only_cached_translated_notes(client, easyauth, stor
     assert r.status_code == 200
     slides = r.json()["slides"]
     assert all(set(s) == ADMIN_SLIDE_KEYS for s in slides)
+    assert all("text" not in s for s in slides)  # the admin payload has `body`, never the public `text`
     assert slides[0]["notes"] == "NOTES-0" and slides[0]["body"] == "BODY-0"
     assert slides[0]["translated_notes"] == {"fr-FR": "NOTES-FR-0"}
     assert slides[1]["translated_notes"] == {}

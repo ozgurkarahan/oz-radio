@@ -277,3 +277,215 @@
     transition: none;
   }
 }
+
+/* ---------- Live demo (visitors) ---------- */
+
+/* No size container on the demo rail: a container would trap the fixed bottom dock below inside the rail. */
+.avatar-rail--demo {
+  container: none;
+}
+
+/* The portrait tile follows the window's height, so Start and the captions stay in view on a short laptop screen. */
+.avatar-rail--demo.avatar-rail--portrait .avatar-rail__stage {
+  max-width: clamp(200px, 32vh, 460px);
+}
+
+.avatar-dock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* In the dock the countdown is the first line of the controls, not a caption under the rail's head. */
+.avatar-dock .avatar-rail__timing {
+  margin-top: 0;
+}
+
+.avatar-rail__warning {
+  color: var(--c-clay-ink);
+  font-weight: 600;
+}
+
+.avatar-rail__warning:empty {
+  display: none;
+}
+
+/* Captions: the words as the avatar says them. The newest lines stay in view; two lines are always reserved (padding and
+   border included), so the controls below never move when the first words appear. */
+.live-captions {
+  --caption-pad: var(--sp-2);
+  min-width: 0;
+}
+
+.live-captions__text {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  min-height: calc(2 * 1.45em + 2 * var(--caption-pad) + 2 * var(--bw));
+  max-height: calc(5 * 1.45em + 2 * var(--caption-pad) + 2 * var(--bw));
+  margin: 0;
+  padding: var(--caption-pad) var(--sp-3);
+  border: var(--bw) solid transparent;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  color: var(--c-ink);
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.live-captions__text:not(:empty) {
+  border-color: var(--c-line);
+  background: var(--c-paper);
+}
+
+.avatar-rail__sound {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--c-clay-50);
+  color: var(--c-clay-ink);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+/* After the presentation: ask, or finish (which frees the avatar for the next visitor). */
+.demo-done {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: var(--bw) solid var(--c-line);
+  border-radius: var(--r-md);
+  background: var(--c-paper);
+}
+
+.demo-done__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  line-height: 1.2;
+}
+
+.demo-done__time {
+  margin: 0;
+}
+
+.demo-done__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* How a live session ended or failed: the cause, then the recording (or the public links) as the way forward. */
+.demo-outcome {
+  scroll-margin-block: var(--sp-4);
+}
+
+.demo-outcome:focus {
+  outline: none;
+}
+
+.demo-outcome:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: 2px;
+}
+
+.demo-outcome__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.demo-outcome__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.demo-outcome__detail {
+  margin: 0;
+  color: var(--c-ink);
+}
+
+.demo-outcome__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+/* Recording titles are long ("Watch … · Language · 3:12"): let them wrap instead of overflowing the card. */
+.demo-outcome__actions .btn,
+.demo-done__actions .btn {
+  height: auto;
+  padding-block: 10px;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.25;
+  text-align: center;
+}
+
+@media (max-width: 960px) {
+  /* Phones: the avatar tile is smaller so the slide, the tile and the dock fit one screen. */
+  .avatar-rail--demo.avatar-rail--portrait .avatar-rail__stage {
+    max-width: 240px;
+  }
+
+  .live-captions {
+    --caption-pad: var(--sp-1);
+  }
+
+  .live-captions__text {
+    max-height: calc(3 * 1.45em + 2 * var(--caption-pad) + 2 * var(--bw));
+  }
+
+  /*
+   * Thumb zone: Start (then Stop), the captions and the questions live in a bar fixed to the bottom of the screen, so
+   * they are reachable without scrolling while the slide above stays readable. presenter.css keeps the page clear of it.
+   */
+  .avatar-rail--demo .avatar-dock {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    gap: var(--sp-1);
+    max-height: 55vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding:
+      var(--sp-2)
+      max(var(--gutter), env(safe-area-inset-right, 0px))
+      calc(var(--sp-2) + env(safe-area-inset-bottom, 0px))
+      max(var(--gutter), env(safe-area-inset-left, 0px));
+    background: var(--c-bg);
+    border-top: var(--bw) solid var(--c-rule);
+  }
+
+  /* The questions sit tight in the bar: no hairline, no extra padding. */
+  .avatar-rail--demo .avatar-dock .raise-hand {
+    gap: var(--sp-1);
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  /* The fixed mini-player sits at the very bottom: the dock rides on top of it. */
+  :root[data-mini-player] .avatar-rail--demo .avatar-dock {
+    bottom: calc(var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: var(--sp-2);
+  }
+
+  .demo-outcome__actions .btn {
+    flex: 1 1 100%;
+  }
+}

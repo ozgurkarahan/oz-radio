@@ -1,9 +1,9 @@
 import {
-  type ComponentProps, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
+  type ComponentProps, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  AudioLines, Captions, Check, ChevronDown, Download, FileText, GraduationCap, Headphones, History, Layers,
+  AudioLines, Captions, Check, ChevronDown, Download, FileText, GraduationCap, Headphones, History,
   MonitorPlay, Music, Package, Plus, RotateCw, Trash2,
 } from 'lucide-react';
 import {
@@ -12,17 +12,23 @@ import {
 } from '../services/podcast';
 import { useAuth } from '../services/auth';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
-import { GateNotice, PublishBadge, PublishToggle } from '../components/AuthGate';
-import { mapRenditionTime, toRadioHosts } from '../components/RadioPlayer';
+import { PublishBadge, PublishToggle } from '../components/AuthGate';
+import { LanguageName, mapRenditionTime, toRadioHosts } from '../components/RadioPlayer';
 import { usePlaybackCommands, usePlaybackSelector, useSuppressMiniPlayer } from '../playback/PlaybackProvider';
 import { PlayerSlot } from '../playback/PlayerSlot';
 import { miniPlayerFocusTarget } from '../playback/MiniPlayer';
-import { invalidate as forgetPrepared } from '../playback/prepare';
+import { invalidate as forgetPrepared, refresh as refetchEpisode } from '../playback/prepare';
 import { type ProgressSnapshot, usePlaybackProgress } from '../playback/progress';
 import { OPENED_HERE, audioSrcOf } from '../playback/types';
 import {
+  LibraryEmpty as PublicEmpty, LibraryListError, LibraryOpenError, actionFailureMessage, describeOpenFailure,
+  type OpenFailure,
+} from '../playback/libraryStates';
+import { VideoProblem, VideoReconnecting, useVideoRecovery } from '../playback/videoRecovery';
+import { prefersListen, usePrefersListen } from '../playback/prefersListen';
+import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner, Tabs,
-  type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, humanizeTitle, languageName, pluralize,
+  type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, humanizeTitle, langAttr, languageName, pluralize,
 } from '../ui';
 import '../styles/pages/library.css';
 
@@ -39,13 +45,11 @@ const MODE_PARAM = 'mode';
 const ROLE_ORDER: Record<string, number> = { interviewer: 0, expert: 1 };
 /** Rows whose playable details are prefetched for a one-tap Listen. */
 const PREFETCH_ROWS = 10;
-/**
- * Touch-first phones: an episode opened without a mode starts in Listen when it has audio, and
- * episode rows lead with Listen (the owner listens with the screen locked; video stops there).
- */
-const PHONE_QUERY = '(hover: none) and (pointer: coarse)';
 /** A bookmark from this many seconds in is offered as "Resume" (earlier, the episode just starts over). */
 const RESUME_FROM_SEC = 3;
+/** Row thumbnail box (16:9 at its desktop width): the reserved space keeps the list from shifting as images arrive. */
+const THUMB_WIDTH = 120;
+const THUMB_HEIGHT = 68;
 
 /** Per-open playback settings of the rendition being mounted. */
 interface Playback {
@@ -85,21 +89,8 @@ function resolveMode(item: LibraryItem, wanted: Mode): Mode {
   return available.includes(wanted) ? wanted : available[0] ?? (isAudioOnly(item) ? 'listen' : 'watch');
 }
 
-function prefersListen(): boolean {
-  return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
-}
-
-function onPhoneQueryChange(listener: () => void): () => void {
-  if (typeof window.matchMedia !== 'function') return () => {};
-  const query = window.matchMedia(PHONE_QUERY);
-  query.addEventListener?.('change', listener);
-  return () => query.removeEventListener?.('change', listener);
-}
-
-/** `prefersListen()` for rendering (library rows, Home episode links); follows input changes (a docked tablet). */
-export function usePrefersListen(): boolean {
-  return useSyncExternalStore(onPhoneQueryChange, prefersListen);
-}
+// Re-exported for existing importers; the helpers live in playback/prefersListen.ts (no page import from Home).
+export { usePrefersListen };
 
 /** The listener's progress on an episode: "Resume · 1:12 left" (a bookmark) or "Played" (heard to the end). */
 function progressChip(saved: ProgressSnapshot | null) {
@@ -142,10 +133,14 @@ export default function PodcastLibraryPage() {
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [playback, setPlayback] = useState<Playback>({ mode: 'watch', start: 0, autoPlay: true });
-  const [error, setError] = useState<string | null>(null);
-  /** A failed open (unknown / unpublished episode); kept apart so a list refresh does not wipe it. */
-  const [openError, setOpenError] = useState<string | null>(null);
+  /** The list request failed (`items` stays what it was: null on the first load). Never the same as an empty list. */
+  const [listError, setListError] = useState<unknown>(null);
+  /** An admin action (publish, delete) failed. */
+  const [actionError, setActionError] = useState<string | null>(null);
+  /** A failed open (unknown / unpublished episode, storage down, offline); kept apart so a list refresh does not wipe it. */
+  const [openError, setOpenError] = useState<(OpenFailure & { mode: Mode }) | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const titleId = useId();
 
   const navigateRef = useRef(navigate);
   const pathRef = useRef(window.location.pathname);
@@ -167,6 +162,8 @@ export default function PodcastLibraryPage() {
   const player = usePlaybackCommands();
   const lastAdvance = usePlaybackSelector((s) => s.lastAdvance);
   const radioItem = usePlaybackSelector((s) => s.current?.item ?? null);
+  /** The radio could not load the episode: the sheet then offers Watch instead. */
+  const radioFailed = usePlaybackSelector((s) => s.radioState === 'error');
   /** Touch phones: every row leads with Listen (title tap and primary button). */
   const listenFirst = usePrefersListen();
 
@@ -186,7 +183,7 @@ export default function PodcastLibraryPage() {
   }, [avatars]);
 
   const hostsFor = (item: LibrarySummary): (HostLike | undefined)[] => {
-    if (item.hosts && item.hosts.length > 0) return toRadioHosts(item.hosts, avatars, item.speaker_names ?? []);
+    if (item.hosts && item.hosts.length > 0) return toRadioHosts(item.hosts, avatars, item.speaker_names ?? [], item.language);
     const named = speakersOf(item)
       .map((name) => avatars.find((a) => a.display_name === name))
       .filter(Boolean) as AvatarInfo[];
@@ -194,13 +191,13 @@ export default function PodcastLibraryPage() {
   };
 
   async function refresh() {
-    setError(null);
+    setListError(null);
+    setActionError(null);
     try {
       const rows = await listLibrary();
       setItems(rows);
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
-      setItems([]);
+    } catch (e: unknown) {
+      setListError(e);
     }
   }
 
@@ -311,12 +308,12 @@ export default function PodcastLibraryPage() {
         // Not in a tap any more: a refused autoplay shows "Press play".
         if (resolveMode(item, requested) === 'listen') player.startEpisode(item, { autoPlay: true });
       },
-      (e: any) => {
+      (e: unknown) => {
         if (requestRef.current !== request) return;
         requestRef.current = null;
         if (queuedOpenRef.current?.id === id) queuedOpenRef.current = null;
         setLoadingId(null);
-        setOpenError(`Failed to open: ${e?.message ?? e}`);
+        setOpenError({ ...describeOpenFailure(e, id, 'episode'), mode: requested });
         leaveEpisodeUrl();
       },
     );
@@ -326,6 +323,21 @@ export default function PodcastLibraryPage() {
     beginLoad(id, wanted, true);
     if (backPendingRef.current) queuedOpenRef.current = { id, mode: wanted };
     else pushEpisodeUrl(id, wanted);
+  }
+
+  /** "Try again" on a failed open: the episode is fetched afresh (never a cached copy). */
+  function retryOpen() {
+    if (!openError) return;
+    const { id, mode: wanted } = openError;
+    setOpenError(null);
+    openEpisode(id, wanted);
+  }
+
+  /** "Back to all episodes": the gone episode's alert goes, focus lands on the list. */
+  function dismissOpenError() {
+    setOpenError(null);
+    const first = document.querySelector<HTMLElement>('.library-list .episode-row__title');
+    (first ?? document.getElementById('main'))?.focus();
   }
 
   // Stable identity: the Modal re-runs its focus handling whenever onClose changes.
@@ -379,6 +391,13 @@ export default function PodcastLibraryPage() {
 
   // The mini-player stays hidden behind any episode dialog (Watch, loading); Listen shows the player itself.
   useSuppressMiniPlayer(!!(selected || loadingId));
+
+  // Watch: one automatic refresh of an expired / failing video link, then "Try again" and "Listen instead".
+  const recovery = useVideoRecovery<LibraryItem>({
+    jobId: selected && mode === 'watch' ? selected.job_id : null,
+    fetchFresh: refetchEpisode,
+    apply: (fresh) => setSelected((prev) => (prev && prev.job_id === fresh.job_id ? fresh : prev)),
+  });
 
   // Keep ?mode= in step with what is shown (fallback rendition, tab switches) without new entries.
   useEffect(() => {
@@ -435,7 +454,8 @@ export default function PodcastLibraryPage() {
     if (mode === 'watch') {
       const wasPlaying = playIntentRef.current;
       const video = videoRef.current;
-      const t = video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      // The video is gone while its failure panel shows ("Listen instead"): continue from where it stopped.
+      const t = video && Number.isFinite(video.currentTime) ? video.currentTime : recovery.lastTime();
       video?.pause();
       const start = Math.max(0, mapRenditionTime(selected.transcript, t, 'video'));
       if (player.getCurrent()?.jobId === selected.job_id) {
@@ -457,8 +477,9 @@ export default function PodcastLibraryPage() {
     }
   }
 
-  const onVideoPlayState = (playing: boolean) => {
+  const onVideoPlayState = (playing: boolean, video: HTMLVideoElement) => {
     if (activeModeRef.current === 'watch') playIntentRef.current = playing;
+    recovery.track(video, playing);
   };
 
   // ---- Admin actions ------------------------------------------------------------------
@@ -469,8 +490,8 @@ export default function PodcastLibraryPage() {
       const published = typeof updated?.published === 'boolean' ? updated.published : next;
       setItems((prev) => prev?.map((i) => (i.job_id === jobId ? { ...i, published } : i)) ?? null);
       setSelected((prev) => (prev && prev.job_id === jobId ? { ...prev, published } : prev));
-    } catch (e: any) {
-      setError(`Publish update failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      setActionError(actionFailureMessage(e, 'Publish update'));
     } finally {
       setPublishing(null);
     }
@@ -485,19 +506,20 @@ export default function PodcastLibraryPage() {
       setItems((prev) => prev?.filter((i) => i.job_id !== jobId) ?? null);
       if (requestRef.current?.id === jobId) closePlayer();
       if (player.getCurrent()?.jobId === jobId) player.stop();
-    } catch (e: any) {
-      setError(`Delete failed: ${e?.message ?? e}`);
+    } catch (e: unknown) {
+      setActionError(actionFailureMessage(e, 'Delete'));
     } finally {
       setDeleting(null);
     }
   }
 
   const title = selected ? humanizeTitle(selected.title) : '';
+  const titleLang = langAttr(selected?.language);
   const audioOnlySelected = !!selected && isAudioOnly(selected);
   const formatText = audioOnlySelected ? 'Audio only' : showTabs ? 'Video + audio' : 'Video';
   const mp4Download = selected ? selected.mp4_url ?? selected.video_url ?? null : null;
-  /** Visitors keep the MP4 download they always had (Watch mode); every other download is admin-only. */
-  const visibleMp4 = mp4Download && (isAdmin || mode === 'watch') ? mp4Download : null;
+  /** Visitors keep the MP4 download they always had (Watch mode); every other download is admin-only. A failing URL is not offered. */
+  const visibleMp4 = mp4Download && (isAdmin || mode === 'watch') && recovery.fault === null ? mp4Download : null;
   const mp3Download = selected ? selected.mp3_url ?? selected.audio_url ?? null : null;
   const adminDownloads = isAdmin && !!selected
     && !!(mp3Download || selected.srt_url || selected.audio_srt_url || selected.scorm_url);
@@ -508,7 +530,6 @@ export default function PodcastLibraryPage() {
   return (
     <div className="container page library library--podcast">
       <PageHeader
-        eyebrow="Library"
         title="Podcasts"
         lead={isAdmin
           ? "All podcasts you've generated. Publish a podcast to make it visible to anonymous visitors."
@@ -521,10 +542,18 @@ export default function PodcastLibraryPage() {
         )}
       />
 
-      {openError && <Alert tone="error" className="library__alert" data-testid="library-open-error">{openError}</Alert>}
-      {error && <Alert tone="error" className="library__alert">{error}</Alert>}
+      {openError && (
+        <LibraryOpenError failure={openError} onRetry={retryOpen} onDismiss={dismissOpenError} backLabel="Back to all episodes" />
+      )}
+      {actionError && <Alert tone="error" className="library__alert">{actionError}</Alert>}
+      {/* A refresh that failed while a list is on screen keeps the list; a first load that failed shows the failure instead of it. */}
+      {listError != null && items !== null && (
+        <LibraryListError error={listError} what="the episodes" onRetry={refresh} library="podcast" withLinks={false} />
+      )}
 
-      {items === null ? (
+      {items === null && listError != null ? (
+        <LibraryListError error={listError} what="the episodes" onRetry={refresh} library="podcast" />
+      ) : items === null ? (
         <div className="library__loading"><Spinner label="Loading podcasts…" /></div>
       ) : items.length === 0 ? (
         <LibraryEmpty isAdmin={isAdmin} />
@@ -580,21 +609,22 @@ export default function PodcastLibraryPage() {
                   onPointerDown={canListen ? () => player.prepare([it.job_id]) : undefined}
                   num={episodeNumber(i + 1)}
                   title={rowTitle}
+                  lang={it.language}
+                  level={toAudienceLevel(it.audience_level)}
                   onOpen={() => openEpisode(it.job_id, titleMode)}
                   meta={[
                     formatDate(it.created_at),
-                    languageName(it.language),
+                    <LanguageName code={it.language} />,
                     speakers.length > 0 ? speakers.join(' & ') : null,
                     it.style ? styleLabel(it.style) : null,
                     audioOnly ? <Chip icon={AudioLines} data-testid="audio-only-chip">Audio only</Chip> : null,
-                    audienceChip(it.audience_level),
                     isAdmin ? <PublishBadge published={it.published} /> : null,
                   ]}
                   kind={KIND}
                   hosts={<HostsMini hosts={hostsFor(it)} label={speakers.join(' and ') || undefined} />}
                   duration={duration(it.duration_sec ?? it.audio_duration_sec)}
                   extra={it.thumbnail_url
-                    ? <img className="library-thumb" src={it.thumbnail_url} alt="" loading="lazy" />
+                    ? <img className="library-thumb" src={it.thumbnail_url} alt="" width={THUMB_WIDTH} height={THUMB_HEIGHT} loading="lazy" decoding="async" />
                     : undefined}
                   actions={(
                     <>
@@ -635,6 +665,7 @@ export default function PodcastLibraryPage() {
         open={!!(selected || loadingId)}
         onClose={closePlayer}
         label={selected ? title : 'Loading podcast'}
+        aria-labelledby={selected && !loadingId ? titleId : undefined}
         variant="stage"
         className={['library-player', 'library-player--podcast', showTabs && 'library-player--tabs'].filter(Boolean).join(' ')}
         data-mode={selected ? mode : undefined}
@@ -666,27 +697,62 @@ export default function PodcastLibraryPage() {
               data-mode={mode}
             >
               {mode === 'listen' ? (
-                // The app's radio (one <audio> for the whole visit) moves in here; closing parks it, still playing.
-                <PlayerSlot />
-              ) : videoSrc ? (
-                <video
-                  key={selected.job_id}
-                  ref={videoRef}
-                  data-testid="library-player"
-                  data-oz-media="video"
-                  src={videoSrc}
-                  controls
-                  autoPlay={playback.autoPlay}
-                  onLoadedMetadata={(e) => {
-                    if (playback.start > 0) {
-                      try { e.currentTarget.currentTime = playback.start; } catch { /* not seekable */ }
-                    }
-                  }}
-                  onPlay={() => onVideoPlayState(true)}
-                  onPause={() => onVideoPlayState(false)}
-                />
+                <>
+                  {/* The app's radio (one <audio> for the whole visit) moves in here; closing parks it, still playing. */}
+                  <PlayerSlot />
+                  {radioFailed && available.includes('watch') && (
+                    <div className="library-player__instead">
+                      <Button size="sm" icon={MonitorPlay} onClick={() => switchMode('watch')} data-testid="watch-instead">
+                        Watch instead
+                      </Button>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="library-player__status">Video unavailable</div>
+                <>
+                  {videoSrc && (
+                    <video
+                      key={`${selected.job_id}:${recovery.generation}`}
+                      ref={videoRef}
+                      hidden={recovery.fault !== null}
+                      data-testid="library-player"
+                      data-oz-media="video"
+                      src={videoSrc}
+                      controls
+                      autoPlay={recovery.resume ? recovery.resume.play : playback.autoPlay}
+                      onLoadedMetadata={(e) => {
+                        const start = recovery.resume?.time ?? playback.start;
+                        if (start > 0) {
+                          try { e.currentTarget.currentTime = start; } catch { /* not seekable */ }
+                        }
+                      }}
+                      onPlay={(e) => onVideoPlayState(true, e.currentTarget)}
+                      onPause={(e) => onVideoPlayState(false, e.currentTarget)}
+                      onTimeUpdate={(e) => recovery.track(e.currentTarget)}
+                      onError={recovery.onError}
+                    >
+                      {/* Captions are burned into the picture: the track is there for assistive technology and is never `default`. */}
+                      {selected.captions_vtt_url && (
+                        <track
+                          kind="captions"
+                          src={selected.captions_vtt_url}
+                          srcLang={langAttr(selected.language)}
+                          label={languageName(selected.language)}
+                          data-testid="video-captions"
+                        />
+                      )}
+                    </video>
+                  )}
+                  {/* The video stays mounted (hidden) under these: a failed one is replaced by a fresh element on the next refresh. */}
+                  {recovery.fault === 'refreshing' && <VideoReconnecting />}
+                  {recovery.fault !== 'refreshing' && (!videoSrc || recovery.fault === 'failed') && (
+                    <VideoProblem
+                      kind={videoSrc ? 'failed' : 'unavailable'}
+                      onRetry={recovery.retry}
+                      instead={available.includes('listen') ? { label: 'Listen instead', onClick: () => switchMode('listen') } : undefined}
+                    />
+                  )}
+                </>
               )}
             </div>
             <div className="library-player__info">
@@ -694,14 +760,20 @@ export default function PodcastLibraryPage() {
                 <div className="eyebrow library-player__eyebrow"><Headphones aria-hidden />Podcast</div>
               )}
               {/* In Listen mode the radio player already shows the title: keep the heading for screen readers only. */}
-              <h2 className={['library-player__title', mode === 'listen' && 'sr-only'].filter(Boolean).join(' ')}>{title}</h2>
+              <h2
+                id={titleId}
+                lang={titleLang}
+                className={['library-player__title', mode === 'listen' && 'sr-only'].filter(Boolean).join(' ')}
+              >
+                {title}
+              </h2>
               {selected.document_title && selected.document_title !== selected.title && (
                 <p className="library-player__source">Source: {selected.document_title}</p>
               )}
               <div className="library-player__meta">
                 <span>{formatDate(selected.created_at)}</span>
                 <span>{duration(selectedDuration)}</span>
-                <span>{languageName(selected.language)}</span>
+                <LanguageName code={selected.language} />
                 {selected.style && <span>{styleLabel(selected.style)}</span>}
                 <Chip icon={audioOnlySelected ? AudioLines : MonitorPlay} data-testid="format-chip">{formatText}</Chip>
                 {audienceChip(selected.audience_level)}
@@ -748,18 +820,9 @@ export default function PodcastLibraryPage() {
 function LibraryEmpty({ isAdmin }: { isAdmin: boolean }) {
   if (!isAdmin) {
     return (
-      <EmptyState
-        icon={Headphones}
-        title="No published podcasts yet"
-        action={(
-          <div className="library__empty-actions">
-            <GateNotice action="create your own podcast" />
-            <ButtonLink to="/decks" icon={Layers}>Browse decks</ButtonLink>
-          </div>
-        )}
-      >
-        Check back later — podcasts appear here once a demo user publishes them.
-      </EmptyState>
+      <PublicEmpty icon={Headphones} title="No episodes are published yet" library="podcast">
+        Episodes appear here as soon as they are published. In the meantime:
+      </PublicEmpty>
     );
   }
   return (

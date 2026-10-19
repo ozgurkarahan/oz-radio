@@ -378,7 +378,7 @@ function SetupPhase(p: SetupProps) {
               {AUDIENCE_LEVELS.map((lvl) => <option key={lvl} value={lvl}>{AUDIENCE_LEVEL_LABELS[lvl]}</option>)}
             </Select>
           </Field>
-          <Field label={<>Turns <span className="pc-range-value tabular">{p.numTurns}</span></>} hint="Between 4 and 16 exchanges.">
+          <Field label={<>Turns <span className="pc-range-value tabular">{p.numTurns}</span></>} hint="Between 4 and 16 exchanges. Practitioner and Expert episodes add turns so each slide gets covered.">
             <input
               type="range" min={4} max={16} value={p.numTurns}
               className="pc-range"

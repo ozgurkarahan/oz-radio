@@ -6,7 +6,10 @@ Hybrid exposure model:
   client-supplied copies of these headers, so they are only trusted in this mode.
   A caller is *admin* when the principal's tenant equals ``AUTH_TENANT_ID`` and
   its object id is listed in ``ALLOWED_OBJECT_IDS``.
-- ``AUTH_MODE=disabled``: local development only — every caller is admin.
+- ``AUTH_MODE=disabled``: local development only — every caller is admin. It is never
+  honoured on Azure Container Apps (``CONTAINER_APP_NAME`` or ``CONTAINER_APP_REVISION``
+  set, which the platform does on every replica): ``easyauth`` is enforced there and a
+  CRITICAL line is logged once per process. There is no override.
 
 Settings are read from the environment on every call so that tests (and a
 config reload) never see stale values.
@@ -18,6 +21,7 @@ import binascii
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -44,9 +48,48 @@ LOCAL_DEV_USER = "local-dev"
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+# Azure Container Apps sets both on every replica; either one means "running on Azure".
+_CONTAINER_APPS_MARKERS = ("CONTAINER_APP_NAME", "CONTAINER_APP_REVISION")
+
+_refusal_lock = threading.Lock()
+_refusal_logged = False
+
+
+def _on_container_apps() -> bool:
+    return any(os.environ.get(name) for name in _CONTAINER_APPS_MARKERS)
+
+
+def _log_disabled_refused_once() -> None:
+    global _refusal_logged
+    if _refusal_logged:
+        return
+    with _refusal_lock:
+        if _refusal_logged:
+            return
+        _refusal_logged = True
+    log.critical(
+        "AUTH_MODE=disabled was refused: this process runs on Azure Container Apps "
+        "(CONTAINER_APP_NAME / CONTAINER_APP_REVISION is set), where it would make every "
+        "caller an admin. The backend keeps trusting only Easy Auth principals. Remove "
+        "AUTH_MODE=disabled from the app's environment; to test production as an admin use "
+        "Entra bearer tokens (AUTH_EXTRA_CLIENT_APPS)."
+    )
+
+
 def auth_mode() -> str:
-    mode = (os.environ.get("AUTH_MODE") or "easyauth").strip().lower()
-    return "disabled" if mode == "disabled" else "easyauth"
+    """Effective auth mode: ``easyauth`` or ``disabled``.
+
+    ``disabled`` (every caller is admin) is for local development only. On Azure
+    Container Apps it is refused: ``easyauth`` is returned whatever ``AUTH_MODE`` says
+    and a CRITICAL line is logged once. There is deliberately no flag to override this.
+    """
+    requested = (os.environ.get("AUTH_MODE") or "easyauth").strip().lower()
+    if requested != "disabled":
+        return "easyauth"
+    if _on_container_apps():
+        _log_disabled_refused_once()
+        return "easyauth"
+    return "disabled"
 
 
 def tenant_id() -> str:
@@ -61,13 +104,14 @@ def allowed_object_ids() -> frozenset[str]:
 def log_startup_warnings() -> None:
     """Emit loud warnings for insecure / incomplete auth configuration."""
     if auth_mode() == "disabled":
+        # Never reached on Azure Container Apps: auth_mode() refuses "disabled" there.
         log.warning(
             "AUTH_MODE=disabled — every caller is treated as admin. "
             "Use this for local development only."
         )
         return
     if not tenant_id():
-        log.error("AUTH_MODE=easyauth but AUTH_TENANT_ID is not set — nobody can be admin.")
+        log.error("Easy Auth is enforced but AUTH_TENANT_ID is not set — nobody can be admin.")
     if not allowed_object_ids():
         log.warning("ALLOWED_OBJECT_IDS is empty — nobody is admin; only anonymous routes work.")
 

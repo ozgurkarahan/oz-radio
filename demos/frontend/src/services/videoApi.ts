@@ -89,8 +89,9 @@ export interface VideoJob {
 }
 
 // Anonymous visitors receive a reduced public DTO (job_id, title, created_at,
-// duration_sec, language, thumbnail_url, video_url) — every other field may be
-// missing or null, so the UI must tolerate absence.
+// duration_sec, language, audience_level, source_deck_id, captions_vtt_url,
+// thumbnail_url, video_url) — every other field may be missing or null, so the
+// UI must tolerate absence.
 export interface LibrarySummary {
   job_id: string;
   title: string;
@@ -101,8 +102,12 @@ export interface LibrarySummary {
   thumbnail_url: string | null;
   duration_sec: number | null;
   slide_count?: number | null;
-  /** Admins only (absent from the anonymous public DTO). */
+  /** Present in the public DTO too (contracts v1); null when the manifest does not know it. */
   audience_level?: AudienceLevel | null;
+  /** Deck the video was rendered from, when the manifest knows it (null today for every item). */
+  source_deck_id?: string | null;
+  /** Same-origin WebVTT (`/api/video/library/{id}/captions.vtt`); null when the manifest has no subtitles. */
+  captions_vtt_url?: string | null;
   /** Present for admins only. */
   published?: boolean;
 }

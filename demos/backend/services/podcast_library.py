@@ -22,6 +22,12 @@ soundtrack MP3, video SRT) are still read. Writers (``set_published``,
 readers get ``normalize_manifest``, which fills the fields v1 lacks without
 ever persisting them. Only ``podcast-library/job-*/`` is listed or deleted
 (the listener cache lives under another prefix).
+
+Public reads (contracts v1.2 §2): thumbnails and covers are signed with one
+window per 10-minute bucket (stable URLs for the browser cache); media keeps
+per-request 15-minute SAS URLs. ``strict`` reads tell "storage is failing"
+(``LibraryUnavailable``) from "nothing there", and the connection is retried
+(at most every 30 s) instead of staying dead after one failed start-up.
 """
 from __future__ import annotations
 
@@ -32,11 +38,14 @@ import math
 import re
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, get_args
+from typing import Callable, Optional, get_args
 
+from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import (
     BlobSasPermissions,
@@ -46,16 +55,23 @@ from azure.storage.blob import (
 )
 
 from config import AzureConfig
+from services.demo_protocol import CAPTIONS_VTT_MAX_SOURCE_BYTES
 from services.podcast_media import LISTENER_MODES, public_audio_enabled
 from services.podcast_media import LibraryFiles as MediaLibraryFiles
 from services.podcast_models import (
     AudioKind,
+    CaptionsSource,
+    LibraryUnavailable,
     PodcastFormat,
     PodcastHost,
+    SasWindow,
     Transcript,
     audience_level_or_none,
     podcast_format_or_default,
+    sas_bucket_window,
+    source_deck_id_or_none,
 )
+from services.storage import INIT_RETRY_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +112,10 @@ def _manifest_blob(job_id: str) -> str:
     return f"{LIBRARY_PREFIX}/{job_id}/{MANIFEST_NAME}"
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 @dataclass
 class LibraryFiles:
     """Legacy (v1) deliverables of a render: the MP4, its soundtrack MP3 and the video-timed SRT.
@@ -123,24 +143,67 @@ class LibraryFiles:
 
 
 class PodcastLibrary:
-    """Publishes and lists rendered podcasts in blob storage."""
+    """Publishes and lists rendered podcasts in blob storage.
 
-    def __init__(self, config: AzureConfig) -> None:
+    The connection is lazy and not sticky: a configured storage that failed to come up is retried at most every
+    ``INIT_RETRY_SECONDS``. ``list``/``get`` swallow storage failures (``[]``/``None``) unless ``strict=True``, which
+    raises ``LibraryUnavailable`` instead — the public routes use it so that "storage is down" never reads as
+    "nothing published".
+    """
+
+    def __init__(
+        self,
+        config: AzureConfig,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        utcnow: Callable[[], datetime] = _utcnow,
+    ) -> None:
         self._config = config
         self._blob: Optional[BlobServiceClient] = None
         self._account_name: Optional[str] = None
         self._credential: Optional[DefaultAzureCredential] = None
         self._udk = None
+        self._udk_start: Optional[datetime] = None
         self._udk_expiry: Optional[datetime] = None
         self._initialised = False
+        self._clock = clock
+        self._utcnow = utcnow
+        self._init_lock = threading.Lock()
+        self._init_attempted_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Init
     # ------------------------------------------------------------------
+    @property
+    def configured(self) -> bool:
+        """True when a blob account or connection string is set: a library that cannot connect is then failing,
+        not empty."""
+        cfg = self._config
+        return bool(cfg.blob_account_name) or bool(cfg.blob_connection_string)
+
+    def _retry_due(self) -> bool:
+        attempted = self._init_attempted_at
+        return (attempted is not None and self._blob is None and self.configured
+                and self._clock() - attempted >= INIT_RETRY_SECONDS)
+
     def _ensure_init(self) -> bool:
-        if self._initialised:
+        if self._initialised and not self._retry_due():
             return self._blob is not None
-        self._initialised = True
+        # The very first init blocks concurrent callers (they need its answer); a retry is attempted by one thread
+        # only, the others answer from the current state instead of queueing behind a slow connect.
+        first = not self._initialised
+        if not self._init_lock.acquire(blocking=first):
+            return self._blob is not None
+        try:
+            if self._initialised and not self._retry_due():
+                return self._blob is not None
+            self._attempt_init()
+            return self._blob is not None
+        finally:
+            self._init_lock.release()
+
+    def _attempt_init(self) -> None:
+        self._init_attempted_at = self._clock()
         try:
             if self._config.use_managed_identity and self._config.blob_account_name:
                 cred = DefaultAzureCredential()
@@ -165,7 +228,8 @@ class PodcastLibrary:
         except Exception as exc:  # noqa: BLE001
             logger.warning("PodcastLibrary init failed: %s", exc)
             self._blob = None
-        return self._blob is not None
+        finally:
+            self._initialised = True
 
     @property
     def available(self) -> bool:
@@ -354,27 +418,42 @@ class PodcastLibrary:
     # ------------------------------------------------------------------
     # List / get
     # ------------------------------------------------------------------
-    def list(self, *, published_only: bool = False) -> list[dict]:
+    def list(self, *, published_only: bool = False, strict: bool = False) -> list[dict]:
         """Return normalized summaries of archived items, with a thumbnail SAS only.
 
         The full-media SAS URLs are generated by `get()` when a user opens
         a specific item — that keeps listing cheap and limits token exposure.
-        ``published_only`` is the anonymous view: published items only,
-        15-minute thumbnails, and — unless ``PODCAST_PUBLIC_AUDIO`` is on — no
-        audio-only items and no audio facts or host names.
+        ``published_only`` is the anonymous view: published items only, a
+        thumbnail URL shared by every caller of the current 10-minute bucket
+        (so the browser cache hits), and — unless ``PODCAST_PUBLIC_AUDIO`` is
+        on — no audio-only items and no audio facts or host names.
+
+        ``strict=True`` raises ``LibraryUnavailable`` when storage is
+        configured but failing (it did not connect, the listing or a manifest
+        read failed); ``[]`` is then only ever "nothing published" (or
+        "storage not configured"). The lenient default answers ``[]``.
         """
         if not self._ensure_init():
+            if strict and self.configured:
+                raise LibraryUnavailable("Podcast library storage is not available")
             return []
         assert self._blob is not None
         container = self._blob.get_container_client(self._config.blob_container)
-        minutes = PUBLIC_SAS_MINUTES if published_only else DEFAULT_SAS_MINUTES
+        lifetime: int | SasWindow = (
+            sas_bucket_window(self._utcnow()) if published_only else DEFAULT_SAS_MINUTES
+        )
         audio_public = public_audio_enabled()
         items: list[dict] = []
         try:
             for blob in container.list_blobs(name_starts_with=f"{LIBRARY_PREFIX}/job-"):
                 if not blob.name.endswith(f"/{MANIFEST_NAME}"):
                     continue
-                raw = self._read_json_blob(blob.name)
+                try:
+                    raw = self._read_json_blob(blob.name)
+                except LibraryUnavailable:
+                    if strict:
+                        raise
+                    continue
                 if not isinstance(raw, dict) or not valid_job_id(raw.get("job_id")) \
                         or blob.name != _manifest_blob(raw["job_id"]):
                     continue
@@ -392,38 +471,56 @@ class PodcastLibrary:
                     "language": m.get("language"),
                     "style": m.get("style"),
                     "audience_level": m["audience_level"],
+                    "source_deck_id": m["source_deck_id"],
                     "speaker_names": m["speaker_names"],
                     "turn_count": m["turn_count"],
-                    "thumbnail_url": self._sign(m["thumbnail_blob"], minutes),
+                    "thumbnail_url": self._sign(m["thumbnail_blob"], lifetime),
                     "published": m["published"],
                     "format": m["format"],
                     "has_video": m["has_video"],
                     "has_audio": m["has_audio"],
+                    "has_captions": m["has_captions"],
                     "audio_duration_sec": m["audio_duration_sec"],
                     "hosts": m["hosts"],
                 })
+        except LibraryUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Library list failed: %s", exc)
+            if strict:
+                raise LibraryUnavailable("Podcast library listing failed") from exc
             return []
         # newest first
         items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
         return items
 
-    def _raw_manifest(self, job_id: str) -> Optional[dict]:
-        """The stored manifest exactly as written — for writers only (readers normalize)."""
-        if not valid_job_id(job_id) or not self._ensure_init():
+    def _raw_manifest(self, job_id: str, *, strict: bool = False) -> Optional[dict]:
+        """The stored manifest exactly as written — for writers only (readers normalize).
+
+        ``None`` when the item does not exist; with ``strict`` a storage failure raises ``LibraryUnavailable``
+        instead (it also reads as ``None`` otherwise)."""
+        if not valid_job_id(job_id):
             return None
-        m = self._read_json_blob(_manifest_blob(job_id))
+        if not self._ensure_init():
+            if strict and self.configured:
+                raise LibraryUnavailable("Podcast library storage is not available")
+            return None
+        try:
+            m = self._read_json_blob(_manifest_blob(job_id))
+        except LibraryUnavailable:
+            if strict:
+                raise
+            return None
         if not isinstance(m, dict) or m.get("job_id") != job_id:
             return None
         return m
 
-    def _manifest(self, job_id: str) -> Optional[dict]:
+    def _manifest(self, job_id: str, *, strict: bool = False) -> Optional[dict]:
         """Normalized (reader) copy of the stored manifest."""
-        raw = self._raw_manifest(job_id)
+        raw = self._raw_manifest(job_id, strict=strict)
         return normalize_manifest(raw) if raw is not None else None
 
-    def get(self, job_id: str, *, public: bool = False) -> Optional[dict]:
+    def get(self, job_id: str, *, public: bool = False, strict: bool = False) -> Optional[dict]:
         """Return a normalized item with fresh SAS URLs and the inline transcript.
 
         Admin (default): 24-hour SAS for every rendition present (``mp4_url``,
@@ -432,14 +529,19 @@ class PodcastLibrary:
         (``transcript.json``, else derived from an audio-aligned SRT; None when
         unavailable).
 
-        ``public=True`` returns published items only, with 15-minute SAS URLs
-        for the video and thumbnail. The audio (``mp3_url``/``audio_url``),
-        cover, hosts, speaker names and transcript are included only when
-        ``PODCAST_PUBLIC_AUDIO`` is on; otherwise audio-only items return None
-        and ``has_audio`` reads False. ``srt_url``, ``audio_srt_url`` and
-        ``scorm_url`` are never minted publicly.
+        ``public=True`` returns published items only. The video and audio get
+        per-request 15-minute SAS URLs; the thumbnail and cover share the
+        current 10-minute bucket's URL (browser cache). The audio
+        (``mp3_url``/``audio_url``), cover, hosts, speaker names and
+        transcript are included only when ``PODCAST_PUBLIC_AUDIO`` is on;
+        otherwise audio-only items return None and ``has_audio`` reads False.
+        ``srt_url``, ``audio_srt_url`` and ``scorm_url`` are never minted
+        publicly.
+
+        ``strict=True``: a storage failure raises ``LibraryUnavailable``
+        instead of reading as "no such item" (``None``).
         """
-        m = self._manifest(job_id)
+        m = self._manifest(job_id, strict=strict)
         if not m:
             return None
         if public:
@@ -449,12 +551,13 @@ class PodcastLibrary:
             if not _publicly_visible(m, audio_public):
                 return None
             _apply_public_audio_policy(m, audio_public)
+            window = sas_bucket_window(self._utcnow())
             m["mp4_url"] = self._sign(m["video_blob"], PUBLIC_SAS_MINUTES)
-            m["thumbnail_url"] = self._sign(m["thumbnail_blob"], PUBLIC_SAS_MINUTES)
+            m["thumbnail_url"] = self._sign(m["thumbnail_blob"], window)
             m["srt_url"] = m["audio_srt_url"] = m["scorm_url"] = None
             if audio_public:
                 m["mp3_url"] = self._sign(m["audio_blob"], PUBLIC_SAS_MINUTES)
-                m["cover_url"] = self._sign(m["cover_blob"], PUBLIC_SAS_MINUTES)
+                m["cover_url"] = self._sign(m["cover_blob"], window)
                 m["transcript"] = self._inline_transcript(m)
             else:
                 m["mp3_url"] = m["cover_url"] = m["transcript"] = None
@@ -470,6 +573,26 @@ class PodcastLibrary:
         m["scorm_url"] = self._sign(m["scorm_blob"], DEFAULT_SAS_MINUTES)
         m["transcript"] = self._inline_transcript(m)
         return m
+
+    def captions_source(self, job_id: str, *, public: bool = False) -> Optional[CaptionsSource]:
+        """The video-timed SRT of an item, for the ``captions.vtt`` route.
+
+        ``None`` when the item does not exist or the caller may not see it: with ``public=True`` (anonymous callers)
+        that is every unpublished item and every item the public ``get`` would hide (audio-only without
+        ``PODCAST_PUBLIC_AUDIO``). Otherwise a ``CaptionsSource`` whose ``text`` is None when the item has no
+        usable captions: no video rendition (an audio-only item's transcript is inline), no subtitle blob, a blob
+        that is missing or larger than ``CAPTIONS_VTT_MAX_SOURCE_BYTES``. Only the item's own ``subtitles.srt`` is
+        ever read, whatever the manifest says. Raises ``LibraryUnavailable`` when storage fails.
+        """
+        m = self._manifest(job_id, strict=True)
+        if not m:
+            return None
+        if public and not _publicly_visible(m, public_audio_enabled()):
+            return None
+        text = None
+        if m["has_video"] and m["subtitle_blob"] == f"{LIBRARY_PREFIX}/{job_id}/{SUBTITLE_NAME}":
+            text = self._read_text_blob(m["subtitle_blob"], max_bytes=CAPTIONS_VTT_MAX_SOURCE_BYTES)
+        return CaptionsSource(text=text, published=m["published"])
 
     def _inline_transcript(self, m: dict) -> Optional[dict]:
         """``transcript.json`` as a plain ``Transcript`` dict (None if missing or corrupt).
@@ -564,47 +687,77 @@ class PodcastLibrary:
     # Helpers
     # ------------------------------------------------------------------
     def _read_json_blob(self, blob_name: str) -> Optional[dict]:
+        """The JSON document stored in a blob; None when it is absent or not valid JSON.
+
+        A storage failure raises ``LibraryUnavailable``: callers decide whether it reads as "absent" (lenient) or
+        propagates (``strict``)."""
         assert self._blob is not None
         try:
             c = self._blob.get_blob_client(
                 container=self._config.blob_container, blob=blob_name
             )
             raw = c.download_blob().readall()
+        except ResourceNotFoundError:
+            return None
+        except Exception as exc:  # noqa: BLE001
+            raise LibraryUnavailable(f"Reading {blob_name} failed ({type(exc).__name__})") from exc
+        try:
             return json.loads(raw)
-        except Exception:
+        except (ValueError, RecursionError):
             return None
 
-    def _read_text_blob(self, blob_name: str) -> Optional[str]:
-        """UTF-8 text of a blob, or None on any failure."""
+    def _read_text_blob(self, blob_name: str, *, max_bytes: Optional[int] = None) -> Optional[str]:
+        """UTF-8 text of a blob; None when it is absent or larger than ``max_bytes``.
+
+        A storage failure raises ``LibraryUnavailable``."""
         try:
             c = self._blob.get_blob_client(  # type: ignore[union-attr]
                 container=self._config.blob_container, blob=blob_name
             )
-            raw = c.download_blob().readall()
-            return raw if isinstance(raw, str) else bytes(raw).decode("utf-8-sig", errors="replace")
-        except Exception:
+            stream = c.download_blob()
+            size = getattr(stream, "size", None)
+            if max_bytes is not None and isinstance(size, int) and size > max_bytes:
+                return None
+            raw = stream.readall()
+        except ResourceNotFoundError:
             return None
+        except Exception as exc:  # noqa: BLE001
+            raise LibraryUnavailable(f"Reading {blob_name} failed ({type(exc).__name__})") from exc
+        if isinstance(raw, str):
+            return raw if max_bytes is None or len(raw.encode("utf-8")) <= max_bytes else None
+        data = bytes(raw)
+        if max_bytes is not None and len(data) > max_bytes:
+            return None
+        return data.decode("utf-8-sig", errors="replace")
 
-    def _sign(self, blob_name: object, minutes: int) -> Optional[str]:
+    def _sign(self, blob_name: object, lifetime: int | SasWindow) -> Optional[str]:
         """SAS URL for a manifest blob name; absent blobs are never signed."""
         if not isinstance(blob_name, str) or not blob_name:
             return None
-        return self._sas(blob_name, minutes)
+        return self._sas(blob_name, lifetime)
 
-    def _sas(self, blob_name: Optional[str], minutes: int = DEFAULT_SAS_MINUTES) -> Optional[str]:
-        """Generate a blob-scoped read-only SAS URL valid for ``minutes``, or None."""
+    def _sas(self, blob_name: Optional[str], lifetime: int | SasWindow = DEFAULT_SAS_MINUTES) -> Optional[str]:
+        """Generate a blob-scoped read-only SAS URL, or None.
+
+        ``lifetime`` is a number of minutes from now (a per-request URL) or a ``SasWindow`` (the fixed window shared
+        by the public thumbnails and covers)."""
         if not blob_name or not self._blob or not self._account_name:
             return None
         try:
             client = self._blob.get_blob_client(
                 container=self._config.blob_container, blob=blob_name
             )
-            now = datetime.now(timezone.utc)
-            start = now - timedelta(minutes=5)
-            expiry = now + timedelta(minutes=minutes)
+            now = self._utcnow()
+            if isinstance(lifetime, SasWindow):
+                start, expiry = lifetime.start, lifetime.expiry
+            else:
+                start = now - timedelta(minutes=5)
+                expiry = now + timedelta(minutes=lifetime)
 
             if self._credential:
-                udk = self._get_udk(start, now + timedelta(hours=24))
+                # One key serves every window: it starts before the earliest start signed with it (the current
+                # bucket's), so a window never needs a key that begins after it.
+                udk = self._get_udk(min(start, sas_bucket_window(now).start), now + timedelta(hours=24))
                 if not udk:
                     return None
                 token = generate_blob_sas(
@@ -631,16 +784,19 @@ class PodcastLibrary:
             return None
 
     def _get_udk(self, start: datetime, expiry: datetime):
-        from datetime import timedelta
-        now = datetime.now(timezone.utc)
-        if (self._udk and self._udk_expiry
-                and now < self._udk_expiry - timedelta(hours=1)):
+        """A user delegation key valid from ``start`` until ``expiry`` (cached).
+
+        The cached key is reused while it starts no later than ``start`` and has more than an hour left; a request
+        that starts before it gets a new key, so the key always covers the SAS signed with it."""
+        now = self._utcnow()
+        if (self._udk and self._udk_start and self._udk_expiry
+                and self._udk_start <= start and now < self._udk_expiry - timedelta(hours=1)):
             return self._udk
         try:
             self._udk = self._blob.get_user_delegation_key(  # type: ignore[union-attr]
                 key_start_time=start, key_expiry_time=expiry,
             )
-            self._udk_expiry = expiry
+            self._udk_start, self._udk_expiry = start, expiry
             return self._udk
         except Exception as exc:  # noqa: BLE001
             logger.warning("User delegation key failed: %s", exc)
@@ -663,12 +819,15 @@ def normalize_manifest(raw: dict) -> dict:
     m = copy.deepcopy(raw)
     m["published"] = raw.get("published") is True
     m["audience_level"] = audience_level_or_none(raw.get("audience_level"))
+    m["source_deck_id"] = source_deck_id_or_none(raw.get("source_deck_id"))
     for key in BLOB_KEYS:
         value = raw.get(key)
         m[key] = value if isinstance(value, str) and value else None
     m["format"] = podcast_format_or_default(raw.get("format"))
     m["has_video"] = m["video_blob"] is not None
     m["has_audio"] = m["audio_blob"] is not None
+    # Captions of the video rendition (``captions.vtt``): audio-only items carry their transcript inline instead.
+    m["has_captions"] = m["has_video"] and m["subtitle_blob"] is not None
     kind = raw.get("audio_kind")
     m["audio_kind"] = kind if isinstance(kind, str) and kind in AUDIO_KINDS else "soundtrack"
     names = raw.get("speaker_names")

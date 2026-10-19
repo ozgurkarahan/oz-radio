@@ -13,6 +13,8 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* The sticky masthead covers the top of the viewport: keep focus and anchors clear of it (WCAG 2.4.11). */
+  scroll-padding-top: calc(var(--masthead-h) + var(--bw) + env(safe-area-inset-top, 0px) + var(--sp-2));
 }
 
 body {
@@ -179,6 +181,14 @@ h2 em {
   letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
   color: var(--c-muted);
+}
+
+/* An eyebrow that is a sentence rather than a label (PageHeader sets it): sentence case, no tracking. */
+.eyebrow--sentence {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .muted {

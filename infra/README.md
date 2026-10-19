@@ -9,7 +9,7 @@
 |---|---|
 | User-assigned managed identity `id-*` | Created first; used for ACR pull and every data-plane call (`AZURE_CLIENT_ID`). |
 | Container Registry `cr*` | Admin user disabled; the identity has `AcrPull`. |
-| Container Apps environment + app `ca-*` | Scale 0–1 replicas, Easy Auth (Microsoft Entra ID) in hybrid mode. |
+| Container Apps environment + app `ca-*` | Scale 0–1 replicas (`MIN_REPLICAS`, default 0 = scale to zero), Easy Auth (Microsoft Entra ID) in hybrid mode. |
 | Azure OpenAI `oai-*` | Local (key) auth disabled. |
 | Azure AI Services `ais-*` (Speech/Avatar) | Skipped when an external resource is used. Local auth disabled. |
 | Cosmos DB (serverless) | Local (key) auth disabled; RBAC data contributor for the identity. |
@@ -39,12 +39,19 @@ For a throw-away, public, read-only demo only, `azd env set ALLOW_INSECURE_NO_AU
 skips the check (loud warning). Easy Auth is then not configured and the admin
 allowlist is forced empty, so nobody can act as admin.
 
+Never run production with `AUTH_MODE=disabled` (every caller would be admin). Bicep
+hard-codes `AUTH_MODE=easyauth`, the backend refuses `disabled` on Azure Container Apps
+(it enforces Easy Auth and logs one `CRITICAL` line), and the hook stops when the azd
+environment has `AUTH_MODE=disabled`. To test production as an admin, use Entra bearer
+tokens through `AUTH_EXTRA_CLIENT_APPS`:
+[`docs/provisioning.md` §3.1](../docs/provisioning.md#31-admin-tests-against-production).
+
 ## Optional settings (azd env)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ALLOWED_ORIGINS` | empty | Extra CORS / WebSocket origins (comma-separated); same-origin is always allowed. |
-| `AUTH_EXTRA_CLIENT_APPS` | empty | Extra client application IDs allowed to call the app with bearer tokens (e.g. Azure CLI `04b07795-8ddb-461a-bbee-02f9e1bf7b46` for scripted tests, which also needs pre-authorization on the app registration). Empty = only the app itself. |
+| `AUTH_EXTRA_CLIENT_APPS` | empty | Extra client application IDs allowed to call the app with bearer tokens (e.g. Azure CLI `04b07795-8ddb-461a-bbee-02f9e1bf7b46` for scripted tests, which also needs pre-authorization on the app registration). Empty = only the app itself. This is how admin tests run against production, never with `AUTH_MODE=disabled`: see [`docs/provisioning.md` §3.1](../docs/provisioning.md#31-admin-tests-against-production). |
 | `CUSTOM_AVATARS_JSON` | empty | JSON array of custom photo avatars (`id`, `character`, `display_name`, `gender`, `thumbnail`, `default`, `kind`, optional `podcast_crop`). Thumbnails must exist in `demos/backend/static/avatars/` at build time. Photo avatars need the Speech resource that hosts them (`USE_EXTERNAL_AI_SERVICES`). See [`docs/provisioning.md` §4.1](../docs/provisioning.md#41-custom-photo-avatars-optional). |
 | `HIDE_STOCK_AVATARS` | `false` | When `true` **and** at least one custom avatar is configured, the stock avatars are hidden from every picker/catalog; stock ids still resolve, as aliases to a same-gender custom avatar. Ignored when `CUSTOM_AVATARS_JSON` is empty. |
 | `ENABLE_URL_INGEST` | `false` | Allow podcast URL ingestion. |
@@ -56,7 +63,7 @@ allowlist is forced empty, so nobody can act as admin.
 | `PODCAST_REACTIONS` | `false` | Kill switch for listener backchannels ("mm-hmm", "right", …) in new renders, video and audio alike. A render's `reactions` option only takes effect when this is `true`. Existing episodes are not changed. |
 | `PODCAST_LISTENER_MODE` | `auto` | How the non-speaking host is drawn in video podcasts: `auto` / `idle_loop` (cached silent "listening" loop when available, else a procedural sway), `procedural` (sway on a still frame) or `still`. `procedural` and `still` skip listener-kit synthesis unless reactions need the clips. |
 | `PODCAST_LISTENER_TIMEOUT_SEC` | `900` | How long a video render waits for the listener kits (minimum 30). Past it the render uses the fallback listener and records the `listener_timeout` warning. Pre-build kits with `python -m maintenance.content warm-listeners`. |
-| `PUBLIC_DEMO_ENABLED` | `false` | Kill switch for the anonymous, narration-only live avatar demo (`/ws/voice/demo`). Only decks an admin marked *Live demo* can be narrated. See [`docs/live-demo.md`](../docs/live-demo.md). |
+| `PUBLIC_DEMO_ENABLED` | `false` | Kill switch for the anonymous live avatar demo (`/ws/voice/demo`): one tap presents a deck with live captions, and typed or spoken questions when `DEMO_QA_ENABLED` is on. Only decks an admin marked *Live demo* can be presented. See [`docs/live-demo.md`](../docs/live-demo.md). |
 | `DEMO_MAX_CONCURRENT` / `DEMO_SESSION_SECONDS` | `1` / `180` | Concurrent anonymous demo sessions (separate from `MAX_VOICE_SESSIONS`) and hard cap per session. |
 | `DEMO_DAILY_SESSIONS` / `DEMO_DAILY_SESSIONS_PER_IP` | `20` / `3` | Demo sessions per UTC day, globally and per client IP. Worst case avatar minutes/day = `DEMO_DAILY_SESSIONS` × `DEMO_SESSION_SECONDS` / 60 (60 min with defaults). |
 | `DEMO_DAILY_MINUTES` | `60` | Hard cap on total public-demo streaming minutes per UTC day (durable counter in Cosmos). |
@@ -65,11 +72,14 @@ allowlist is forced empty, so nobody can act as admin.
 | `DEMO_QA_ENABLED` | `false` | Raise-hand voice Q&A in the public demo (visitors ask by voice; STT + grounded answer from the deck, spoken by the avatar). Needs `PUBLIC_DEMO_ENABLED=true` too. When on, the demo session cap becomes `DEMO_QA_SESSION_SECONDS`. Enable only after the smoke test passes: see [`docs/provisioning.md` §6.3](../docs/provisioning.md#63-voice-qa-in-the-public-demo-demo_qa_enabled) and [`docs/live-demo.md`](../docs/live-demo.md#raise-hand-qa). |
 | `DEMO_QA_MAX_QUESTIONS` / `DEMO_QA_SESSION_SECONDS` | `2` / `300` | Questions per demo session (each `qa.begin` counts, even if cancelled) and the demo session cap used instead of `DEMO_SESSION_SECONDS` when demo Q&A is on. |
 | `DEMO_QA_DAILY_MAX` / `DEMO_QA_DAILY_PER_IP` | `40` / `6` | Demo questions per UTC day, globally and per client IP (durable in the same Cosmos `demo-quota-<day>` doc; fails closed). Exempt IPs skip these daily counters. |
+| `TELEMETRY_ENABLED` | `false` | Kill switch for the cookieless usage telemetry: six events (`oz_load`, `oz_vitals`, `oz_first_value`, `oz_demo`, `oz_media_error`, `oz_ui_error`) sent by the browser with `navigator.sendBeacon`, with allow-listed fields only (no cookies, no storage, no identifiers, no free text). **Ships disabled: do not turn it on before the privacy page lists these events.** It is read on every page request, so switching it off takes effect on the next page load. Effective only with `TELEMETRY_CONNECTION_STRING`. Browsers that signal Global Privacy Control or Do Not Track, or that set the `site-analytics-opt-out` local-storage key (`1`) on the app's origin, send nothing. |
+| `TELEMETRY_CONNECTION_STRING` | empty | Application Insights connection string, e.g. `InstrumentationKey=<guid>;IngestionEndpoint=https://<region>.in.applicationinsights.azure.com/`. It is public by design: it is written into the page and the instrumentation key is not a secret. Needs a GUID key and an `https://` ingestion endpoint (a DNS name, no credentials, port, path or query); anything else, or an empty value, keeps telemetry off even when `TELEMETRY_ENABLED=true` (a warning is logged once). |
 | `USE_EXTERNAL_AI_SERVICES` | `false` | Reuse an existing AI Services / Speech resource (e.g. one hosting custom photo avatars). |
 | `EXTERNAL_AI_SERVICES_ENDPOINT` / `_REGION` / `_RESOURCE_ID` | empty | Details of that resource (may be in another resource group of the same subscription). |
 | `ASSIGN_EXTERNAL_AI_SERVICES_ROLES` | `true` | Grant the app identity `Cognitive Services User`, `Cognitive Services Speech User` and `Foundry User` on the external resource. Requires Owner / User Access Administrator on its resource group; set `false` and assign them manually otherwise. |
 | `ENABLE_BLOB_ACCESS_LOGS` | `true` | Diagnostic setting `blob-access-logs` sending Blob **read** logs (`StorageRead` only) to the Log Analytics workspace, table `StorageBlobLogs`. See [Blob access logs](#blob-access-logs-podcast-audio). |
 | `EXTRA_TAGS_JSON` | empty | JSON object merged into every resource's tags, e.g. `{"CostCenter":"demo"}`. Use it for tags required or exempted by policy on policy-managed enterprise subscriptions. |
+| `MIN_REPLICAS` | `0` | Container App minimum replicas, `0` or `1` (the maximum is fixed at 1). `0` scales to zero when idle, so the first visit waits about 30 s for a cold start. `1` keeps one replica always on and removes that wait, for about $47/month at idle rates (up to about $158/month if never idle). See [Always-on](#always-on-min_replicas). |
 | `BUDGET_CONTACT_EMAILS` | empty | Comma-separated recipients; the budget is deployed only when set. |
 | `BUDGET_AMOUNT` | `50` | Monthly amount in the billing currency. |
 | `BUDGET_START_DATE` | current month | `yyyy-MM-01`; pin it to the creation month if a later re-provision rejects a changed start date. |
@@ -86,6 +96,30 @@ are durable in Cosmos (`demo-quota-<day>`), survive restarts and scale-to-zero, 
 Per-IP counting uses the rightmost `X-Forwarded-For` entry, which is the one
 the Container Apps ingress appends; put no other proxy in front without
 revisiting that assumption.
+
+### Always-on (`MIN_REPLICAS`)
+
+The template default is `MIN_REPLICAS=0`: the app scales to zero when idle, so a
+fresh deployment costs next to nothing at rest, but the first request after an idle
+period waits about 30 s for a cold start. `azd env set MIN_REPLICAS 1` then
+`azd provision` keeps one replica warm and removes that wait. The app is capped at
+one replica (counters and quotas are in-process), so only `0` and `1` are accepted.
+Keep the value in the azd environment: a change made with
+`az containerapp update --min-replicas` is overwritten by the next `azd provision`.
+
+Cost of the warm replica (2 vCPU / 4 GiB), before the monthly free grants, at the
+pay-as-you-go rates of the [Container Apps pricing page](https://azure.microsoft.com/pricing/details/container-apps/)
+(check your region):
+
+| Replica state | Per second | Per month (about 2.63 M s) |
+|---|---|---|
+| Idle (no requests) | 2 vCPU × $0.000003 + 4 GiB × $0.000003 = $0.000018 | about **$47** |
+| Never idle (active vCPU rate $0.000024/s) | 2 vCPU × $0.000024 + 4 GiB × $0.000003 = $0.000060 | about **$158** |
+
+The default budget (`BUDGET_AMOUNT`, 50) alerts at 80 % actual and 100 % forecasted, and
+the idle estimate alone is close to it, so raise `BUDGET_AMOUNT` when you use `1`
+(then `azd provision`; the template does not change the default for you). Go back with
+`azd env set MIN_REPLICAS 0` and `azd provision`.
 
 ### Podcast radio and listener flags (staged rollout)
 

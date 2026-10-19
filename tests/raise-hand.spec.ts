@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { avatar, mockApi, mockVoice, type VoiceMock, type VoiceMockOptions } from './support/mock-api';
+import { demoHooks, mockDemoSocket } from './support/demo-ws-fixtures';
 
 /**
  * WS4 — raise-hand voice Q&A. Chromium's fake microphone feeds the capture
@@ -186,12 +187,16 @@ test.describe('Raise hand — admin', () => {
 });
 
 test.describe('Raise hand — public demo', () => {
-  test('demo flow: no Ask now / typed field, remaining questions count down', async ({ page }) => {
+  // `mockVoice` is an older (protocol v1) demo server: no captions, no typed question, no `demo.finish`. The v2 protocol
+  // (captions, typed questions, narration complete…) is covered by ux-demo.spec.ts; one smoke of it follows here.
+  test('older server (v1): no Ask now or typed field; the question is taken after the slide, the count goes down and the presentation goes on', async ({ page }) => {
     const { voice, errors } = await openDemo(page, { remainingQuestions: 2 });
     await expect(page.getByTestId('qa-remaining')).toHaveText('2 questions left');
     await expect(page.getByTestId('qa-text-input')).toHaveCount(0);
-    await page.getByRole('button', { name: 'Present this slide' }).click();
+    // One Start tap presented the first slide by itself: visitors have no "Present all" / "Present this slide".
+    await expect(page.getByRole('button', { name: /^Present/ })).toHaveCount(0);
     await expect.poll(() => voice.items.length).toBe(1);
+    expect(voice.ofType('demo.speak')).toEqual([{ type: 'demo.speak', slide: 0 }]);
     await avatar.startTurn(page, voice.items[0]);
     await expect(page.getByTestId('ask-now')).toHaveCount(0);
     await page.getByTestId('raise-hand').click();
@@ -210,15 +215,18 @@ test.describe('Raise hand — public demo', () => {
     await avatar.finishTurn(page, voice.items[voice.items.length - 1]);
     await expect.poll(() => voice.ofType('qa.resume').length).toBe(1);
     await expect(page.getByTestId('qa-remaining')).toHaveText('1 question left');
-    // Not presenting all → stays on the slide, no extra narration request.
-    expect(voice.ofType('demo.speak')).toHaveLength(1);
+    // The presentation was running: after the answer it goes on with the next slide, with no further tap.
+    await expect(page.getByTestId('slide-counter')).toContainText('Slide 2 of 3');
+    await expect.poll(() => voice.ofType('demo.speak').map((m) => m.slide)).toEqual([0, 1]);
     expect(voice.sent.some((m) => m.type === 'qa.text' || m.type === 'session.update' || m.type === 'response.create')).toBe(false);
     expect(errors).toEqual([]);
   });
 
-  test('question limit: error with Continue, then Raise hand is disabled', async ({ page }) => {
+  test('older server (v1): question limit — error with Continue, then Raise hand is disabled', async ({ page }) => {
     const { voice } = await openDemo(page, { qaBegin: 'limit' });
+    await expect.poll(() => voice.items.length).toBe(1);
     await page.getByTestId('raise-hand').click();
+    await avatar.finishTurn(page, voice.items[0]); // the slide ends: the raised hand is taken
     await expect.poll(() => voice.ofType('qa.begin').length).toBe(1);
     await expect(page.getByTestId('qa-error')).toHaveText('No more questions in this demo.');
     await expect(page.getByTestId('qa-continue')).toBeFocused();
@@ -230,8 +238,29 @@ test.describe('Raise hand — public demo', () => {
 
   test('demo Q&A disabled in /api/demo/config → no Raise hand', async ({ page }) => {
     await openDemo(page, {}, null);
-    await expect(page.getByRole('button', { name: 'Present all' })).toBeVisible();
+    await expect(page.getByTestId('demo-stop')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Present/ })).toHaveCount(0);
     await expect(page.getByTestId('raise-hand')).toHaveCount(0);
+    await expect(page.getByTestId('qa-text-input')).toHaveCount(0);
+  });
+
+  test('protocol v2: the typed question sits next to Raise hand and goes out after the slide (qa.ask_text)', async ({ page }) => {
+    await mockApi(page, 'visitor', { demoQa: DEMO_QA, demoSessionSeconds: 300 });
+    const mock = await mockDemoSocket(page, { slideCount: 3, idleCloseMs: false });
+    await page.goto('/decks/deck-live/present');
+    await page.waitForLoadState('networkidle');
+    await page.getByTestId('demo-start').click();
+    await demoHooks.connected(page);
+    await expect(page.getByTestId('raise-hand')).toBeVisible();
+    await page.getByTestId('qa-text-input').fill('What is the budget?');
+    await page.getByTestId('qa-text-input').press('Enter');
+    await expect(page.getByTestId('qa-state')).toHaveText('Your question is queued — answered after this slide');
+    await expect.poll(() => mock.items.length).toBe(1);
+    await demoHooks.finishLastTurn(page, mock);
+    const ask = await mock.waitForSent('qa.ask_text');
+    expect(ask).toMatchObject({ slide: 0, text: 'What is the budget?' });
+    await expect(page.getByTestId('qa-answer')).toBeVisible();
+    expect(mock.ofType('qa.begin')).toHaveLength(0);
   });
 });
 

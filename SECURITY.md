@@ -31,15 +31,16 @@ details):
 
 - **Anonymous** callers may load the SPA, call `GET /api/health`, `GET /api/me`,
   `GET /api/avatars`, list and play **published** videos / podcasts and
-  view **published** decks (slide images + titles only — no speaker notes,
-  body text or PPTX download).
+  view **published** decks (slide images, titles and the visible slide text — no
+  speaker notes, translations or PPTX download).
 - **Public podcast audio** (supersedes the earlier "no audio in public DTOs"
   rule): with `PODCAST_PUBLIC_AUDIO=true` (default `false`, the kill switch),
   anonymous callers also get a published podcast's radio MP3, cover art, host
   names and full transcript, and audio-only episodes are listed. Without it,
   the public DTO carries no audio, cover, host names or transcript (video and
   thumbnail only), and audio-only episodes are hidden (their detail answers
-  404). Subtitle files, SCORM packages and scripts are never public. One
+  404). Subtitle files (SRT), SCORM packages and scripts are never public;
+  published video episodes expose their captions as WebVTT. One
   publish flag covers every rendition of an episode.
 - **Admins** — callers signed in with **Microsoft Entra ID** through Azure
   Container Apps built-in authentication (**Easy Auth**) whose object ID is in
@@ -52,14 +53,16 @@ details):
   `AUTH_MODE=easyauth`; Azure Container Apps strips client-supplied copies.
   The tenant (`AUTH_TENANT_ID`) and identity provider (`aad`) are verified.
 - Generated content is **unpublished by default**. Anonymous media links are
-  read-only, blob-scoped SAS URLs that expire after 15 minutes; podcast
-  responses carrying SAS URLs are sent with `Cache-Control: no-store`.
+  read-only, blob-scoped SAS URLs that expire after 15 minutes (public thumbnails
+  and covers are signed per 10-minute window, so the browser cache can reuse
+  them); podcast responses carrying SAS URLs are sent with
+  `Cache-Control: no-store`.
 - **Speech character names** of custom photo avatars can identify the
   customer: they stay server-side and never appear in blob names, manifests,
   cache sidecars, logs, job warnings (stable codes only), ID3 tags or API
   payloads. Radio MP3 ID3 tags come from an allow-list (episode title, host
-  names, album, genre, year, language, an "AI-generated voices" comment, the
-  cover). The listener-kit cache (`podcast-cache/listener-kit/`) is private
+  names, album, genre, year, language and an "AI-generated voices" comment; no
+  embedded picture, the cover is a separate file). The listener-kit cache (`podcast-cache/listener-kit/`) is private
   and never SAS-signed, and anonymous traffic never triggers synthesis.
 - Azure services are reached with a **managed identity** (`DefaultAzureCredential`);
   Speech credentials are never sent to the browser.
@@ -67,7 +70,8 @@ details):
   `DAILY_GENERATION_QUOTA`, `MAX_PENDING_RENDERS`, `MAX_CONCURRENT_COMPOSES`,
   `MAX_ACTIVE_BATCH_JOBS`, `SPEECH_BATCH_CREATE_PER_MIN`, plus an Azure budget alert.
 - `AUTH_MODE=disabled` exists **for local development only**: every caller is
-  treated as admin and the backend logs a warning at startup.
+  treated as admin and the backend logs a warning at startup. On Azure Container
+  Apps the backend refuses it: it keeps Easy Auth and logs one `CRITICAL` line.
 
 ## Operator checklist
 
@@ -84,7 +88,9 @@ Before (and after) every deployment of your own instance:
       `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET` and `ALLOWED_OBJECT_IDS`.
 - [ ] **Keep `AUTH_MODE=easyauth` in Azure** — never deploy with
       `AUTH_MODE=disabled`, and never expose a local `AUTH_MODE=disabled`
-      instance to a network.
+      instance to a network. The backend refuses `disabled` on Container Apps
+      anyway; admin tests against production use Entra bearer tokens
+      ([provisioning §3.1](docs/provisioning.md#31-admin-tests-against-production)).
 - [ ] **Budget alert** — set `BUDGET_CONTACT_EMAILS` (and `BUDGET_AMOUNT`) in the
       `azd` environment; no budget is deployed without recipients. Confirm the
       monthly alert on the resource group has the right amount and recipients. Live avatar streaming and batch

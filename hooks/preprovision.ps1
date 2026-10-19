@@ -12,6 +12,23 @@ function Get-AzdValue([string]$name) {
     return $value
 }
 
+# AUTH_MODE is read from the azd environment ONLY, never from the process environment:
+# run-local.ps1 sets $env:AUTH_MODE = 'disabled' in developer shells, which must not decide a deployment.
+# Checked first so that no other path (including ALLOW_INSECURE_NO_AUTH) can skip it.
+function Get-AzdEnvOnlyValue([string]$name) {
+    $value = (azd env get-value $name 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { $value = '' }
+    return $value
+}
+
+if ((Get-AzdEnvOnlyValue 'AUTH_MODE').ToLowerInvariant() -eq 'disabled') {
+    Write-Host 'ERROR: refusing to provision: AUTH_MODE=disabled is set in the azd environment.' -ForegroundColor Red
+    Write-Host 'It makes every caller an admin and the deployed backend refuses it on Azure Container Apps anyway.' -ForegroundColor Red
+    Write-Host 'Fix it with: azd env set AUTH_MODE easyauth' -ForegroundColor Yellow
+    Write-Host 'To test production as an admin use Entra bearer tokens (AUTH_EXTRA_CLIENT_APPS): docs/provisioning.md section 3.1' -ForegroundColor Yellow
+    exit 1
+}
+
 $insecure = (Get-AzdValue 'ALLOW_INSECURE_NO_AUTH').ToLowerInvariant() -eq 'true'
 $required = @('AUTH_CLIENT_ID', 'AUTH_CLIENT_SECRET', 'ALLOWED_OBJECT_IDS')
 $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace((Get-AzdValue $_)) })

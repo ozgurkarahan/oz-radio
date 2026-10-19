@@ -52,6 +52,11 @@ param containerCpu string = '2'
 @description('Memory per replica (must match the CPU ratio, e.g. 2 vCPU => 4Gi)')
 param containerMemory string = '4Gi'
 
+@minValue(0)
+@maxValue(1)
+@description('Minimum replicas: 0 scales to zero when idle (cold start of about 30 s), 1 keeps one replica always on. The maximum is fixed at 1 because rate limits and quotas are in-process')
+param minReplicas int = 0
+
 @description('Microsoft Entra ID app registration client ID for Easy Auth (empty disables Easy Auth; nobody is admin)')
 param authClientId string = ''
 
@@ -157,6 +162,12 @@ param demoQaDailyMax string = '40'
 
 @description('Demo Q&A questions per client IP per UTC day')
 param demoQaDailyPerIp string = '6'
+
+@description('Cookieless usage telemetry (true/false, default off)')
+param telemetryEnabled string = 'false'
+
+@description('Application Insights connection string for the telemetry events (public by design; empty = none)')
+param telemetryConnectionString string = ''
 
 @description('Tags to apply to every resource')
 param tags object = {}
@@ -274,11 +285,13 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DEMO_QA_SESSION_SECONDS', value: demoQaSessionSeconds }
             { name: 'DEMO_QA_DAILY_MAX', value: demoQaDailyMax }
             { name: 'DEMO_QA_DAILY_PER_IP', value: demoQaDailyPerIp }
+            { name: 'TELEMETRY_ENABLED', value: telemetryEnabled }
+            { name: 'TELEMETRY_CONNECTION_STRING', value: telemetryConnectionString }
           ]
         }
       ]
       scale: {
-        minReplicas: 0
+        minReplicas: minReplicas
         maxReplicas: 1
         rules: [
           {

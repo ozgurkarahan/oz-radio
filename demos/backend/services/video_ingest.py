@@ -14,6 +14,10 @@ from services.video_models import SlideRef, VideoDocument
 
 log = logging.getLogger(__name__)
 
+# SlideRef.preview_text feeds the narration script (services.video_script), which shares
+# its own 48,000-character budget fairly between slides: do not cut a slide's text here.
+PREVIEW_MAX_CHARS = 6000
+
 
 def ingest(path: str | Path, original_name: str | None = None) -> VideoDocument:
     p = Path(path)
@@ -50,7 +54,7 @@ def _ingest_pptx(p: Path, title: str) -> VideoDocument:
     for sl in data.slides:
         image_ref = str(image_paths.get(sl.index, ""))
         preview_parts = [part for part in (sl.title, sl.body, sl.notes) if part]
-        preview_text = "\n".join(preview_parts).strip()[:600]
+        preview_text = "\n".join(preview_parts).strip()[:PREVIEW_MAX_CHARS]
         slides.append(SlideRef(
             index=sl.index,
             image_ref=image_ref,
@@ -109,7 +113,7 @@ def _ingest_pdf(p: Path, title: str) -> VideoDocument:
             index=i,
             image_ref=img_ref,
             title=first_line[:120],
-            preview_text=text[:600],
+            preview_text=text[:PREVIEW_MAX_CHARS],
         ))
 
     if not slides:

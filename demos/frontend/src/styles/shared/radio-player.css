@@ -149,6 +149,26 @@
   height: 15px;
 }
 
+/* "Podcast", the episode's language and its audience level, side by side above the title. */
+.radio-player__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.radio-player__lang {
+  color: var(--rp-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.radio-player .radio-player__level {
+  border-color: var(--rp-muted);
+  background: transparent;
+  color: var(--rp-fg);
+}
+
 .radio-player__title {
   font-family: var(--font-display);
   font-size: clamp(1.5rem, 1.2rem + 1vw, 2.125rem);
@@ -235,6 +255,12 @@
 .radio-player__speaker .spinner {
   width: 14px;
   height: 14px;
+}
+
+/* Why the player is waiting for a tap (autoplay refused): the cause next to the "Press play" status. */
+.radio-player__hint {
+  color: var(--rp-muted);
+  font-size: var(--fs-sm);
 }
 
 /* ---------- Live caption ---------- */
@@ -619,6 +645,10 @@
   }
 
   .radio-player__hosts {
+    justify-content: center;
+  }
+
+  .radio-player__tags {
     justify-content: center;
   }
 

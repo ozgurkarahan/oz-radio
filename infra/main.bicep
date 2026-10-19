@@ -18,6 +18,11 @@ param embeddingModelName string = 'text-embedding-3-small'
 @description('Image for the backend container (azd sets SERVICE_BACKEND_IMAGE_NAME after the first deploy; empty = placeholder image)')
 param backendImageName string = ''
 
+@minValue(0)
+@maxValue(1)
+@description('Container App minimum replicas. 0 = scale to zero when idle (the first request then waits about 30 s for a cold start). 1 = always on: about $47/month at idle rates, up to about $158/month if never idle, so raise BUDGET_AMOUNT. The maximum stays 1 because counters and quotas are in-process.')
+param minReplicas int = 0
+
 // ---------------------------------------------------------------------------
 // Authentication / authorization (hybrid exposure model)
 // ---------------------------------------------------------------------------
@@ -127,6 +132,12 @@ param demoQaDailyMax string = '40'
 
 @description('Demo Q&A questions per client IP per UTC day (durable)')
 param demoQaDailyPerIp string = '6'
+
+@description('Cookieless usage telemetry (true/false). Ships disabled: turn it on only after the privacy page lists the events. Effective only with telemetryConnectionString.')
+param telemetryEnabled string = 'false'
+
+@description('Application Insights connection string the browsers send the telemetry events to (InstrumentationKey=<guid>;IngestionEndpoint=https://...). Public by design: the instrumentation key is not a secret. Empty = no telemetry.')
+param telemetryConnectionString string = ''
 
 // ---------------------------------------------------------------------------
 // External (pre-existing) AI Services / Speech resource, e.g. one hosting custom photo avatars
@@ -315,6 +326,7 @@ module containerapp 'modules/containerapp.bicep' = {
     appName: '${abbrs.containerApp}${resourceToken}'
     location: location
     containerImage: empty(backendImageName) ? 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest' : backendImageName
+    minReplicas: minReplicas
     acrLoginServer: registry.outputs.loginServer
     identityId: identity.outputs.id
     identityClientId: identity.outputs.clientId
@@ -359,6 +371,8 @@ module containerapp 'modules/containerapp.bicep' = {
     demoQaSessionSeconds: demoQaSessionSeconds
     demoQaDailyMax: demoQaDailyMax
     demoQaDailyPerIp: demoQaDailyPerIp
+    telemetryEnabled: telemetryEnabled
+    telemetryConnectionString: telemetryConnectionString
     tags: tags
   }
 }

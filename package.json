@@ -12,6 +12,7 @@
     "test:ui:playlists": "playwright test tests/playlists.spec.ts --project=chromium",
     "test:regression": "playwright test tests/regression.spec.ts tests/podcast-listen.spec.ts tests/podcast-studio.spec.ts tests/playback-engine.spec.ts tests/playback-resume.spec.ts tests/playback-continuity.spec.ts tests/mobile-platform.spec.ts tests/player-debug.spec.ts tests/listen-first.spec.ts tests/mobile-a11y.spec.ts --project=chromium",
     "test:mobile": "playwright test --project=mobile-webkit --project=mobile-chromium",
+    "test:ux": "playwright test tests/ux-front-door.spec.ts tests/ux-home-nav.spec.ts tests/ux-demo.spec.ts tests/ux-listen-watch.spec.ts tests/ux-fixtures.spec.ts tests/ux-telemetry.spec.ts tests/ux-fit.spec.ts --project=chromium",
     "test:prod-smoke": "playwright test tests/prod-smoke.spec.ts --project=mobile-chromium --reporter=list"
   },
   "repository": {

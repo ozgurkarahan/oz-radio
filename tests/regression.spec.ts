@@ -54,10 +54,11 @@ test.describe('Regression — navigation & auth gating', () => {
     }
   });
 
-  test('visitor sees a sign-in control and gated create pages', async ({ page }) => {
+  test('visitor sees "Owner sign-in" as a text link (never a sign-in button) and gated create pages', async ({ page }) => {
     await open(page, 'visitor', '/');
     await expect(page.getByTestId('auth-controls')).toBeVisible();
-    await expect(page.getByTestId('auth-controls').getByText(/sign in/i)).toBeVisible();
+    await expect(page.getByTestId('auth-controls').getByRole('link', { name: 'Owner sign-in' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /sign in/i })).toHaveCount(0);
     for (const path of ['/video', '/podcast', '/search', '/playlists', '/live']) {
       await page.goto(path);
       await expect(page.getByTestId('gated-panel'), path).toBeVisible();
@@ -81,18 +82,27 @@ test.describe('Regression — navigation & auth gating', () => {
 test.describe('Regression — decks & presenter', () => {
   test('home live-demo CTA opens the live-demo deck', async ({ page }) => {
     await open(page, 'visitor', '/');
-    await page.getByTestId('home-try-live-demo').click();
+    const cta = page.getByTestId('home-try-live-demo');
+    await expect(cta).toHaveText('Start the live demo');
+    // the target is exactly the deck's present route: no fragment, no query
+    await expect(cta).toHaveAttribute('href', /^\/decks\/deck-live\/present$/);
+    await cta.click();
     await expect(page).toHaveURL(/\/decks\/deck-live\/present$/);
   });
 
-  test('home demo note reflects whether demo Q&A is on', async ({ page }) => {
+  test('home demo note reflects whether demo Q&A is on, and the sessions left sit beside it', async ({ page }) => {
     await open(page, 'visitor', '/');
     await expect(page.getByTestId('home-demo-note')).toHaveText(/^Narration-only · up to 3 min · no sign-in$/);
+    await expect(page.getByTestId('home-demo-quota')).toHaveCount(0);
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
-    await mockApi(page, 'visitor', { demoQa: { enabled: true, max_questions: 3, max_audio_seconds: 15 }, demoSessionSeconds: 300 });
+    await mockApi(page, 'visitor', {
+      demoQa: { enabled: true, max_questions: 3, max_audio_seconds: 15 }, demoSessionSeconds: 300, demoRemainingToday: 4,
+    });
     await page.reload();
     await expect(page.getByTestId('home-demo-note')).toHaveText(/^Ask questions by voice · up to 5 min · no sign-in$/);
+    await expect(page.getByTestId('home-demo-quota')).toHaveText('4 live sessions left today');
+    await expect(page.getByTestId('home-try-live-demo')).toHaveText('Start the live demo');
   });
 
   test('decks list renders one card per deck and opens the presenter', async ({ page }) => {
@@ -240,14 +250,18 @@ test.describe('Regression — redesign behaviours', () => {
     await expect(sheet).toHaveCount(0);
   });
 
-  test('create menu is keyboard operable and closes on Escape', async ({ page }) => {
+  test('create menu is a keyboard-operable disclosure: Escape closes it and returns focus to its button', async ({ page }) => {
     await open(page, 'admin', '/');
     const trigger = page.getByRole('button', { name: /^Create/ });
     await trigger.focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('menu', { name: 'Create' })).toBeVisible();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('list', { name: 'Create' })).toBeVisible();
+    // a disclosure of links, not an ARIA menu
+    await expect(page.getByRole('menu')).toHaveCount(0);
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('menu', { name: 'Create' })).toHaveCount(0);
+    await expect(page.getByRole('list', { name: 'Create' })).toHaveCount(0);
+    await expect(trigger).toBeFocused();
   });
 
   test('presenter controls work from the keyboard', async ({ page }) => {
@@ -266,8 +280,12 @@ test.describe('Regression — redesign behaviours', () => {
     await trigger.click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
+    // The mock's video file is empty: let the player's recovery settle on "couldn't be played" first (it hides the failed
+    // <video>, which drops its focus), so the trap is checked on a stable dialog. A playable video is no better here: Chrome's
+    // native video controls keep Tab and Escape to themselves once they have focus.
+    await expect(page.getByTestId('video-problem')).toBeVisible();
     const inDialog = () => page.evaluate(() => !!document.activeElement?.closest('[role=dialog]'));
-    expect(await inDialog()).toBe(true);
+    await expect.poll(inDialog).toBe(true); // "Try again" takes the focus the hidden video had
     // Focusing something behind the scrim is pulled back into the dialog.
     await page.evaluate(() => (document.querySelector('.masthead__brand') as HTMLElement).focus());
     expect(await inDialog()).toBe(true);
@@ -302,8 +320,9 @@ test.describe('Regression — redesign behaviours', () => {
     await expect(left).toHaveText('Demo time left 3:00');
     await page.clock.runFor(1000);
     await expect(left).toHaveText('Demo time left 2:59');
-    await page.clock.runFor(60_000);
-    await expect(left).toHaveText('Demo time left 1:59');
+    // Within the 15 s setup limit: a silent avatar is given up after that (T3-14, covered in ux-demo.spec.ts).
+    await page.clock.runFor(9_000);
+    await expect(left).toHaveText('Demo time left 2:50');
   });
 
   test('host disc falls back to a monogram when the avatar image fails', async ({ page }) => {

@@ -11,11 +11,19 @@ Usage (from the backend directory, ``/app`` in the image)::
 
     python -m maintenance.content inventory [--json out.json]
     python -m maintenance.content seed [--dry-run]
+    python -m maintenance.content script-podcast {beginner,practitioner,expert,demo-fr} --out script.json \\
+        [--dry-run]
+    python -m maintenance.content script-video {demo-en,demo-fr,practitioner} --out script.json [--dry-run]
     python -m maintenance.content render-podcast {beginner,practitioner,expert,demo-fr,all} \\
-        [--format video|audio] [--force] [--dry-run]
-    python -m maintenance.content render-video {demo-en,demo-fr,practitioner,all} [--dry-run]
+        [--format video|audio] [--force] [--unpublished] [--from-script script.json] [--dry-run]
+    python -m maintenance.content render-video {demo-en,demo-fr,practitioner,all} \\
+        [--force] [--unpublished] [--from-script script.json] [--dry-run]
     python -m maintenance.content warm-listeners [--language en-US --language fr-FR] [--timeout 900] [--dry-run]
-    python -m maintenance.content publish --podcast-id job-... [--podcast-id job-...] [--off] [--dry-run]
+    python -m maintenance.content publish [--podcast-id job-...] [--video-id sv-...] [--off] [--dry-run]
+    python -m maintenance.content unpublish [--podcast-id job-...] [--video-id sv-...] [--dry-run]
+    python -m maintenance.content plan-switch --out switch.json [--dry-run]
+    python -m maintenance.content switch --manifest switch.json [--dry-run]
+    python -m maintenance.content rollback --manifest switch.json [--dry-run]
     python -m maintenance.content purge --deck-title T ... --podcast-id job-... --video-id sv-... \\
         --record deleted.json [--allow-missing video:practitioner] [--dry-run]
     python -m maintenance.content retitle [--dry-run]
@@ -40,10 +48,60 @@ avatar synthesis). Renders ask for listener backchannels; they are only
 rendered when the ``PODCAST_REACTIONS`` kill switch is on.
 
 ``render-podcast``/``render-video --force`` render a fresh item even when one
-with the same title exists (e.g. after a rebrand); retire the previous item
-afterwards: ``publish --podcast-id <old id> --off`` hides it from visitors
-(kept for rollback), ``purge --podcast-id/--video-id`` deletes it (media only:
-purge touches playlists only when ``--deck-title`` deletes decks).
+with the same title exists (e.g. after a rebrand) and publish it at once;
+``purge --podcast-id/--video-id`` deletes a superseded item (media only: purge
+touches playlists only when ``--deck-title`` deletes decks).
+
+Staged re-render (no gap, no duplicate for visitors, nothing is deleted):
+
+1. ``script-podcast|script-video NAME --out FILE`` runs the render's own ingest
+   and script generation (same spec inputs, same prompts) and stops there: no
+   render, no library access, nothing published. It writes the script as JSON
+   (``kind``, ``key``, ``title``, ``language``, ``audience_level``, the model's
+   ``turns`` or ``narrations`` as the render consumes them, ``generated_at``, the
+   deck's SHA-256 and a ``content_sha256`` of the lines), prints a compact
+   transcript (a character the console cannot encode becomes a backslash escape
+   instead of an error) and one ``SCRIPTED <kind> <name> <sha256> <file>`` line.
+   It costs one model call, so a short exec is enough (``--background LOG``
+   works as everywhere). It never overwrites a file; ``--dry-run`` makes no
+   model call and writes nothing.
+2. Review the transcripts: nothing has been rendered or paid for yet.
+3. ``render-podcast|render-video NAME --from-script FILE`` renders exactly that
+   text and skips script generation (one episode, not ``all``). The file is
+   validated first, before any ingest, model call or library access: size cap,
+   JSON, exact schema, same kind and key, the spec's language, style, audience
+   (and voice), the deck unchanged since the script was written, ``content_sha256``
+   matching the lines (a file edited after generation is refused: generate it
+   again) and the routers' own limits. It prints
+   ``USING_SCRIPT <kind> <name> <sha256> <file>``, the digest the review saw.
+4. ``render-podcast|render-video ... --force --unpublished`` archives the new
+   item with ``published: false`` and never publishes it. Each render prints one
+   machine-readable line, ``RENDERED <podcast|video> <name> <job id>`` (no URLs),
+   as soon as it is archived. Without ``--force``, an existing item with the
+   title is only reported: ``--unpublished`` never publishes anything.
+5. Review the private renders as an admin (the library lists them).
+6. ``plan-switch --out switch.json`` pairs every published item with its newer
+   unpublished re-render (same title, format and language) and writes the
+   manifest, ``{"pairs": [{"kind": "podcast"|"video", "old_id": "job-...",
+   "new_id": "job-..."}]}`` (a hand-written file needs only those keys). Matches
+   it cannot decide (several published items, or several newer private
+   re-renders, for one title) are left out and reported, never guessed; exit
+   code 1 then flags the incomplete plan. It never overwrites a file.
+7. ``switch --manifest switch.json`` publishes each new item, then unpublishes
+   its old one (never a gap), pair by pair, and stops at the first failure.
+   ``rollback --manifest switch.json`` publishes each old item, then unpublishes
+   the new one. Both refuse a manifest whose items are missing or whose old and
+   new titles, formats or languages differ (before changing anything), are
+   idempotent (a step already in its target state is ``already``) and append one
+   ``log`` entry per step (``at``, ``command``, ``step``, ``id``, ``outcome``) to
+   the pair in the manifest file, with ``status`` kept current (``switching``,
+   ``switched``, ``switch_failed``, ``rolling_back``, ``rolled_back``,
+   ``rollback_failed``). A failed step changes nothing further (a failed
+   ``unpublish_old`` leaves both items visible, never neither); re-run the
+   command or roll back. ``--dry-run`` reads the library but writes nothing,
+   not even the manifest.
+8. ``publish``/``unpublish`` change single items by id (``--podcast-id``,
+   ``--video-id``; both repeatable); an unpublished item is hidden, not deleted.
 
 ``warm-listeners`` pre-builds the cached listener kits (silent listening loop
 and backchannel clips; one paid batch avatar job per missing kit) of the
@@ -63,6 +121,8 @@ import hashlib
 import io
 import json
 import logging
+import math
+import os
 import shutil
 import sys
 import time
@@ -70,7 +130,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
@@ -355,6 +415,317 @@ async def seed(cfg, *, dry_run: bool = False, deck_dir: Optional[Path] = None) -
 
 
 # ---------------------------------------------------------------------------
+# Reviewed scripts: script-podcast / script-video write one, render --from-script renders it
+# ---------------------------------------------------------------------------
+SCRIPT_SCHEMA_VERSION = 1
+# A script is 10-150 KB (at most 40 turns or 60 narrations of 3,000 characters): anything bigger is not ours.
+MAX_SCRIPT_FILE_BYTES = 1024 * 1024
+SCRIPT_ITEMS = {"podcast": "turns", "video": "narrations"}  # where each kind keeps its lines
+_SCRIPT_HEADER = ("schema_version", "kind", "key", "title", "deck", "deck_sha256", "language", "style",
+                  "audience_level", "generated_at", "content_sha256")
+SCRIPT_KEYS = {  # the exact top-level keys of a script file
+    "podcast": frozenset({*_SCRIPT_HEADER, "turns"}),
+    "video": frozenset({*_SCRIPT_HEADER, "voice", "narrations"}),
+}
+SCRIPT_LINE_KEYS = {  # the exact keys of one line
+    "podcast": frozenset({"idx", "speaker", "text", "slide_idx", "reaction"}),
+    "video": frozenset({"slide_index", "narration", "speaking_style", "duration_hint_s"}),
+}
+
+
+def _out(line: str) -> None:
+    """Print one line; a character the console cannot encode becomes a backslash escape, never an error."""
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _script_digest(lines: Any) -> str:
+    """SHA-256 of a script's lines as canonical JSON: ties the transcript that was reviewed to the file rendered."""
+    return hashlib.sha256(json.dumps(lines, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _spec_inputs(kind: str, spec) -> dict[str, Any]:
+    """The spec inputs that shape a script's text: a file generated for other ones is refused."""
+    inputs = {"deck": spec.deck, "language": spec.language, "style": spec.style,
+              "audience_level": spec.audience_level}
+    if kind == "video":
+        inputs["voice"] = spec.voice
+    return inputs
+
+
+def _router_limits(check, items) -> None:
+    """Run one of the routers' own limit checks (they raise HTTPException) as a MaintenanceError."""
+    from fastapi import HTTPException
+
+    try:
+        check(items)
+    except HTTPException as exc:
+        raise MaintenanceError(str(exc.detail)) from None
+
+
+def _check_narrations(narrations) -> None:
+    """The video router's render limits (routers.video.start_render), for scripts built outside it."""
+    from security import MAX_NARRATION_CHARS, MAX_SLIDES_PER_RENDER
+    from services.voice_catalog import is_allowed_voice
+
+    if len(narrations) > MAX_SLIDES_PER_RENDER:
+        raise MaintenanceError(f"too many slides (max {MAX_SLIDES_PER_RENDER})")
+    for n in narrations:
+        if len(n.narration or "") > MAX_NARRATION_CHARS or (n.voice and not is_allowed_voice(n.voice)):
+            raise MaintenanceError(f"slide {n.slide_index}: narration too long or voice not allowed")
+
+
+def _podcast_lines(turns) -> list[dict[str, Any]]:
+    """The turns as stored in a script file: only what the model wrote (timings are render output)."""
+    return [{"idx": t.idx, "speaker": t.speaker, "text": t.text, "slide_idx": t.slide_idx,
+             "reaction": t.reaction.model_dump() if t.reaction else None} for t in turns]
+
+
+def _video_lines(narrations) -> list[dict[str, Any]]:
+    """The narrations as stored (sorted as the render consumes them); slide images and titles are not stored."""
+    return [{"slide_index": n.slide_index, "narration": n.narration, "speaking_style": n.speaking_style,
+             "duration_hint_s": n.duration_hint_s} for n in sorted(narrations, key=lambda n: n.slide_index)]
+
+
+def _podcast_turns_from(lines: list[dict[str, Any]]) -> list:
+    from services.podcast_models import DialogueTurn, ReactionHint
+
+    return [DialogueTurn(idx=line["idx"], speaker=line["speaker"], text=line["text"], slide_idx=line["slide_idx"],
+                         reaction=ReactionHint(**line["reaction"]) if line["reaction"] else None)
+            for line in lines]
+
+
+def _video_narrations_from(lines: list[dict[str, Any]], spec: VideoSpec, doc=None) -> list:
+    """The lines as the render consumes them. Slide images and titles come from ``doc``, the freshly
+    ingested deck (the paths of the ingest that generated the script are gone); without it they stay empty."""
+    from services.video_models import SlideNarration
+
+    refs = {s.index: s for s in doc.slides} if doc is not None else None
+    if refs is not None:
+        absent = sorted(line["slide_index"] for line in lines if line["slide_index"] not in refs)
+        if absent:
+            raise MaintenanceError(f"the deck has no slide {absent}: generate the script again")
+    return [SlideNarration(
+        slide_index=line["slide_index"],
+        slide_image_ref=refs[line["slide_index"]].image_ref if refs else "",
+        title=refs[line["slide_index"]].title if refs else None,
+        narration=line["narration"], voice=spec.voice, speaking_style=line["speaking_style"],
+        duration_hint_s=line["duration_hint_s"]) for line in lines]
+
+
+def _valid_reaction(raw: Any) -> bool:
+    from pydantic import ValidationError
+    from services.podcast_models import ReactionHint
+
+    if not isinstance(raw, dict) or set(raw) != {"after_sentence", "reaction_id"}:
+        return False
+    try:
+        ReactionHint(**raw)
+    except ValidationError:
+        return False
+    return True
+
+
+def _script_line_problems(kind: str, lines: Any) -> list[str]:
+    """What is wrong with a script's lines (empty = well-formed): exact keys, types, unique ids."""
+    what = SCRIPT_ITEMS[kind]
+    if not isinstance(lines, list) or not lines:
+        return [f"{what} must be a non-empty list"]
+    id_key, text_key = ("idx", "text") if kind == "podcast" else ("slide_index", "narration")
+    problems: list[str] = []
+    seen: set[int] = set()
+    for n, line in enumerate(lines):
+        where = f"{what}[{n}]"
+        if not isinstance(line, dict) or set(line) != SCRIPT_LINE_KEYS[kind]:
+            problems.append(f"{where} must have exactly the keys {sorted(SCRIPT_LINE_KEYS[kind])}")
+            continue
+        if not _is_int(line[id_key]) or line[id_key] < 0:
+            problems.append(f"{where}.{id_key} must be a non-negative integer")
+        elif line[id_key] in seen:
+            problems.append(f"{where}.{id_key} {line[id_key]} appears twice")
+        else:
+            seen.add(line[id_key])
+        if not isinstance(line[text_key], str) or not line[text_key].strip():
+            problems.append(f"{where}.{text_key} must be non-empty text")
+        if kind == "podcast":
+            if line["speaker"] not in ("interviewer", "expert"):
+                problems.append(f"{where}.speaker must be 'interviewer' or 'expert'")
+            if line["slide_idx"] is not None and not _is_int(line["slide_idx"]):
+                problems.append(f"{where}.slide_idx must be an integer or null")
+            if line["reaction"] is not None and not _valid_reaction(line["reaction"]):
+                problems.append(f"{where}.reaction must be null or a known {{after_sentence, reaction_id}}")
+        else:
+            style, seconds = line["speaking_style"], line["duration_hint_s"]
+            if style is not None and not isinstance(style, str):
+                problems.append(f"{where}.speaking_style must be text or null")
+            if seconds is not None and (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                                        or not math.isfinite(seconds) or seconds < 0):
+                problems.append(f"{where}.duration_hint_s must be a non-negative number or null")
+    return problems
+
+
+def _script_limit_problems(kind: str, lines: list[dict[str, Any]], spec) -> list[str]:
+    """The routers' own render limits, applied to a script that did not come through them."""
+    try:
+        if kind == "podcast":
+            from routers import podcast as pr
+
+            _router_limits(pr._check_turns, _podcast_turns_from(lines))
+        else:
+            _check_narrations(_video_narrations_from(lines, spec))
+    except MaintenanceError as exc:
+        return [str(exc)]
+    return []
+
+
+@dataclass(frozen=True)
+class LoadedScript:
+    """A validated script file: the lines ``render --from-script`` renders, and what it reports about them."""
+
+    path: Path
+    kind: str
+    key: str
+    lines: list
+    content_sha256: str
+    generated_at: str
+
+    def summary(self) -> dict[str, Any]:
+        return {"file": str(self.path), SCRIPT_ITEMS[self.kind]: len(self.lines),
+                "content_sha256": self.content_sha256, "generated_at": self.generated_at}
+
+
+def _read_script_json(path: Path) -> dict[str, Any]:
+    try:
+        size = path.stat().st_size
+        if size > MAX_SCRIPT_FILE_BYTES:
+            raise MaintenanceError(f"script file {path} is {size} bytes: over the {MAX_SCRIPT_FILE_BYTES} byte cap")
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_SCRIPT_FILE_BYTES + 1)
+    except OSError as exc:
+        raise MaintenanceError(f"cannot read script file {path}: {exc.strerror or type(exc).__name__}") from None
+    if len(raw) > MAX_SCRIPT_FILE_BYTES:
+        raise MaintenanceError(f"script file {path} is over the {MAX_SCRIPT_FILE_BYTES} byte cap")
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (ValueError, RecursionError) as exc:  # includes UnicodeDecodeError and JSONDecodeError
+        raise MaintenanceError(f"script file {path} is not valid JSON: {type(exc).__name__}") from None
+    if not isinstance(data, dict):
+        raise MaintenanceError(f"script file {path} must be a JSON object")
+    return data
+
+
+def _is_timestamp(value: Any) -> bool:
+    try:
+        datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _load_script(path: Path, kind: str, name: str, spec, deck_path: Path) -> LoadedScript:
+    """Read and validate a script file for ``kind``/``name`` before any ingest, model call or library access."""
+    data = _read_script_json(path)
+    problems: list[str] = []
+    missing, unknown = sorted(SCRIPT_KEYS[kind] - set(data)), sorted(set(data) - SCRIPT_KEYS[kind])
+    if missing:
+        problems.append(f"missing keys {missing}")
+    if unknown:
+        problems.append(f"unexpected keys {unknown}")
+    expected = {"schema_version": SCRIPT_SCHEMA_VERSION, "kind": kind, "key": name, **_spec_inputs(kind, spec)}
+    problems += [f"{field} is {repr(data[field])[:60]}, expected {want!r}"
+                 for field, want in expected.items() if field in data and data[field] != want]
+    if "generated_at" in data and not _is_timestamp(data["generated_at"]):
+        problems.append("generated_at must be an ISO timestamp")
+    lines = data.get(SCRIPT_ITEMS[kind])
+    problems += _script_line_problems(kind, lines)
+    if not problems:  # only a well-formed script can be hashed and checked against the limits
+        if data["deck_sha256"] != _sha256_of(deck_path):
+            problems.append("the deck changed since this script was generated (deck_sha256): generate it again")
+        if data["content_sha256"] != _script_digest(lines):
+            problems.append("content_sha256 does not match the lines: the file was edited after it was "
+                            "generated; generate it again")
+        problems += _script_limit_problems(kind, lines, spec)
+    if problems:
+        raise MaintenanceError(f"invalid script file {path}: " + "; ".join(problems))
+    return LoadedScript(path, kind, name, lines, data["content_sha256"], data["generated_at"])
+
+
+def _announce_script(loaded: LoadedScript, name: str) -> None:
+    what = SCRIPT_ITEMS[loaded.kind]
+    _out(f"USING_SCRIPT {loaded.kind} {name} {loaded.content_sha256} {loaded.path}")
+    _say(f"{loaded.kind} {name}: rendering the reviewed script ({len(loaded.lines)} {what}, sha256 "
+         f"{loaded.content_sha256[:12]}, generated {loaded.generated_at}); script generation skipped")
+
+
+def _refuse_existing(out: Path) -> None:
+    if out.exists():
+        raise MaintenanceError(f"{out} already exists: refusing to overwrite a script (generate to a new path)")
+
+
+def _write_script(out: Path, payload: dict[str, Any]) -> None:
+    """Create ``out`` as UTF-8 JSON; it never replaces a file, and a failed write leaves nothing behind."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("x", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except FileExistsError:
+        raise MaintenanceError(f"{out} already exists: refusing to overwrite a script") from None
+    except OSError as exc:
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise MaintenanceError(f"cannot write script file {out}: {exc.strerror or type(exc).__name__}") from None
+
+
+def _script_payload(kind: str, name: str, spec, lines: list[dict[str, Any]], deck_path: Path) -> dict[str, Any]:
+    return {"schema_version": SCRIPT_SCHEMA_VERSION, "kind": kind, "key": name, "title": spec.title,
+            **_spec_inputs(kind, spec), "deck_sha256": _sha256_of(deck_path),
+            "generated_at": datetime.now(timezone.utc).isoformat(), "content_sha256": _script_digest(lines),
+            SCRIPT_ITEMS[kind]: lines}
+
+
+def _print_podcast_transcript(name: str, spec: PodcastSpec, lines: list[dict[str, Any]], n_slides: int,
+                              digest: str) -> None:
+    """Compact transcript for review: line id, slide, speaker, text; [+id@n] = listener reaction after sentence n."""
+    words = sum(len(line["text"].split()) for line in lines)
+    used = {line["slide_idx"] for line in lines
+            if line["slide_idx"] is not None and 0 <= line["slide_idx"] < n_slides}
+    _out(f"== podcast {name}: {spec.title} | {spec.language} | {spec.style} | {spec.audience_level} ==")
+    for line in lines:
+        slide = "-" if line["slide_idx"] is None else line["slide_idx"]
+        hint = f"  [+{line['reaction']['reaction_id']}@{line['reaction']['after_sentence']}]" \
+            if line["reaction"] else ""
+        _out(f"{line['idx']:>2} s{slide:<2} {line['speaker']:<11} {line['text']}{hint}")
+    _out(f"== {len(lines)} turns, {words} words, slides referenced {len(used)}/{n_slides}, "
+         f"sha256 {digest[:12]} ==")
+
+
+def _print_video_transcript(name: str, spec: VideoSpec, lines: list[dict[str, Any]], slides: list[int],
+                            digest: str) -> None:
+    words = sum(len(line["narration"].split()) for line in lines)
+    silent = sorted(set(slides) - {line["slide_index"] for line in lines})
+    _out(f"== video {name}: {spec.title} | {spec.language} | {spec.style} | {spec.audience_level} | "
+         f"{spec.voice} ==")
+    for line in lines:
+        style = f" ({line['speaking_style']})" if line["speaking_style"] else ""
+        _out(f"slide {line['slide_index']:>2}{style}: {line['narration']}")
+    _out(f"== {len(lines)} narrations, {words} words, slides without narration: {silent or 'none'}, "
+         f"sha256 {digest[:12]} ==")
+
+
+# ---------------------------------------------------------------------------
 # Podcasts
 # ---------------------------------------------------------------------------
 def _podcast_roles(language: str):
@@ -391,45 +762,22 @@ def _podcast_format(spec: PodcastSpec, fmt: Optional[str]) -> str:
     return value
 
 
-async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
-                         force: bool = False, fmt: Optional[str] = None) -> dict:
-    """Render + publish one ``PODCASTS`` episode; ``fmt`` overrides the spec's format."""
-    from routers import podcast as pr
+async def _podcast_document(cfg, name: str, spec: PodcastSpec, path: Path):
+    """Ingest the episode's deck as the render does (staged copy, slide images, display title)."""
     from services.podcast_ingest import ingest_file
-    from services.podcast_models import (
-        JobOutputs, JobProgress, JobState, PodcastJob, Script, ScriptRequest,
-    )
-    from services.podcast_script import generate_script_stream
-
-    spec = PODCASTS[name]
-    fmt = _podcast_format(spec, fmt)
-    path = _deck_path(spec.deck, deck_dir)
-    roles = _podcast_roles(spec.language)
-    lib = pr._get_library(cfg)
-    if not lib.available:
-        raise MaintenanceError("podcast library storage unavailable")
-    plan = {"name": name, "title": spec.title, "format": fmt, "language": spec.language, "style": spec.style,
-            "audience_level": spec.audience_level,
-            "roles": {"interviewer": roles.interviewer.model_dump(), "expert": roles.expert.model_dump()}}
-    found = _existing(lib, spec.titles, fmt)
-    if found and force:
-        plan["replaces"] = found["job_id"]
-    elif found:
-        plan.update(action="exists", job_id=found["job_id"], published=found.get("published"))
-        if not found.get("published") and not dry_run:
-            lib.set_published(found["job_id"], True)
-            plan["published"] = True
-        _say(f"podcast {name}: exists ({found['job_id']})")
-        return plan
-    if dry_run:
-        plan["action"] = "would render"
-        return plan
 
     _say(f"podcast {name}: ingest {spec.deck}")
     staged = _staged_copy(path, "podcast")
     doc = await asyncio.to_thread(ingest_file, staged, cfg.libreoffice_path or "soffice")
     doc.title = spec.title
-    pr.DOCUMENTS[doc.id] = doc
+    return doc
+
+
+async def _generate_podcast_turns(cfg, name: str, spec: PodcastSpec, doc) -> list:
+    """The episode's script from the model, checked against the router's limits."""
+    from routers import podcast as pr
+    from services.podcast_models import ScriptRequest
+    from services.podcast_script import generate_script_stream
 
     _say(f"podcast {name}: script ({spec.language}, {spec.style}, {spec.audience_level})")
     req = ScriptRequest(document_id=doc.id, language=spec.language, style=spec.style, length=spec.length,
@@ -437,7 +785,56 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
     turns = [t async for t in generate_script_stream(cfg, doc, req)]
     if not turns:
         raise MaintenanceError("script generation returned no turns")
-    pr._check_turns(turns)
+    _router_limits(pr._check_turns, turns)
+    return turns
+
+
+async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
+                         force: bool = False, fmt: Optional[str] = None, unpublished: bool = False,
+                         from_script: Optional[Path] = None) -> dict:
+    """Render + publish one ``PODCASTS`` episode; ``fmt`` overrides the spec's format.
+
+    ``unpublished`` renders privately: the item stays archived with ``published: false`` and
+    its id is printed as ``RENDERED podcast <name> <job id>``. An existing item with the title
+    is then only reported (never published), unless ``force`` renders a fresh one.
+    ``from_script`` renders exactly the turns of a file written by ``script_podcast`` and skips
+    script generation; the file is validated before any ingest, model call or library access."""
+    from routers import podcast as pr
+    from services.podcast_models import JobOutputs, JobProgress, JobState, PodcastJob, Script
+
+    spec = PODCASTS[name]
+    fmt = _podcast_format(spec, fmt)
+    path = _deck_path(spec.deck, deck_dir)
+    loaded = _load_script(from_script, "podcast", name, spec, path) if from_script is not None else None
+    roles = _podcast_roles(spec.language)
+    lib = pr._get_library(cfg)
+    if not lib.available:
+        raise MaintenanceError("podcast library storage unavailable")
+    plan = {"name": name, "title": spec.title, "format": fmt, "language": spec.language, "style": spec.style,
+            "audience_level": spec.audience_level,
+            "roles": {"interviewer": roles.interviewer.model_dump(), "expert": roles.expert.model_dump()}}
+    if loaded:
+        plan["script"] = loaded.summary()
+    found = _existing(lib, spec.titles, fmt)
+    if found and force:
+        plan["replaces"] = found["job_id"]
+    elif found:
+        plan.update(action="exists", job_id=found["job_id"], published=found.get("published"))
+        if not found.get("published") and not dry_run and not unpublished:
+            lib.set_published(found["job_id"], True)
+            plan["published"] = True
+        _say(f"podcast {name}: exists ({found['job_id']})"
+             + ("; add --force to render a new private item" if unpublished else ""))
+        return plan
+    if dry_run:
+        plan["action"] = "would render"
+        return plan
+
+    if loaded:
+        _announce_script(loaded, name)
+    doc = await _podcast_document(cfg, name, spec, path)
+    pr.DOCUMENTS[doc.id] = doc
+    turns = _podcast_turns_from(loaded.lines) if loaded else await _generate_podcast_turns(cfg, name, spec, doc)
     script = Script(id=f"scr-{uuid.uuid4().hex[:8]}", document_id=doc.id, language=spec.language,
                     style=spec.style, length=spec.length, audience_level=spec.audience_level, turns=turns)
     pr.SCRIPTS[script.id] = script
@@ -452,33 +849,58 @@ async def render_podcast(cfg, name: str, *, dry_run: bool = False, deck_dir: Opt
     await pr._render_job_body(job.id, cfg)
     if job.state != JobState.done or job.archive_state != "published":
         raise MaintenanceError(f"podcast {job.id} failed: state={job.state.value} archive={job.archive_state}")
-    if not lib.set_published(job.id, True):
+    if unpublished:
+        # The library archives every render with published=false; nothing below may flip it.
+        print(f"RENDERED podcast {name} {job.id}", flush=True)
+    elif not lib.set_published(job.id, True):
         raise MaintenanceError(f"podcast {job.id} rendered but publishing failed")
     # Warnings are stable codes (podcast_media.WARNING_CODES), never raw error text.
-    plan.update(action="rendered", job_id=job.id, published=True, turns=len(turns),
+    plan.update(action="rendered", job_id=job.id, published=not unpublished, turns=len(turns),
                 warnings=list(job.warnings), listener_mode=job.listener_mode)
     suffix = f" (warnings: {', '.join(job.warnings)})" if job.warnings else ""
-    _say(f"podcast {name}: published {job.id}{suffix}")
+    _say(f"podcast {name}: {'rendered, still private' if unpublished else 'published'} {job.id}{suffix}")
+    return plan
+
+
+async def script_podcast(cfg, name: str, *, out: Path, dry_run: bool = False,
+                         deck_dir: Optional[Path] = None) -> dict:
+    """Generate one ``PODCASTS`` script for review: the render's own ingest and model call, nothing else.
+
+    No render, no library access, nothing published. Writes the script as JSON to ``out`` (never
+    replacing a file), prints the transcript and ``SCRIPTED podcast <name> <sha256> <out>``.
+    ``dry_run`` makes no model call and writes nothing."""
+    spec = PODCASTS[name]
+    path = _deck_path(spec.deck, deck_dir)
+    plan: dict[str, Any] = {"kind": "podcast", "name": name, "title": spec.title, "deck": spec.deck,
+                            "language": spec.language, "style": spec.style,
+                            "audience_level": spec.audience_level, "length": spec.length,
+                            "num_turns": spec.num_turns, "out": str(out)}
+    _refuse_existing(out)
+    if dry_run:
+        plan["action"] = "would generate"
+        return plan
+    doc = await _podcast_document(cfg, name, spec, path)
+    lines = _podcast_lines(await _generate_podcast_turns(cfg, name, spec, doc))
+    problems = _script_line_problems("podcast", lines)
+    if problems:
+        raise MaintenanceError("the generated script cannot be rendered, nothing written: " + "; ".join(problems))
+    payload = _script_payload("podcast", name, spec, lines, path)
+    _write_script(out, payload)
+    _print_podcast_transcript(name, spec, lines, len(doc.slide_titles), payload["content_sha256"])
+    _out(f"SCRIPTED podcast {name} {payload['content_sha256']} {out}")
+    plan.update(action="scripted", turns=len(lines), content_sha256=payload["content_sha256"],
+                generated_at=payload["generated_at"])
+    _say(f"podcast {name}: script written to {out}")
     return plan
 
 
 # ---------------------------------------------------------------------------
 # Videos
 # ---------------------------------------------------------------------------
-async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
-                       force: bool = False) -> dict:
-    from routers import video as vr
-    from security import MAX_NARRATION_CHARS, MAX_SLIDES_PER_RENDER
+def _check_video_voice(spec: VideoSpec) -> None:
     from services import avatar_registry
-    from services.video_ingest import ingest
-    from services.video_models import (
-        JobOutputs, JobProgress, JobState, ScriptRequest, VideoJob, VideoScript,
-    )
-    from services.video_script import generate_script_stream
     from services.voice_catalog import is_allowed_voice
 
-    spec = VIDEOS[name]
-    path = _deck_path(spec.deck, deck_dir)
     if not is_allowed_voice(spec.voice):
         raise MaintenanceError(f"voice {spec.voice!r} is not allowed")
     # The video worker picks the presenter from the voice (gender match); make
@@ -486,30 +908,23 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
     resolved = avatar_registry.for_voice(spec.voice).id
     if resolved != spec.avatar:
         raise MaintenanceError(f"voice {spec.voice} resolves to avatar {resolved!r}, expected {spec.avatar!r}")
-    lib = vr._get_library(cfg)
-    if not lib.available:
-        raise MaintenanceError("video library storage unavailable")
-    plan = {"name": name, "title": spec.title, "language": spec.language, "voice": spec.voice,
-            "avatar": spec.avatar, "audience_level": spec.audience_level, "style": spec.style}
-    found = _existing(lib, spec.titles)
-    if found and force:
-        plan["replaces"] = found["job_id"]
-    elif found:
-        plan.update(action="exists", job_id=found["job_id"], published=found.get("published"))
-        if not found.get("published") and not dry_run:
-            lib.set_published(found["job_id"], True)
-            plan["published"] = True
-        _say(f"video {name}: exists ({found['job_id']})")
-        return plan
-    if dry_run:
-        plan["action"] = "would render"
-        return plan
+
+
+async def _video_document(name: str, spec: VideoSpec, path: Path):
+    """Ingest the video's deck as the render does (staged copy, slide images, display title)."""
+    from services.video_ingest import ingest
 
     _say(f"video {name}: ingest {spec.deck}")
     staged = _staged_copy(path, "video")
     doc = await asyncio.to_thread(ingest, str(staged), spec.deck)
     doc.title = spec.title
-    vr.DOCUMENTS[doc.doc_id] = doc
+    return doc
+
+
+async def _generate_video_narrations(cfg, name: str, spec: VideoSpec, doc) -> list:
+    """The video's script from the model, checked against the router's render limits."""
+    from services.video_models import ScriptRequest
+    from services.video_script import generate_script_stream
 
     _say(f"video {name}: script ({spec.language}, {spec.audience_level})")
     req = ScriptRequest(language=spec.language, style=spec.style, audience_level=spec.audience_level,
@@ -517,11 +932,55 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
     narrations = [n async for n in generate_script_stream(cfg, doc, req)]
     if not narrations:
         raise MaintenanceError("script generation returned no narrations")
-    if len(narrations) > MAX_SLIDES_PER_RENDER:
-        raise MaintenanceError(f"too many slides (max {MAX_SLIDES_PER_RENDER})")
-    for n in narrations:
-        if len(n.narration or "") > MAX_NARRATION_CHARS or (n.voice and not is_allowed_voice(n.voice)):
-            raise MaintenanceError(f"slide {n.slide_index}: narration too long or voice not allowed")
+    _check_narrations(narrations)
+    return narrations
+
+
+async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optional[Path] = None,
+                       force: bool = False, unpublished: bool = False,
+                       from_script: Optional[Path] = None) -> dict:
+    """Render + publish one ``VIDEOS`` entry.
+
+    ``unpublished`` renders privately: the item stays archived with ``published: false`` and
+    its id is printed as ``RENDERED video <name> <job id>``. An existing item with the title
+    is then only reported (never published), unless ``force`` renders a fresh one.
+    ``from_script`` renders exactly the narrations of a file written by ``script_video`` and
+    skips script generation; the file is validated before any ingest, model call or library access."""
+    from routers import video as vr
+    from services.video_models import JobOutputs, JobProgress, JobState, VideoJob, VideoScript
+
+    spec = VIDEOS[name]
+    path = _deck_path(spec.deck, deck_dir)
+    _check_video_voice(spec)
+    loaded = _load_script(from_script, "video", name, spec, path) if from_script is not None else None
+    lib = vr._get_library(cfg)
+    if not lib.available:
+        raise MaintenanceError("video library storage unavailable")
+    plan = {"name": name, "title": spec.title, "language": spec.language, "voice": spec.voice,
+            "avatar": spec.avatar, "audience_level": spec.audience_level, "style": spec.style}
+    if loaded:
+        plan["script"] = loaded.summary()
+    found = _existing(lib, spec.titles)
+    if found and force:
+        plan["replaces"] = found["job_id"]
+    elif found:
+        plan.update(action="exists", job_id=found["job_id"], published=found.get("published"))
+        if not found.get("published") and not dry_run and not unpublished:
+            lib.set_published(found["job_id"], True)
+            plan["published"] = True
+        _say(f"video {name}: exists ({found['job_id']})"
+             + ("; add --force to render a new private item" if unpublished else ""))
+        return plan
+    if dry_run:
+        plan["action"] = "would render"
+        return plan
+
+    if loaded:
+        _announce_script(loaded, name)
+    doc = await _video_document(name, spec, path)
+    vr.DOCUMENTS[doc.doc_id] = doc
+    narrations = (_video_narrations_from(loaded.lines, spec, doc) if loaded
+                  else await _generate_video_narrations(cfg, name, spec, doc))
     vr.SCRIPTS[doc.doc_id] = VideoScript(
         doc_id=doc.doc_id, language=spec.language, style=spec.style, audience_level=spec.audience_level,
         voice=spec.voice, narrations=sorted(narrations, key=lambda n: n.slide_index),
@@ -536,10 +995,46 @@ async def render_video(cfg, name: str, *, dry_run: bool = False, deck_dir: Optio
     await vr._render_job_body(job.job_id, cfg)
     if job.state != JobState.done or job.archive_state != "published":
         raise MaintenanceError(f"video {job.job_id} failed: state={job.state.value} archive={job.archive_state}")
-    if not lib.set_published(job.job_id, True):
+    if unpublished:
+        # The library archives every render with published=false; nothing below may flip it.
+        print(f"RENDERED video {name} {job.job_id}", flush=True)
+    elif not lib.set_published(job.job_id, True):
         raise MaintenanceError(f"video {job.job_id} rendered but publishing failed")
-    plan.update(action="rendered", job_id=job.job_id, published=True, slides=len(narrations))
-    _say(f"video {name}: published {job.job_id}")
+    plan.update(action="rendered", job_id=job.job_id, published=not unpublished, slides=len(narrations))
+    _say(f"video {name}: {'rendered, still private' if unpublished else 'published'} {job.job_id}")
+    return plan
+
+
+async def script_video(cfg, name: str, *, out: Path, dry_run: bool = False,
+                       deck_dir: Optional[Path] = None) -> dict:
+    """Generate one ``VIDEOS`` script for review: the render's own ingest and model call, nothing else.
+
+    No render, no library access, nothing published. Writes the script as JSON to ``out`` (never
+    replacing a file), prints the transcript and ``SCRIPTED video <name> <sha256> <out>``.
+    ``dry_run`` makes no model call and writes nothing."""
+    spec = VIDEOS[name]
+    path = _deck_path(spec.deck, deck_dir)
+    _check_video_voice(spec)
+    plan: dict[str, Any] = {"kind": "video", "name": name, "title": spec.title, "deck": spec.deck,
+                            "language": spec.language, "style": spec.style,
+                            "audience_level": spec.audience_level, "voice": spec.voice, "out": str(out)}
+    _refuse_existing(out)
+    if dry_run:
+        plan["action"] = "would generate"
+        return plan
+    doc = await _video_document(name, spec, path)
+    lines = _video_lines(await _generate_video_narrations(cfg, name, spec, doc))
+    problems = _script_line_problems("video", lines)
+    if problems:
+        raise MaintenanceError("the generated script cannot be rendered, nothing written: " + "; ".join(problems))
+    _video_narrations_from(lines, spec, doc)  # every narration must belong to a slide of this deck
+    payload = _script_payload("video", name, spec, lines, path)
+    _write_script(out, payload)
+    _print_video_transcript(name, spec, lines, [s.index for s in doc.slides], payload["content_sha256"])
+    _out(f"SCRIPTED video {name} {payload['content_sha256']} {out}")
+    plan.update(action="scripted", narrations=len(lines), content_sha256=payload["content_sha256"],
+                generated_at=payload["generated_at"])
+    _say(f"video {name}: script written to {out}")
     return plan
 
 
@@ -616,64 +1111,351 @@ def warm_listeners(cfg, *, languages: Optional[list[str]] = None, dry_run: bool 
 
 
 # ---------------------------------------------------------------------------
-# Publish / unpublish podcasts (staged rollout)
+# Publish / unpublish podcasts and videos (staged rollout)
 # ---------------------------------------------------------------------------
-def publish_podcasts(cfg, podcast_ids: list[str], *, published: bool = True,
-                     dry_run: bool = False) -> dict[str, Any]:
-    """Show (``published=True``) or hide podcasts from anonymous visitors.
+KINDS = ("podcast", "video")
+
+
+def _id_ok(kind: str, value: Any) -> bool:
+    from security import PODCAST_JOB_RE, VIDEO_JOB_RE, is_valid
+
+    return is_valid(value, PODCAST_JOB_RE if kind == "podcast" else VIDEO_JOB_RE)
+
+
+def _library(cfg, kind: str):
+    from routers import podcast as pr
+    from routers import video as vr
+
+    lib = (pr if kind == "podcast" else vr)._get_library(cfg)
+    if not lib.available:
+        raise MaintenanceError(f"{kind} library storage unavailable")
+    return lib
+
+
+class _FlagView:
+    """The items of one library and their publish flags: read once, updated as flags are written."""
+
+    def __init__(self, kind: str, lib):
+        self.kind, self.lib = kind, lib
+        self.items: dict[Any, dict] = {}
+        self.state: dict[Any, bool] = {}
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Re-read the flags from storage (after a failed write, to report what is really live)."""
+        self.items = {i.get("job_id"): i for i in self.lib.list()}
+        self.state = {job_id: bool(i.get("published")) for job_id, i in self.items.items()}
+
+    def apply(self, job_id: str, published: bool, *, dry_run: bool = False) -> str:
+        """Set one flag through the library (the routers' code path).
+
+        Returns ``already``, ``published``/``unpublished`` (``would ...`` in a dry run) or ``failed``."""
+        if self.state[job_id] == published:
+            return "already"
+        if dry_run:
+            self.state[job_id] = published
+            return "would publish" if published else "would unpublish"
+        try:
+            ok = self.lib.set_published(job_id, published) is not None
+        except Exception as exc:  # noqa: BLE001 — recorded as a failed step, never a traceback mid-switch
+            log.warning("%s %s: publish flag update raised %s", self.kind, job_id, type(exc).__name__)
+            ok = False
+        if not ok:
+            return "failed"
+        self.state[job_id] = published
+        return "published" if published else "unpublished"
+
+
+def publish_items(cfg, *, podcast_ids: Sequence[str] = (), video_ids: Sequence[str] = (), published: bool = True,
+                  dry_run: bool = False) -> dict[str, Any]:
+    """Show (``published=True``) or hide podcasts and videos from anonymous visitors, by id.
 
     During a staged re-render the superseded items are hidden (kept for
     rollback) until they are purged. Never deletes; the output has no URLs.
+    Ids are validated (and both libraries opened) before anything is written.
     Each entry warns when its title ends up with no published item, or with
     another published item (duplicate cards for visitors)."""
-    from routers import podcast as pr
-    from security import PODCAST_JOB_RE
+    wanted = {"podcast": list(dict.fromkeys(podcast_ids)), "video": list(dict.fromkeys(video_ids))}
+    if not any(wanted.values()):
+        raise MaintenanceError("give at least one --podcast-id or --video-id")
+    for kind, ids in wanted.items():
+        bad = [i for i in ids if not _id_ok(kind, i)]
+        if bad:
+            raise MaintenanceError(f"invalid {kind} ids: {bad}")
+    views = {kind: _FlagView(kind, _library(cfg, kind)) for kind, ids in wanted.items() if ids}
+    report: dict[str, Any] = {"dry_run": dry_run, "published": published, "podcasts": [], "videos": [],
+                              "errors": []}
+    for kind, view in views.items():
+        entries = report[f"{kind}s"]
+        for job_id in wanted[kind]:
+            item = view.items.get(job_id)
+            if item is None:
+                entries.append({"job_id": job_id, "action": "not found"})
+                report["errors"].append({"item": f"{kind} {job_id}", "error": "not found"})
+                _say(f"{kind} {job_id}: not found")
+                continue
+            entry: dict[str, Any] = {"job_id": job_id, "title": item.get("title")}
+            if kind == "podcast":
+                entry["format"] = item.get("format") or "video"
+            entry["action"] = view.apply(job_id, published, dry_run=dry_run)
+            if entry["action"] == "failed":
+                report["errors"].append({"item": f"{kind} {job_id}", "error": "publish flag update failed"})
+            _say(f"{kind} {job_id}: {entry['action']}")
+            entries.append(entry)
+        for entry in entries:
+            if "title" not in entry:
+                continue
+            entry["published"] = view.state[entry["job_id"]]
+            others = sorted(j for j, i in view.items.items()
+                            if j != entry["job_id"] and i.get("title") == entry["title"] and view.state[j])
+            if entry["published"] and others:
+                entry["warning"] = f"also published with this title: {others}"
+            elif not entry["published"] and not others:
+                entry["warning"] = "no published item left with this title"
+    return report
 
-    ids = list(dict.fromkeys(podcast_ids))
+
+def publish_podcasts(cfg, podcast_ids: list[str], *, published: bool = True,
+                     dry_run: bool = False) -> dict[str, Any]:
+    """``publish_items`` for podcasts only."""
+    ids = list(podcast_ids)
     if not ids:
         raise MaintenanceError("give at least one --podcast-id")
-    bad = [i for i in ids if not PODCAST_JOB_RE.fullmatch(i or "")]
-    if bad:
-        raise MaintenanceError(f"invalid podcast ids: {bad}")
-    lib = pr._get_library(cfg)
-    if not lib.available:
-        raise MaintenanceError("podcast library storage unavailable")
-    items = {i.get("job_id"): i for i in lib.list()}
-    state = {job_id: bool(i.get("published")) for job_id, i in items.items()}
-    report: dict[str, Any] = {"dry_run": dry_run, "published": published, "podcasts": [], "errors": []}
-    for job_id in ids:
-        item = items.get(job_id)
-        if item is None:
-            report["podcasts"].append({"job_id": job_id, "action": "not found"})
-            report["errors"].append({"item": f"podcast {job_id}", "error": "not found"})
-            _say(f"podcast {job_id}: not found")
+    return publish_items(cfg, podcast_ids=ids, published=published, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# Staged switch: plan-switch / switch / rollback (visibility only, nothing is deleted)
+# ---------------------------------------------------------------------------
+# (step, manifest field, target flag) in run order: the item that must be visible goes
+# live before the other one is hidden, so visitors never see a gap.
+SWITCH_STEPS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "switch": (("publish_new", "new_id", True), ("unpublish_old", "old_id", False)),
+    "rollback": (("publish_old", "old_id", True), ("unpublish_new", "new_id", False)),
+}
+# command -> pair status while running, when done, when a step failed
+SWITCH_STATUS = {
+    "switch": ("switching", "switched", "switch_failed"),
+    "rollback": ("rolling_back", "rolled_back", "rollback_failed"),
+}
+MANIFEST_VERSION = 1
+
+
+def _pair_key(kind: str, item: dict) -> tuple[str, str, str]:
+    """What a re-render shares with the item it replaces: title (slug or display), format, language."""
+    title = item.get("title") or ""
+    fmt = (item.get("format") or "video") if kind == "podcast" else ""
+    return DISPLAY_TITLES.get(title, title), fmt, item.get("language") or ""
+
+
+def _created(item: dict) -> str:
+    # Library timestamps are all datetime.now(timezone.utc).isoformat(), so strings sort chronologically.
+    return str(item.get("created_at") or "")
+
+
+def _save_manifest(path: Path, data: dict[str, Any]) -> None:
+    """Rewrite the manifest atomically, so a crash never leaves a half-written record."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise MaintenanceError(f"cannot write manifest {path}: {exc.strerror or type(exc).__name__}") from None
+
+
+def _load_manifest(path: Path) -> dict[str, Any]:
+    """Read and validate a switch manifest: ``{"pairs": [{"kind", "old_id", "new_id"}, ...]}``."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        raise MaintenanceError(f"cannot read manifest {path}: {exc.strerror or type(exc).__name__}") from None
+    except ValueError as exc:
+        raise MaintenanceError(f"manifest {path} is not valid JSON: {exc}") from None
+    pairs = data.get("pairs") if isinstance(data, dict) else None
+    if not isinstance(pairs, list) or not pairs:
+        raise MaintenanceError('manifest must be {"pairs": [{"kind", "old_id", "new_id"}, ...]} '
+                               "with at least one pair")
+    problems: list[str] = []
+    seen: set[str] = set()
+    for n, pair in enumerate(pairs, 1):
+        kind = pair.get("kind") if isinstance(pair, dict) else None
+        if kind not in KINDS:
+            problems.append(f"pair {n}: kind must be one of {list(KINDS)}")
             continue
-        entry: dict[str, Any] = {"job_id": job_id, "title": item.get("title"),
-                                 "format": item.get("format") or "video"}
-        if state[job_id] == published:
-            entry["action"] = "already"
-        elif dry_run:
-            entry["action"] = "would publish" if published else "would unpublish"
-            state[job_id] = published
-        elif lib.set_published(job_id, published) is None:
-            entry["action"] = "failed"
-            report["errors"].append({"item": f"podcast {job_id}", "error": "publish flag update failed"})
+        for field in ("old_id", "new_id"):
+            value = pair.get(field)
+            if not _id_ok(kind, value):
+                problems.append(f"pair {n}: {field} {str(value)[:40]!r} is not a valid {kind} id")
+            elif value in seen:
+                problems.append(f"pair {n}: {value} appears more than once in the manifest")
+            else:
+                seen.add(value)
+        if not isinstance(pair.get("log", []), list):
+            problems.append(f"pair {n}: log must be a list")
+    if problems:
+        raise MaintenanceError("invalid manifest: " + "; ".join(problems))
+    return data
+
+
+def _resolve_pairs(cfg, data: dict[str, Any]) -> dict[str, _FlagView]:
+    """Open the libraries the manifest uses and check every pair against them (before any write)."""
+    kinds = {pair["kind"] for pair in data["pairs"]}
+    views = {kind: _FlagView(kind, _library(cfg, kind)) for kind in KINDS if kind in kinds}
+    problems: list[str] = []
+    for n, pair in enumerate(data["pairs"], 1):
+        kind, view = pair["kind"], views[pair["kind"]]
+        old, new = view.items.get(pair["old_id"]), view.items.get(pair["new_id"])
+        for role, job_id, item in (("old", pair["old_id"], old), ("new", pair["new_id"], new)):
+            if item is None:
+                problems.append(f"pair {n}: {role} {kind} {job_id} not found")
+        if old is not None and new is not None and _pair_key(kind, old) != _pair_key(kind, new):
+            problems.append(f"pair {n}: {pair['old_id']} and {pair['new_id']} differ in title, format or language "
+                            f"{_pair_key(kind, old)} vs {_pair_key(kind, new)}")
+    if problems:
+        raise MaintenanceError("manifest does not match the library, nothing was changed: " + "; ".join(problems))
+    return views
+
+
+def _run_switch(cfg, manifest: Path, command: str, dry_run: bool) -> dict[str, Any]:
+    data = _load_manifest(manifest)
+    views = _resolve_pairs(cfg, data)
+    pairs = data["pairs"]
+    steps = SWITCH_STEPS[command]
+    running, done, failed = SWITCH_STATUS[command]
+    titles = [views[p["kind"]].items[p["old_id"]].get("title") for p in pairs]
+    report: dict[str, Any] = {"command": command, "manifest": str(manifest), "dry_run": dry_run, "pairs": [],
+                              "errors": []}
+    if not dry_run:
+        _save_manifest(manifest, data)  # fail before any flag changes when the record cannot be written
+    stopped = False
+    for n, pair in enumerate(pairs, 1):
+        kind, view = pair["kind"], views[pair["kind"]]
+        entry: dict[str, Any] = {"kind": kind, "old_id": pair["old_id"], "new_id": pair["new_id"],
+                                 "title": titles[n - 1], "steps": []}
+        report["pairs"].append(entry)
+        if stopped:
+            entry["status"] = "not attempted"
         else:
-            entry["action"] = "published" if published else "unpublished"
-            state[job_id] = published
-        _say(f"podcast {job_id}: {entry['action']}")
-        report["podcasts"].append(entry)
-    for entry in report["podcasts"]:
-        if "title" not in entry:
-            continue
-        entry["published"] = state[entry["job_id"]]
-        others = sorted(j for j, i in items.items()
-                        if j != entry["job_id"] and i.get("title") == entry["title"] and state[j])
-        if entry["published"] and others:
-            entry["warning"] = f"also published with this title: {others}"
-        elif not entry["published"] and not others:
-            entry["warning"] = "no published item left with this title"
+            for i, (step, field, target) in enumerate(steps, 1):
+                job_id = pair[field]
+                outcome = view.apply(job_id, target, dry_run=dry_run)
+                entry["steps"].append({"step": step, "id": job_id, "outcome": outcome})
+                _say(f"{command} {n}/{len(pairs)} ({kind}): {step} {job_id}: {outcome}")
+                stopped = outcome == "failed"
+                if not dry_run:
+                    pair.setdefault("log", []).append({"at": datetime.now(timezone.utc).isoformat(),
+                                                       "command": command, "step": step, "id": job_id,
+                                                       "outcome": outcome})
+                    pair["status"] = failed if stopped else (done if i == len(steps) else running)
+                    _save_manifest(manifest, data)
+                if stopped:
+                    try:
+                        view.refresh()  # report what is really live, not what was intended
+                    except Exception:  # noqa: BLE001 — an unreadable library reports null flags
+                        view.state = {}
+                    report["errors"].append({"item": f"{kind} {pair['old_id']} -> {pair['new_id']}",
+                                             "error": f"{step} failed"})
+                    break
+            if dry_run:
+                changes = any(s["outcome"].startswith("would") for s in entry["steps"])
+                entry["status"] = "would change" if changes else "nothing to do"
+            else:
+                entry["status"] = pair["status"]
+        if not dry_run:
+            entry["old_published"] = view.state.get(pair["old_id"])
+            entry["new_published"] = view.state.get(pair["new_id"])
+    if dry_run:
+        _say(f"{command} (dry run): {sum(e['status'] == 'would change' for e in report['pairs'])}/{len(pairs)} "
+             "pairs would change")
+    else:
+        _say(f"{command}: {sum(e['status'] == done for e in report['pairs'])}/{len(pairs)} pairs {done}")
     return report
+
+
+def switch(cfg, manifest: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Go live with the re-renders listed in ``manifest``.
+
+    Per pair, in order: publish the new item, then unpublish the old one (kept, never
+    deleted), stopping at the first failure. The whole manifest is checked against the
+    library before anything changes; the outcome and time of every step are appended to the
+    pair's ``log`` in the manifest file (atomically, after each step). Idempotent: a step
+    whose item is already in its target state is ``already``. ``dry_run`` writes nothing."""
+    return _run_switch(cfg, manifest, "switch", dry_run)
+
+
+def rollback(cfg, manifest: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Undo ``switch``: per pair, publish the old item, then unpublish the new one (kept).
+
+    Same checks, record and idempotency as ``switch``; acts on every pair of the manifest
+    (a pair that was never switched is already in the target state)."""
+    return _run_switch(cfg, manifest, "rollback", dry_run)
+
+
+def plan_switch(cfg, *, out: Path, dry_run: bool = False) -> dict[str, Any]:
+    """Write the switch manifest: each published item with its newer unpublished re-render.
+
+    A re-render is an unpublished item of the same kind with the same title (slug or display),
+    format and language, created after the published one. Items with no re-render are listed as
+    ``unmatched``; matches that cannot be decided (several published items, or several newer
+    private re-renders, for one title) are left out and reported in ``errors``, never guessed.
+    Refuses to overwrite ``out`` (it may hold the record of a switch)."""
+    if out.exists():
+        raise MaintenanceError(f"{out} already exists: refusing to overwrite a manifest "
+                               "(it may hold a switch record)")
+    pairs: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for kind in KINDS:
+        view = _FlagView(kind, _library(cfg, kind))
+        groups: dict[tuple[str, str, str], list[dict]] = {}
+        for item in view.items.values():
+            groups.setdefault(_pair_key(kind, item), []).append(item)
+        for key in sorted(groups):
+            live = [i for i in groups[key] if view.state[i["job_id"]]]
+            if not live:
+                continue
+            label = f"{kind} {key[0]}"
+            if len(live) > 1:
+                errors.append({"item": label, "error": "several published items share this title, format and "
+                                                       "language: unpublish the duplicates first",
+                               "published": sorted(i["job_id"] for i in live)})
+                continue
+            old = live[0]
+            newer = sorted((i for i in groups[key] if not view.state[i["job_id"]] and _created(i) > _created(old)),
+                           key=_created)
+            if not newer:
+                unmatched.append({"kind": kind, "job_id": old["job_id"], "title": old.get("title"),
+                                  "reason": "no newer unpublished re-render"})
+            elif len(newer) > 1:
+                errors.append({"item": label, "error": "several newer unpublished re-renders: add the right pair "
+                                                       "to the manifest by hand",
+                               "published": [old["job_id"]],
+                               "candidates": [{"job_id": i["job_id"], "created_at": i.get("created_at")}
+                                              for i in newer]})
+            else:
+                new = newer[0]
+                pair: dict[str, Any] = {"kind": kind, "old_id": old["job_id"], "new_id": new["job_id"],
+                                        "title": old.get("title")}
+                if kind == "podcast":
+                    pair["format"] = key[1]
+                pair.update(language=old.get("language"), old_created_at=old.get("created_at"),
+                            new_created_at=new.get("created_at"))
+                pairs.append(pair)
+    if not pairs and not errors:
+        errors.append({"item": "plan", "error": "no published item has a newer unpublished re-render"})
+    written = bool(pairs) and not dry_run
+    if written:
+        _save_manifest(out, {"version": MANIFEST_VERSION, "created_at": datetime.now(timezone.utc).isoformat(),
+                             "pairs": pairs})
+    _say(f"plan-switch: {len(pairs)} pair(s), {len(unmatched)} unmatched, {len(errors)} left out"
+         + (f"; manifest written to {out}" if written else ""))
+    return {"dry_run": dry_run, "manifest": str(out), "written": written, "pairs": pairs,
+            "unmatched": unmatched, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -1090,12 +1872,22 @@ async def publish_all(cfg, *, dry_run: bool = False, deck_dir: Optional[Path] = 
 # CLI
 # ---------------------------------------------------------------------------
 def _print(obj: Any) -> None:
-    print(json.dumps(obj, indent=2, ensure_ascii=False, default=str), flush=True)
+    _out(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
+
+
+class _Parser(argparse.ArgumentParser):
+    """Adds the one rule argparse cannot express: publish/unpublish need a podcast or a video id."""
+
+    def parse_args(self, args=None, namespace=None):
+        ns = super().parse_args(args, namespace)
+        if ns.cmd in ("publish", "unpublish") and not (ns.podcast_id or ns.video_id):
+            self.error(f"{ns.cmd}: give at least one --podcast-id or --video-id")
+        return ns
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="python -m maintenance.content", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = _Parser(prog="python -m maintenance.content", description=__doc__,
+                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--deck-dir", type=Path, default=None, help="Directory holding the .pptx decks")
     ap.add_argument("--background", type=Path, default=None, metavar="LOG",
                     help="Detach (new session) and append all output to LOG; poll it with tail")
@@ -1107,19 +1899,48 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("seed", help="Upload/publish/translate the AI decks and create the playlist")
     p.add_argument("--dry-run", action="store_true")
 
-    p = sub.add_parser("render-podcast", help="Render + publish an AI podcast")
+    p = sub.add_parser("script-podcast",
+                       help="Generate an AI podcast script for review "
+                            "(no render, no library access, nothing published)")
+    p.add_argument("name", choices=list(PODCASTS))
+    p.add_argument("--out", type=Path, required=True,
+                   help="Script file to write (never overwrites); render it later with "
+                        "render-podcast NAME --from-script FILE")
+    p.add_argument("--dry-run", action="store_true", help="Show the plan; no model call, nothing written")
+
+    p = sub.add_parser("script-video",
+                       help="Generate an AI video script for review (no render, no library access, nothing published)")
+    p.add_argument("name", choices=list(VIDEOS))
+    p.add_argument("--out", type=Path, required=True,
+                   help="Script file to write (never overwrites); render it later with "
+                        "render-video NAME --from-script FILE")
+    p.add_argument("--dry-run", action="store_true", help="Show the plan; no model call, nothing written")
+
+    p = sub.add_parser("render-podcast", help="Render + publish an AI podcast (--unpublished: render privately)")
     p.add_argument("name", choices=[*PODCASTS, "all"])
     p.add_argument("--format", dest="fmt", choices=PODCAST_FORMATS, default=None,
                    help="video = MP4 + radio MP3 (Watch and Listen), audio = radio MP3 only "
                         "(default: the episode's format, video)")
     p.add_argument("--force", action="store_true",
-                   help="Render a new item even if one with this title exists (purge the old id afterwards)")
+                   help="Render a new item even if one with this title exists (switch to it afterwards)")
+    p.add_argument("--unpublished", action="store_true",
+                   help="Render privately: never publish the new item and print 'RENDERED podcast <name> <job id>' "
+                        "(an existing item with the title is only reported; go live with plan-switch/switch)")
+    p.add_argument("--from-script", type=Path, default=None, metavar="FILE",
+                   help="Render exactly the turns of a script-podcast file instead of generating them "
+                        "(validated first; one episode, not 'all')")
     p.add_argument("--dry-run", action="store_true")
 
-    p = sub.add_parser("render-video", help="Render + publish an AI video")
+    p = sub.add_parser("render-video", help="Render + publish an AI video (--unpublished: render privately)")
     p.add_argument("name", choices=[*VIDEOS, "all"])
     p.add_argument("--force", action="store_true",
-                   help="Render a new item even if one with this title exists (purge the old id afterwards)")
+                   help="Render a new item even if one with this title exists (switch to it afterwards)")
+    p.add_argument("--unpublished", action="store_true",
+                   help="Render privately: never publish the new item and print 'RENDERED video <name> <job id>' "
+                        "(an existing item with the title is only reported; go live with plan-switch/switch)")
+    p.add_argument("--from-script", type=Path, default=None, metavar="FILE",
+                   help="Render exactly the narrations of a script-video file instead of generating them "
+                        "(validated first; one video, not 'all')")
     p.add_argument("--dry-run", action="store_true")
 
     p = sub.add_parser("warm-listeners",
@@ -1130,10 +1951,33 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Budget per kit in seconds (default: PODCAST_LISTENER_TIMEOUT_SEC, 900)")
     p.add_argument("--dry-run", action="store_true")
 
-    p = sub.add_parser("publish", help="Show podcasts to anonymous visitors, or hide them with --off (kept)")
-    p.add_argument("--podcast-id", action="append", default=[], required=True)
+    p = sub.add_parser("publish", help="Show podcasts/videos to anonymous visitors, or hide them with --off (kept)")
+    p.add_argument("--podcast-id", action="append", default=[], metavar="JOB_ID",
+                   help="job-xxxxxxxx (repeatable); give at least one --podcast-id or --video-id")
+    p.add_argument("--video-id", action="append", default=[], metavar="JOB_ID", help="sv-xxxxxxxx (repeatable)")
     p.add_argument("--off", action="store_true", help="Unpublish: hide the items (nothing is deleted)")
     p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("unpublish", help="Hide podcasts/videos from anonymous visitors (publish --off; kept)")
+    p.add_argument("--podcast-id", action="append", default=[], metavar="JOB_ID",
+                   help="job-xxxxxxxx (repeatable); give at least one --podcast-id or --video-id")
+    p.add_argument("--video-id", action="append", default=[], metavar="JOB_ID", help="sv-xxxxxxxx (repeatable)")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(off=True)
+
+    p = sub.add_parser("plan-switch",
+                       help="Write the switch manifest: each published item -> its newer unpublished re-render")
+    p.add_argument("--out", type=Path, required=True, help="Manifest to write (never overwrites an existing file)")
+    p.add_argument("--dry-run", action="store_true", help="Print the plan, write nothing")
+
+    p = sub.add_parser("switch", help="Per manifest pair: publish the new item, then unpublish the old one (kept)")
+    p.add_argument("--manifest", type=Path, required=True,
+                   help="JSON manifest {pairs: [{kind, old_id, new_id}]}; the per-step record is written back into it")
+    p.add_argument("--dry-run", action="store_true", help="Show what would change, write nothing")
+
+    p = sub.add_parser("rollback", help="Per manifest pair: publish the old item, then unpublish the new one (kept)")
+    p.add_argument("--manifest", type=Path, required=True, help="The manifest given to switch (record written back)")
+    p.add_argument("--dry-run", action="store_true", help="Show what would change, write nothing")
 
     p = sub.add_parser("purge", help="Delete retired decks/podcasts/videos (+ their playlists)")
     p.add_argument("--deck-title", action="append", default=[])
@@ -1225,15 +2069,31 @@ def main(argv: Optional[list[str]] = None) -> int:
             _print(inv)
         elif args.cmd == "seed":
             _print(asyncio.run(seed(cfg, dry_run=args.dry_run, deck_dir=args.deck_dir)))
+        elif args.cmd == "script-podcast":
+            result = asyncio.run(script_podcast(cfg, args.name, out=args.out, dry_run=args.dry_run,
+                                                deck_dir=args.deck_dir))
+            if args.dry_run:
+                _print(result)
+        elif args.cmd == "script-video":
+            result = asyncio.run(script_video(cfg, args.name, out=args.out, dry_run=args.dry_run,
+                                              deck_dir=args.deck_dir))
+            if args.dry_run:
+                _print(result)
         elif args.cmd == "render-podcast":
+            if args.from_script is not None and args.name == "all":
+                raise MaintenanceError("--from-script renders one reviewed script: name the episode, not 'all'")
             names = list(PODCASTS) if args.name == "all" else [args.name]
             _print([asyncio.run(render_podcast(cfg, n, dry_run=args.dry_run, deck_dir=args.deck_dir,
-                                               force=args.force, fmt=args.fmt))
+                                               force=args.force, fmt=args.fmt, unpublished=args.unpublished,
+                                               from_script=args.from_script))
                     for n in names])
         elif args.cmd == "render-video":
+            if args.from_script is not None and args.name == "all":
+                raise MaintenanceError("--from-script renders one reviewed script: name the video, not 'all'")
             names = list(VIDEOS) if args.name == "all" else [args.name]
             _print([asyncio.run(render_video(cfg, n, dry_run=args.dry_run, deck_dir=args.deck_dir,
-                                             force=args.force))
+                                             force=args.force, unpublished=args.unpublished,
+                                             from_script=args.from_script))
                     for n in names])
         elif args.cmd == "warm-listeners":
             result = warm_listeners(cfg, languages=args.language or None, dry_run=args.dry_run,
@@ -1241,8 +2101,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             _print(result)
             if result["errors"]:
                 return 1
-        elif args.cmd == "publish":
-            result = publish_podcasts(cfg, args.podcast_id, published=not args.off, dry_run=args.dry_run)
+        elif args.cmd in ("publish", "unpublish"):
+            result = publish_items(cfg, podcast_ids=args.podcast_id, video_ids=args.video_id,
+                                   published=not args.off, dry_run=args.dry_run)
+            _print(result)
+            if result["errors"]:
+                return 1
+        elif args.cmd == "plan-switch":
+            result = plan_switch(cfg, out=args.out, dry_run=args.dry_run)
+            _print(result)
+            if result["errors"]:
+                return 1
+        elif args.cmd in ("switch", "rollback"):
+            result = (switch if args.cmd == "switch" else rollback)(cfg, args.manifest, dry_run=args.dry_run)
             _print(result)
             if result["errors"]:
                 return 1

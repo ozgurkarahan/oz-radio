@@ -1,8 +1,28 @@
 // Typed API client for the decks catalog, search and playlists endpoints.
 import type { Slide } from './api';
 import { type AvatarInfo, pickAvatarForGender } from './avatars';
+import type { AudienceLevel } from './podcast';
 
-export type SlideInfo = Slide;
+/** A slide of the public payload (an anonymous visitor): never `body`, speaker notes or translations. */
+export interface PublicSlideInfo {
+  index: number;
+  title: string;
+  /** Signed or same-origin slide image; empty when the deck has none. */
+  image_url: string;
+  /** Visible text of the slide (≤ 600 characters), for alt text. Never speaker notes. */
+  text?: string;
+}
+
+/** A slide of the admin payload: with its `body`, speaker notes and the cached note translations (no `text`). */
+export type AdminSlideInfo = Slide;
+
+/** A slide of a `getDeck()` payload: public for visitors, admin for admins. Narrow with `isAdminSlide`. */
+export type DeckSlide = PublicSlideInfo | AdminSlideInfo;
+
+/** True for an admin slide: it carries `body` and `notes` (the server always sends both); a public slide never does. */
+export function isAdminSlide(slide: DeckSlide): slide is AdminSlideInfo {
+  return 'notes' in slide || 'body' in slide;
+}
 
 export interface Deck {
   deck_id: string;
@@ -15,12 +35,32 @@ export interface Deck {
   published?: boolean;
   /** Anonymous visitors may run the narration-only live avatar demo on this deck. */
   live_demo?: boolean;
+  /** Stored audience level of the deck; null when unknown (contracts v1). */
+  audience_level?: AudienceLevel | null;
 }
 
-export interface DeckDetail extends Deck {
+interface DeckDetailBase extends Deck {
   id: string;
-  filename: string;
-  slides: SlideInfo[];
+  /**
+   * Public payload: the deck's display TITLE, never the uploaded file name (contracts v1.2). Admin payload: the
+   * stored file name. Optional — fall back to `title`, and show visitors `title`, not this.
+   */
+  filename?: string;
+}
+
+/** `GET /api/decks/{id}` for an anonymous visitor. */
+export interface PublicDeckDetail extends DeckDetailBase {
+  slides: PublicSlideInfo[];
+}
+
+/** `GET /api/decks/{id}` for an admin. */
+export interface AdminDeckDetail extends DeckDetailBase {
+  slides: AdminSlideInfo[];
+}
+
+/** What `getDeck()` resolves to: the public or the admin payload, depending on who asks. */
+export interface DeckDetail extends DeckDetailBase {
+  slides: DeckSlide[];
 }
 
 export interface SearchResult {
@@ -128,7 +168,7 @@ export async function translateDeckNotes(deckId: string, language: string): Prom
  */
 export function deckNeedsNotesTranslation(deck: DeckDetail | null, language: string): boolean {
   if (!deck || language === (deck.language || 'en-US')) return false;
-  return (deck.slides ?? []).some((s) => !!s.notes?.trim() && !s.translated_notes?.[language]);
+  return (deck.slides ?? []).some((s) => isAdminSlide(s) && !!s.notes?.trim() && !s.translated_notes?.[language]);
 }
 
 /** Return a copy of `deck` with `translations` merged into each slide's `translated_notes[language]`. */
@@ -137,9 +177,22 @@ export function mergeDeckTranslations(deck: DeckDetail, language: string, transl
     ...deck,
     slides: (deck.slides ?? []).map((s) => {
       const text = translations[String(s.index)];
-      return text ? { ...s, translated_notes: { ...(s.translated_notes ?? {}), [language]: text } } : s;
+      return text && isAdminSlide(s) ? { ...s, translated_notes: { ...(s.translated_notes ?? {}), [language]: text } } : s;
     }),
   };
+}
+
+/**
+ * `Slide[]` for the presenter components (`Presentation.slides`). A public slide has no `body` or `notes`
+ * (visitors never receive them), so they read as empty strings; its `text` is kept for alt text.
+ */
+export function presenterSlides(slides: readonly DeckSlide[] | null | undefined): Array<Slide & { text?: string }> {
+  return (slides ?? []).map((s) => (isAdminSlide(s)
+    ? s
+    : {
+      index: s.index, title: s.title, body: '', notes: '', image_url: s.image_url,
+      ...(s.text !== undefined ? { text: s.text } : {}),
+    }));
 }
 
 export async function searchDecks(query: string, topK = 5): Promise<SearchResponse> {

@@ -32,6 +32,24 @@ export interface Completion {
   /** First audible sample → last loud sample, when the analyser heard the turn. */
   audibleMs: number | null;
   meta?: unknown;
+  /** Azure response id of the turn (the key of its captions); null when it was never seen. */
+  responseId?: string | null;
+}
+
+/** A turn started playing: the avatar's TURN_START, or the first audible sample, whichever came first. */
+export interface PlayInfo {
+  epoch: number;
+  kind: TurnKind;
+  responseId: string;
+  itemId: string | null;
+  /** Clock reading (`PlaybackOptions.now`) of that first sign of speech. */
+  at: number;
+}
+
+/** A turn was dropped without completing (cancelled, or superseded by a new turn). */
+export interface CancelInfo {
+  kind: TurnKind;
+  responseId: string | null;
 }
 
 export interface TurnSnapshot {
@@ -65,6 +83,10 @@ export interface PlaybackOptions {
   onComplete?: (c: Completion) => void;
   onStalled?: (s: TurnSnapshot) => void;
   onChange?: (s: TurnSnapshot | null) => void;
+  /** Once per turn, when it starts playing — the start of its captions. */
+  onPlay?: (p: PlayInfo) => void;
+  /** A turn was cancelled or superseded: its captions are void. */
+  onCancel?: (c: CancelInfo) => void;
   log?: (message: string, data?: unknown) => void;
 }
 
@@ -88,6 +110,8 @@ interface Turn {
   gated: boolean;
   endSeen: boolean;
   idleSeen: boolean;
+  /** `onPlay` was reported. */
+  playFired: boolean;
   phase: TurnPhase;
 }
 
@@ -106,7 +130,7 @@ function str(v: unknown): string | null {
 }
 
 export class AvatarPlayback {
-  private opts: Required<Omit<PlaybackOptions, 'onComplete' | 'onStalled' | 'onChange' | 'log'>> & PlaybackOptions;
+  private opts: Required<Omit<PlaybackOptions, 'onComplete' | 'onStalled' | 'onChange' | 'onPlay' | 'onCancel' | 'log'>> & PlaybackOptions;
   private epochSeq = 0;
   private current: Turn | null = null;
   private unclaimed: Turn | null = null;
@@ -146,6 +170,7 @@ export class AvatarPlayback {
     if (this.current && this.current.phase !== 'done' && this.current.phase !== 'cancelled') {
       this.current.phase = 'cancelled';
       this.retire(this.current);
+      this.opts.onCancel?.({ kind: this.current.kind, responseId: this.current.responseId });
     }
     const turn = this.newTurn(kind, now, init.meta, init.chars ?? 0);
     const u = this.unclaimed;
@@ -154,11 +179,13 @@ export class AvatarPlayback {
         responseId: u.responseId, itemId: u.itemId, dcTurnId: u.dcTurnId, createdAt: u.createdAt,
         generated: u.generated, turnStartAt: u.turnStartAt, turnEndAt: u.turnEndAt,
         lastWordEndMs: u.lastWordEndMs, heardAt: u.heardAt, gated: u.gated,
-        endSeen: u.endSeen, idleSeen: u.idleSeen,
+        endSeen: u.endSeen, idleSeen: u.idleSeen, playFired: u.playFired,
       });
       if (turn.heardAt != null || turn.turnStartAt != null) turn.phase = 'playing';
+      this.firePlay(turn);
     } else if (u) {
       this.retire(u);
+      this.opts.onCancel?.({ kind: u.kind, responseId: u.responseId });
     }
     this.unclaimed = null;
     this.current = turn;
@@ -169,9 +196,11 @@ export class AvatarPlayback {
   /** Drop the current turn without completing it (stale events are then ignored). */
   cancel(): void {
     if (!this.current) return;
-    this.current.phase = 'cancelled';
-    this.retire(this.current);
+    const t = this.current;
+    t.phase = 'cancelled';
+    this.retire(t);
     this.current = null;
+    this.opts.onCancel?.({ kind: t.kind, responseId: t.responseId });
     this.emit();
   }
 
@@ -250,6 +279,7 @@ export class AvatarPlayback {
         if (t && t.phase !== 'cancelled' && t.phase !== 'done' && !t.responseId) {
           t.responseId = responseId;
           t.createdAt = now;
+          this.firePlay(t);
         } else {
           // Server-initiated speech (Q&A invite / answer) may precede the client's begin().
           if (this.unclaimed) this.retire(this.unclaimed);
@@ -326,6 +356,7 @@ export class AvatarPlayback {
       if (loud && t.heardAt == null) {
         t.heardAt = now;
         if (t.phase === 'waiting') t.phase = 'playing';
+        this.firePlay(t);
         if (t === this.current) this.emit();
       }
     }
@@ -389,6 +420,7 @@ export class AvatarPlayback {
       if (turnId && !t.itemId && !t.dcTurnId) t.dcTurnId = turnId;
       if (t.turnStartAt == null) t.turnStartAt = now;
       if (t.phase === 'waiting') t.phase = 'playing';
+      this.firePlay(t);
       if (t === this.current) this.emit();
     } else {
       if (kind === 'IDLE') t.idleSeen = true; else t.endSeen = true;
@@ -422,8 +454,16 @@ export class AvatarPlayback {
       responseId: null, itemId: null, dcTurnId: null, createdAt: null, generated: false,
       turnStartAt: null, turnEndAt: null, lastWordEndMs: null, heardAt: null,
       gated: this.loud || (this.lastLoudAt != null && now - this.lastLoudAt < GATE_QUIET_MS),
-      endSeen: false, idleSeen: false, phase: 'waiting',
+      endSeen: false, idleSeen: false, playFired: false, phase: 'waiting',
     };
+  }
+
+  /** Report the start of a turn once, as soon as both its first sign of speech and its response id are known. */
+  private firePlay(t: Turn): void {
+    if (t.playFired || !t.responseId || (t.turnStartAt == null && t.heardAt == null)) return;
+    t.playFired = true;
+    const at = Math.min(t.turnStartAt ?? Number.POSITIVE_INFINITY, t.heardAt ?? Number.POSITIVE_INFINITY);
+    this.opts.onPlay?.({ epoch: t.epoch, kind: t.kind, responseId: t.responseId, itemId: t.itemId, at });
   }
 
   /** Remember a finished/cancelled turn so its late lifecycle events are ignored. */
@@ -482,7 +522,7 @@ export class AvatarPlayback {
       ? this.lastLoudAt - t.heardAt : null;
     if (this.current === t) this.current = null;
     this.emit();
-    this.opts.onComplete?.({ epoch: t.epoch, kind: t.kind, reason, chars: t.chars, audibleMs, meta: t.meta });
+    this.opts.onComplete?.({ epoch: t.epoch, kind: t.kind, reason, chars: t.chars, audibleMs, meta: t.meta, responseId: t.responseId });
   }
 
   private emit(): void {

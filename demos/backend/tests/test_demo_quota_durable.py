@@ -102,6 +102,30 @@ def test_fails_closed_when_store_down():
     q.add_seconds(30)  # must not raise
 
 
+def test_remaining_today_or_none_tells_an_outage_from_an_empty_budget(monkeypatch):
+    """The boot block shows "unknown" (None) for a store outage; /api/demo/config keeps answering 0."""
+    monkeypatch.setenv("DEMO_DAILY_SESSIONS", "3")
+    store = FakeStore()
+    q = _quota(store)
+    assert q.remaining_today_or_none() == 3 and q.remaining_today() == 3
+    assert q.try_consume("192.0.2.30") is None
+    assert q.remaining_today_or_none() == 2
+    store.fail = True
+    assert q.remaining_today_or_none() is None
+    assert q.remaining_today() == 0
+    store.fail = False
+    monkeypatch.setenv("DEMO_DAILY_SESSIONS", "1")
+    assert q.remaining_today_or_none() == 0          # a genuinely used-up budget is 0, not None
+
+
+def test_remaining_today_or_none_in_memory_without_store(monkeypatch):
+    monkeypatch.setenv("DEMO_DAILY_SESSIONS", "2")
+    q = DemoQuota()
+    assert q.remaining_today_or_none() == 2
+    q.try_consume("192.0.2.31")
+    assert q.remaining_today_or_none() == 1
+
+
 def test_in_memory_fallback_without_store(monkeypatch):
     monkeypatch.setenv("DEMO_DAILY_SESSIONS", "1")
     q = DemoQuota()
@@ -110,8 +134,9 @@ def test_in_memory_fallback_without_store(monkeypatch):
 
 
 @pytest.mark.parametrize("reason", ["busy", "unavailable"])
-def test_ws_maps_store_failure_to_busy(reason, client, monkeypatch):
-    """Store failures surface as 1013 (busy), quota exhaustion as 4429."""
+def test_ws_maps_store_failure_to_4503_not_busy(reason, client, monkeypatch):
+    """[T3-02] A quota store that is busy or down closes 4503 (outage), never 1013 ("another visitor");
+    quota exhaustion stays 4429 and 1013 is only the demo slot being taken."""
     from security import DEMO_QUOTA
 
     monkeypatch.setattr(DEMO_QUOTA, "try_consume", lambda ip: reason)
@@ -134,7 +159,11 @@ def test_ws_maps_store_failure_to_busy(reason, client, monkeypatch):
     with client.websocket_connect(f"/ws/voice/demo?deck_id={deck_id}", headers={"origin": "http://testserver"}) as ws:
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_text()
-    assert exc.value.code == 1013
+    assert exc.value.code == 4503
+    assert exc.value.reason == "Live demo temporarily unavailable"
+    from security import DEMO_SESSIONS
+
+    assert DEMO_SESSIONS.active == 0
 
 
 def test_slide_narration_fallbacks():
