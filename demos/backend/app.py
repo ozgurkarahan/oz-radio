@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import threading
 import time
 import json
 import logging
@@ -10,7 +12,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.gzip import GZipMiddleware
@@ -59,13 +61,14 @@ from security import (
     safe_join,
 )
 from services import avatar_registry
+from services import demo_protocol as dp
 from services.pptx_parser import parse_pptx, PresentationData
 from services.translation import get_openai_client, translate_text, detect_language
 from services.avatar import submit_batch_synthesis, get_batch_synthesis_status
 from services.voice_proxy import demo_narration_chars, handle_demo_proxy, handle_voice_proxy
 from services.voice_questions import ADMIN_MAX_QUESTIONS, MAX_AUDIO_SECONDS, QaOptions
 from services.qa import index_presentation, answer_question
-from services.storage import PresentationStore
+from services.storage import PresentationStore, StorageUnavailable, deck_title
 
 # All supported target languages (en-US is the source, no translation needed)
 SUPPORTED_LANGUAGES = [
@@ -90,6 +93,7 @@ async def lifespan(app: FastAPI):
     config = load_config()
     store = PresentationStore(config)
     DEMO_QUOTA.set_store(store)  # durable demo budget (survives restarts / scale-to-zero)
+    _boot_cache.warm()  # first-paint data for index.html, read in the background: never delays readiness
     auth.log_startup_warnings()
     logger.info("Oz Radio backend started. Region: %s", config.speech_region)
     if store.available:
@@ -1066,8 +1070,11 @@ async def demo_voice_websocket(ws: WebSocket):
     """Anonymous narration-only avatar for decks marked "Live demo".
 
     Pre-accept (4403): kill switch, deck id format, Origin, deck published +
-    live_demo. Post-accept (so browsers can read the code): 1013 at capacity,
-    4429 daily quota (global or per IP), 4408 at the session time cap.
+    live_demo. Post-accept (so browsers can read the code): 1013 when the demo
+    slot is taken, 4429 daily quota (global sessions, minutes or per IP), 4503
+    when the quota store is busy or unavailable, 4408 at the session time cap,
+    4001 when the visitor finishes, 4002 when idle after the narration and
+    1011 when the avatar service fails (contracts §4).
     """
     deck_id = ws.query_params.get("deck_id") or ""
     if (os.environ.get("LOG_FORWARDING_CHAIN") or "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -1090,7 +1097,8 @@ async def demo_voice_websocket(ws: WebSocket):
     if not origin_allowed(ws.headers):
         await ws.close(code=4403, reason="Origin not allowed")
         return
-    deck = _live_demo_deck(deck_id)
+    # Storage can be slow on the first call: keep it off the event loop that carries the live sessions.
+    deck = await asyncio.to_thread(_live_demo_deck, deck_id)
     if not deck:
         await ws.close(code=4403, reason="Demo not available for this deck")
         return
@@ -1112,11 +1120,13 @@ async def demo_voice_websocket(ws: WebSocket):
             exhausted = await asyncio.to_thread(DEMO_QUOTA.try_consume, ip)
         if exhausted:
             logger.info("Demo session refused: %s", exhausted)
+            # Budget used up -> 4429; the quota store busy or down -> 4503 (never "another visitor is using it").
+            refusal = dp.QUOTA_REFUSAL_TO_CLOSE.get(exhausted, dp.CLOSE_STORE_OUTAGE)
             await ws.accept()
-            if exhausted in ("busy", "unavailable"):
-                await ws.close(code=1013, reason="The demo avatar is busy, try again in a minute")
-            else:
+            if refusal == dp.CLOSE_DAILY_QUOTA:
                 await ws.close(code=4429, reason="Daily demo limit reached, come back tomorrow")
+            else:
+                await ws.close(code=4503, reason="Live demo temporarily unavailable")
             return
 
         slides = [s for s in (deck.get("slides") or []) if isinstance(s, dict)]
@@ -1144,11 +1154,15 @@ async def demo_voice_websocket(ws: WebSocket):
             language=language or "en-US",
         )
         try:
-            await ws.send_json({"type": "demo.started", "session_seconds": session_cap,
+            narration_chars = demo_narration_chars(slides)
+            await ws.send_json({"type": dp.MSG_STARTED, "session_seconds": session_cap,
                                 "remaining_ms": session_cap * 1000,
-                                "narration_chars": demo_narration_chars(slides)})
+                                "narration_chars": narration_chars,
+                                "protocol": dp.PROTOCOL_VERSION,
+                                "slide_count": len(narration_chars),
+                                "idle_close_seconds": dp.IDLE_CLOSE_SECONDS})
             async with asyncio.timeout(session_cap):
-                await handle_demo_proxy(
+                close = await handle_demo_proxy(
                     ws,
                     config,
                     language=language or "en-US",
@@ -1159,7 +1173,11 @@ async def demo_voice_websocket(ws: WebSocket):
                     qa=qa,
                 )
             try:
-                await ws.close(code=1000)
+                if close is None:
+                    await ws.close(code=dp.CLOSE_NORMAL)
+                else:
+                    # 4001 finished, 4002 idle, 1011 avatar service failure (after its `error` event).
+                    await ws.close(code=close[0], reason=close[1])
             except Exception:
                 pass
         except TimeoutError:
@@ -1600,6 +1618,227 @@ class StaticAssetDeliveryMiddleware:
 app.add_middleware(StaticAssetDeliveryMiddleware)
 
 
+# ---------------------------------------------------------------------------
+# Boot block: the first-paint data inlined into index.html (contracts §3)
+# ---------------------------------------------------------------------------
+# The built index.html carries `<!--OZ_BOOT-->`; every response for that page gets it replaced by
+# `<script type="application/json" id="oz-boot">{…}</script>` so Home can render its final CTAs without an API
+# waterfall after a cold start. The block only feeds rendering: authorisation is re-checked at /ws/voice/demo.
+BOOT_TITLE_MAX_CHARS = 300
+_BOOT_LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,3}$")
+
+
+class BootSnapshot(NamedTuple):
+    decks: tuple[dict, ...]
+    remaining_today: Optional[int]
+    fetched_at: float
+
+
+class BootDataCache:
+    """In-memory first-paint data (live-demo decks, sessions left today) with stale-while-revalidate.
+
+    * fresh for ``ttl`` seconds; served stale up to ``stale_max`` seconds while one background refresh runs
+      (single flight, a daemon thread: the Cosmos calls block);
+    * cold (nothing usable): :meth:`get` waits at most ``cold_wait`` seconds for the refresh and then answers
+      ``None``, which the page turns into the fail-closed block. It never raises and never waits longer;
+    * a failed refresh keeps the previous snapshot, is not retried before ``ttl`` has passed and is logged at
+      WARNING at most once a minute, without client data.
+
+    ``fetch`` runs in the refresh thread and returns ``(decks, remaining_today)``; it raises when the deck list
+    cannot be read. ``clock`` drives every age (a test passes a fake one); the cold wait is real time.
+    """
+
+    _POLL_SECONDS = 0.005
+    _WARN_EVERY_SECONDS = 60.0
+
+    def __init__(
+        self,
+        fetch: Callable[[], tuple[tuple[dict, ...], Optional[int]]],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        ttl: float = dp.BOOT_TTL_SECONDS,
+        stale_max: float = dp.BOOT_STALE_MAX_SECONDS,
+        retry: Optional[float] = None,
+    ) -> None:
+        self._fetch = fetch
+        self._clock = clock
+        self._ttl = ttl
+        self._stale_max = stale_max
+        self._retry = ttl if retry is None else retry
+        self._lock = threading.Lock()
+        self._snapshot: Optional[BootSnapshot] = None
+        self._inflight: Optional[threading.Event] = None
+        self._last_start: Optional[float] = None
+        self._last_warn: Optional[float] = None
+
+    def reset(self) -> None:
+        """Forget everything (tests)."""
+        with self._lock:
+            self._snapshot = self._inflight = self._last_start = self._last_warn = None
+
+    def warm(self) -> None:
+        """Start the first refresh in the background when the demo is on. Never blocks, never raises."""
+        try:
+            if public_demo_enabled():
+                with self._lock:
+                    self._start_locked(self._clock())
+        except Exception:
+            logger.warning("Boot block warm-up failed to start")
+
+    async def get(self, cold_wait: float = dp.BOOT_COLD_WAIT_SECONDS) -> Optional[BootSnapshot]:
+        """A usable snapshot, or ``None`` (fail closed)."""
+        now = self._clock()
+        with self._lock:
+            snap = self._snapshot
+            age = None if snap is None else now - snap.fetched_at
+            if snap is not None and age < self._ttl:
+                return snap
+            pending = self._start_locked(now)
+            if snap is not None and age <= self._stale_max:
+                return snap                       # stale but acceptable: the refresh runs in the background
+        if pending is None:
+            return None                           # nothing usable and no refresh to wait for
+        end = time.monotonic() + max(0.0, cold_wait)
+        while not pending.is_set() and time.monotonic() < end:
+            await asyncio.sleep(self._POLL_SECONDS)
+        with self._lock:
+            snap = self._snapshot
+            if snap is not None and self._clock() - snap.fetched_at <= self._stale_max:
+                return snap
+        return None
+
+    def _start_locked(self, now: float) -> Optional[threading.Event]:
+        """The refresh in flight, a new one when allowed, else ``None`` (still cooling down after a failure)."""
+        inflight = self._inflight
+        if inflight is not None and not inflight.is_set():
+            return inflight                       # single flight, even while a hung call is pending
+        if self._last_start is not None and now - self._last_start < self._retry:
+            return None
+        done = threading.Event()
+        try:
+            threading.Thread(target=self._refresh, args=(done,), name="oz-boot-refresh", daemon=True).start()
+        except RuntimeError:                      # no thread available: fail closed, try again later
+            self._last_start = now
+            self._warn_locked(now, "could not start the refresh thread")
+            return None
+        self._inflight = done
+        self._last_start = now
+        return done
+
+    def _refresh(self, done: threading.Event) -> None:
+        try:
+            decks, remaining = self._fetch()
+        except Exception as exc:
+            with self._lock:
+                self._warn_locked(self._clock(), f"{type(exc).__name__}")
+        else:
+            snap = BootSnapshot(tuple(decks), remaining, self._clock())
+            with self._lock:
+                self._snapshot = snap
+        finally:
+            done.set()
+
+    def _warn_locked(self, now: float, why: str) -> None:
+        if self._last_warn is None or now - self._last_warn >= self._WARN_EVERY_SECONDS:
+            self._last_warn = now
+            logger.warning("Boot block refresh failed (%s): serving cached data or the fail-closed block", why)
+
+
+def _boot_decks(rows: Any) -> tuple[dict, ...]:
+    """The live-demo decks of the boot block: published AND live_demo (the ``/api/decks`` rule), sorted by
+    casefolded title then id, at most ``BOOT_MAX_LIVE_DECKS``."""
+    decks: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("published") is not True or row.get("live_demo") is not True:
+            continue
+        deck_id = row.get("id")
+        if not is_valid(deck_id, UUID_RE):
+            continue
+        try:
+            title = deck_title(row)[:BOOT_TITLE_MAX_CHARS]
+        except Exception:
+            continue
+        language = row.get("language")
+        decks.append({
+            "deck_id": deck_id,
+            "language": language if isinstance(language, str) and _BOOT_LANGUAGE_RE.fullmatch(language) else "en-US",
+            "title": title,
+        })
+    decks.sort(key=lambda d: (d["title"].casefold(), d["deck_id"]))
+    return tuple(decks[: dp.BOOT_MAX_LIVE_DECKS])
+
+
+def _fetch_boot_data() -> tuple[tuple[dict, ...], Optional[int]]:
+    """Blocking read of the first-paint data (runs in the refresh thread). A storage failure raises: it must
+    never read as "no live decks"."""
+    current = store
+    if current is None:
+        raise StorageUnavailable("store not initialised")
+    rows = current.list_decks(strict=True)
+    return _boot_decks(rows), DEMO_QUOTA.remaining_today_or_none()
+
+
+_boot_cache = BootDataCache(_fetch_boot_data)
+
+
+def _escape_boot_json(text: str) -> str:
+    """Make compact JSON safe inside a ``<script>`` element: ``<`` ``>`` ``&`` and the two JS line separators are
+    written as ``\\uXXXX`` escapes (still the same JSON string after ``JSON.parse``)."""
+    return (text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+async def _boot_payload() -> dict:
+    """The boot JSON for this request. The env flags are read now (the kill switch is immediate); the deck list
+    and the sessions left come from the cache. Demo off -> ``ok:true`` at once, no Cosmos call."""
+    enabled = public_demo_enabled()
+    payload: dict = {
+        "v": dp.BOOT_VERSION,
+        "ok": True,
+        "demo": {
+            "enabled": enabled,
+            "session_seconds": effective_demo_session_seconds(),
+            "qa": {"enabled": enabled and demo_qa_enabled(), "max_questions": demo_qa_max_questions()},
+            "remaining_today": None,
+        },
+        "live_demo_decks": [],
+        "telemetry": {"enabled": False},
+    }
+    if not enabled:
+        return payload
+    snapshot = await _boot_cache.get(dp.BOOT_COLD_WAIT_SECONDS)
+    if snapshot is None:
+        return copy.deepcopy(dp.BOOT_FAIL_CLOSED)
+    payload["demo"]["remaining_today"] = snapshot.remaining_today
+    payload["live_demo_decks"] = [dict(d) for d in snapshot.decks]
+    return payload
+
+
+async def _boot_script_tag() -> str:
+    """The ``<script id="oz-boot">`` element. ASCII only (non-ASCII text is ``\\u``-escaped), never raises."""
+    try:
+        payload = await _boot_payload()
+    except Exception:
+        logger.warning("Boot block could not be built: serving the fail-closed block")
+        payload = copy.deepcopy(dp.BOOT_FAIL_CLOSED)
+    body = _escape_boot_json(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
+    return f'<script type="application/json" id="{dp.BOOT_ELEMENT_ID}">{body}</script>'
+
+
+async def _index_response(index: Path) -> HTMLResponse:
+    """``index.html`` with the boot block in place of the first ``<!--OZ_BOOT-->``. A page without the marker is
+    served unchanged. Always ``no-store``: Teams and browsers must not cache the shell or the block."""
+    try:
+        raw = index.read_bytes()
+    except OSError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    marker = dp.BOOT_MARKER.encode("ascii")
+    if marker in raw:
+        tag = await _boot_script_tag()
+        raw = raw.replace(marker, tag.encode("ascii"), 1)
+    return HTMLResponse(content=raw, headers=_NO_CACHE)
+
+
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str, request: Request):
     """Serve real files under STATIC_DIR, else index.html for client routes.
@@ -1618,18 +1857,21 @@ async def serve_spa(full_path: str, request: Request):
     if not full_path:
         index = safe_join(STATIC_DIR, "index.html")
         if index and index.is_file():
-            return FileResponse(index, headers=_NO_CACHE)
+            return await _index_response(index)
         raise not_found
     candidate = safe_join(STATIC_DIR, full_path)
     if candidate is None:
         raise not_found
     if candidate.is_file():
+        index = safe_join(STATIC_DIR, "index.html")
+        if index is not None and candidate == index:
+            # An explicit /index.html is the same page: same boot block, same no-store headers.
+            return await _index_response(index)
         return FileResponse(candidate)
     last = full_path.rstrip("/").rsplit("/", 1)[-1]
     if "." in last:
         raise not_found
     index = safe_join(STATIC_DIR, "index.html")
     if index and index.is_file():
-        # Prevent Teams from caching the SPA shell
-        return FileResponse(index, headers=_NO_CACHE)
+        return await _index_response(index)
     raise not_found

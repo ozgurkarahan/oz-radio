@@ -41,10 +41,10 @@ class FakeStore:
     def __init__(self):
         self.docs = _docs()
 
-    def get_presentation(self, pid):
+    def get_presentation(self, pid, strict=False):
         return self.docs.get(pid)
 
-    def list_decks(self):
+    def list_decks(self, strict=False):
         return [{k: v for k, v in d.items() if k != "slides"} for d in self.docs.values()]
 
     def save_presentation(self, doc):
@@ -114,6 +114,8 @@ def _run_session(client, url=None, headers=None):
         assert started["type"] == "demo.started"
         assert started["remaining_ms"] == started["session_seconds"] * 1000
         assert started["narration_chars"] == [28, 12, 0, 2000]
+        # protocol v2 (contracts §4.2): the version, the slide count and the idle window
+        assert started["protocol"] == 2 and started["slide_count"] == 4 and started["idle_close_seconds"] == 30
         assert ws.receive_json() == {"type": "proxy.connected"}
 
 
@@ -177,6 +179,56 @@ def test_demo_ws_capacity_1013(client, demo_on):
     assert DEMO_SESSIONS.active == 1  # the held slot is untouched, the refused one released
     assert DEMO_QUOTA.remaining_today() == 20  # capacity refusal does not burn quota
     assert demo_on == []
+
+
+def test_t3_02_1013_is_only_for_the_demo_slot_a_failing_quota_store_is_4503(client, demo_on, monkeypatch):
+    """[T3-02] 1013 = another visitor holds the demo slot. A quota store that is busy or down closes 4503
+    ("Live demo temporarily unavailable"), never the misleading 1013."""
+    from security import DEMO_QUOTA, DEMO_SESSIONS
+
+    assert DEMO_SESSIONS.try_acquire()
+    assert _post_accept_close(client, _url()) == (1013, "The demo avatar is busy, try again in a minute")
+    DEMO_SESSIONS.release()
+    for reason in ("busy", "unavailable"):
+        monkeypatch.setattr(DEMO_QUOTA, "try_consume", lambda ip, r=reason: r)
+        assert _post_accept_close(client, _url()) == (4503, "Live demo temporarily unavailable")
+    monkeypatch.setattr(DEMO_QUOTA, "try_consume", lambda ip: "something-new")        # an unknown refusal fails closed
+    assert _post_accept_close(client, _url())[0] == 4503
+    assert DEMO_SESSIONS.active == 0 and demo_on == []
+
+
+@pytest.mark.parametrize("reason", ["global", "minutes", "ip"])
+def test_t3_03_every_budget_refusal_is_4429(reason, client, demo_on, monkeypatch):
+    """[T3-03] daily sessions (global), streamed minutes and per-IP sessions all close 4429."""
+    from security import DEMO_QUOTA
+
+    monkeypatch.setattr(DEMO_QUOTA, "try_consume", lambda ip: reason)
+    assert _post_accept_close(client, _url()) == (4429, "Daily demo limit reached, come back tomorrow")
+    assert demo_on == []
+
+
+@pytest.mark.parametrize("intent,expected", [
+    (None, (1000, "")),
+    ((4001, "Demo finished"), (4001, "Demo finished")),
+    ((4002, "Demo idle timeout"), (4002, "Demo idle timeout")),
+    ((1011, "Demo session error"), (1011, "Demo session error")),
+])
+def test_demo_ws_closes_with_the_close_intent_of_the_proxy(intent, expected, client, demo_on, monkeypatch, app_module):
+    """handle_demo_proxy returns the close to send (None = a plain 1000); the slot is released either way."""
+    async def proxy(ws, cfg, **kwargs):
+        await ws.send_json({"type": "proxy.connected"})
+        return intent
+
+    monkeypatch.setattr(app_module, "handle_demo_proxy", proxy)
+    with client.websocket_connect(_url(), headers=ORIGIN) as ws:
+        assert ws.receive_json()["type"] == "demo.started"
+        assert ws.receive_json()["type"] == "proxy.connected"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_text()
+    assert (exc.value.code, exc.value.reason) == expected
+    from security import DEMO_SESSIONS
+
+    assert DEMO_SESSIONS.active == 0
 
 
 def test_demo_ws_global_daily_quota_4429(client, demo_on, monkeypatch):
@@ -248,7 +300,8 @@ def test_demo_ws_time_limit_4408_and_release(client, demo_on, monkeypatch, app_m
     monkeypatch.setattr(app_module, "handle_demo_proxy", slow_proxy)
     with client.websocket_connect(_url(), headers=ORIGIN) as ws:
         assert ws.receive_json() == {"type": "demo.started", "session_seconds": 1, "remaining_ms": 1000,
-                                     "narration_chars": [28, 12, 0, 2000]}
+                                     "narration_chars": [28, 12, 0, 2000], "protocol": 2, "slide_count": 4,
+                                     "idle_close_seconds": 30}
         assert ws.receive_json()["type"] == "proxy.connected"
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_text()

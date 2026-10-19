@@ -4,6 +4,9 @@ public ``/ws/voice/demo``).
 * ``qa.*`` / ``context.*`` client messages are handled here and never
   forwarded to Voice Live; the avatar only ever speaks server-generated text
   (fixed invite strings and the grounded answer).
+* The public demo also accepts a typed question (``qa.ask_text``): the text is
+  a direct input to the grounded-answer model exactly like a speech
+  transcript, and is never forwarded to Voice Live.
 * Audio frames are strictly validated (base64, sequence, size, rate) and kept
   in memory only until the question is transcribed or discarded.
 * Speech-to-text uses the Speech short-audio REST API (AAD → STS token, or a
@@ -26,6 +29,7 @@ import httpx
 
 from config import AzureConfig
 from services import deck_qa
+from services import demo_protocol as dp
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +287,13 @@ class QaOptions:
 
 class QaSession:
     """State machine for one voice connection: idle → listening (after
-    ``qa.ready``) → processing (STT + answer task) → answered → idle."""
+    ``qa.ready``) → processing (STT + answer task) → answered → idle.
+
+    The public demo adds a typed question (``qa.ask_text``): a direct path
+    idle → processing with no spoken invite and no listening watchdog.
+    ``on_terminal`` (demo idle clock) is called after every terminal question
+    event: a ``qa.error`` for a valid request id other than ``bad_state``, a
+    ``qa.unavailable``, an effective ``qa.cancel`` / ``qa.resume``."""
 
     def __init__(
         self,
@@ -291,14 +301,16 @@ class QaSession:
         *,
         cfg: AzureConfig,
         send_client: Callable[[dict], Awaitable[None]],
-        speak: Callable[[str], Awaitable[None]],
+        speak: Callable[..., Awaitable[None]],
         clock: Callable[[], float] = time.monotonic,
+        on_terminal: Optional[Callable[[], None]] = None,
     ) -> None:
         self.opts = opts
         self.cfg = cfg
         self._send_client = send_client
         self._speak = speak
         self._clock = clock
+        self._on_terminal = on_terminal
         self.slides: Optional[list] = opts.slides if opts.slides else None
         self.deck_id = opts.deck_id
         self.used = 0
@@ -316,6 +328,11 @@ class QaSession:
     def is_demo(self) -> bool:
         return self.opts.access == "demo"
 
+    def is_quiet(self) -> bool:
+        """True when no question is being listened to or answered (idle or answered, no task running)."""
+        task = self._task
+        return self.state in ("idle", "answered") and (task is None or task.done())
+
     # -- outgoing ---------------------------------------------------------
     def remaining_ms(self) -> Optional[int]:
         if self.opts.deadline is None:
@@ -330,10 +347,46 @@ class QaSession:
             msg = {**msg, "remaining_ms": rem}
         await self._send_client(msg)
 
-    async def _error(self, request_id: Optional[str], code: str) -> None:
+    def _terminal(self) -> None:
+        if self._on_terminal is not None:
+            try:
+                self._on_terminal()
+            except Exception:
+                logger.debug("Voice Q&A: terminal hook failed", exc_info=True)
+
+    async def _error(self, request_id: Optional[str], code: str, *,
+                     message: Optional[str] = None, scope: Optional[str] = None) -> None:
         logger.info("Voice Q&A: error code=%s access=%s", code, self.opts.access)
-        await self._send({"type": "qa.error", "request_id": request_id, "code": code,
-                          "message": ERROR_MESSAGES.get(code, ERROR_MESSAGES["bad_state"])})
+        out = {"type": "qa.error", "request_id": request_id, "code": code,
+               "message": message or ERROR_MESSAGES.get(code, ERROR_MESSAGES["bad_state"])}
+        if scope is not None:
+            out["scope"] = scope
+        await self._send(out)
+        if request_id is not None and code != "bad_state":
+            self._terminal()
+
+    async def _limit_error(self, request_id: str, scope: str) -> None:
+        """``qa.error`` ``limit``. The demo says which limit refused (``scope`` + its message); the admin
+        endpoint keeps its single text."""
+        if self.is_demo:
+            await self._error(request_id, "limit", scope=scope, message=dp.QA_LIMIT_MESSAGES[scope])
+        else:
+            await self._error(request_id, "limit")
+
+    async def _reserve_daily(self) -> Optional[str]:
+        """Daily question reservation, bounded by ``QA_RESERVE_TIMEOUT_SECONDS``. ``None`` when granted, else the
+        refusal scope: ``daily`` (global / per-IP budget used up) or ``unavailable`` (store busy, down or too slow:
+        fail closed). A reservation that completes after the timeout may still count against the daily budget."""
+        if self.opts.reserve_daily is None:
+            return None
+        try:
+            exhausted = await asyncio.wait_for(self.opts.reserve_daily(), dp.QA_RESERVE_TIMEOUT_SECONDS)
+        except Exception:  # includes the timeout; CancelledError is not an Exception
+            exhausted = "unavailable"
+        if not exhausted:
+            return None
+        logger.info("Voice Q&A: daily reservation refused (%s)", exhausted)
+        return "unavailable" if exhausted in ("busy", "unavailable") else "daily"
 
     def _reset(self) -> None:
         self._stop_watchdog()
@@ -393,6 +446,8 @@ class QaSession:
             await self._commit(rid)
         elif mtype == "qa.text":
             await self._text(rid, msg)
+        elif mtype == dp.MSG_QA_ASK_TEXT and self.is_demo:
+            await self._ask_text(rid, msg)
         elif mtype == "qa.cancel":
             await self._cancel(rid)
         elif mtype == "qa.resume":
@@ -406,6 +461,7 @@ class QaSession:
             return
         if not self.slides:
             await self._send({"type": "qa.unavailable", "reason": "no_deck"})
+            self._terminal()
             return
         mode = msg.get("mode", "after_slide")
         if mode not in QA_MODES or (mode == "now" and self.is_demo):
@@ -425,17 +481,14 @@ class QaSession:
             await self._error(rid, "time_low")
             return
         if self.used >= self.opts.max_questions:
-            await self._error(rid, "limit")
+            await self._limit_error(rid, "session")
             return
-        if self.opts.reserve_daily is not None:
-            try:
-                exhausted = await self.opts.reserve_daily()
-            except Exception:
-                exhausted = "unavailable"
-            if exhausted:
-                logger.info("Voice Q&A: daily reservation refused (%s)", exhausted)
-                await self._error(rid, "limit")
-                return
+        refused = await self._reserve_daily()
+        if refused:
+            await self._limit_error(rid, refused)
+            return
+        if self._closed:
+            return
         self.used += 1
         self.request_id, self.slide, self.mode = rid, slide, mode
         self.audio = AudioCollector(clock=self._clock)
@@ -450,7 +503,65 @@ class QaSession:
             "max_audio_bytes": MAX_AUDIO_BYTES,
             "remaining_questions": max(0, self.opts.max_questions - self.used),
         })
-        await self._speak(invite_text(self.opts.language))
+        await self._speak(invite_text(self.opts.language), kind="invite")
+
+    async def _ask_text(self, rid: str, msg: dict) -> None:
+        """Typed question of the public demo (contracts §4.4): no spoken invite, no listening watchdog.
+
+        Order of checks: enabled / deck, slide, state, text (string, empty, length), time left, per-session
+        maximum, daily reservation. Invalid input never costs a question. After the reservation the question is
+        counted, ``qa.accepted`` is sent, and only then does the answer task (``qa.transcript`` → model →
+        ``qa.answer``) start."""
+        if not self.opts.enabled:
+            await self._error(rid, "disabled")
+            return
+        if not self.slides:
+            await self._send({"type": "qa.unavailable", "reason": "no_deck"})
+            self._terminal()
+            return
+        slide = msg.get("slide")
+        if isinstance(slide, bool) or not isinstance(slide, int) or not 0 <= slide < 10_000:
+            await self._error(rid, "bad_state")
+            return
+        if self.state == "answered":
+            self._reset()  # implicit resume
+        if self.state != "idle":
+            await self._error(rid, "bad_state")
+            return
+        text = msg.get("text")
+        if not isinstance(text, str):
+            await self._error(rid, "bad_state")
+            return
+        text = text.strip()
+        if not text:
+            await self._error(rid, "no_speech")
+            return
+        if len(text) > MAX_TEXT_QUESTION_CHARS:
+            await self._error(rid, "too_long", message=dp.TEXT_TOO_LONG_MESSAGE)
+            return
+        rem = self.remaining_ms()
+        if rem is not None and rem < MIN_DEMO_SECONDS_LEFT * 1000:
+            await self._error(rid, "time_low")
+            return
+        if self.used >= self.opts.max_questions:
+            await self._limit_error(rid, "session")
+            return
+        refused = await self._reserve_daily()
+        if refused:
+            await self._limit_error(rid, refused)
+            return
+        if self._closed:
+            return
+        self.used += 1
+        self.request_id, self.slide, self.mode = rid, slide, "after_slide"
+        self.state = "processing"
+        logger.info("Voice Q&A: typed question accepted (used=%d/%d)", self.used, self.opts.max_questions)
+        await self._send({
+            "type": "qa.accepted",
+            "request_id": rid,
+            "remaining_questions": max(0, self.opts.max_questions - self.used),
+        })
+        self._start(rid, text=text)
 
     async def _audio(self, rid: str, msg: dict) -> None:
         if self.state != "listening" or rid != self.request_id or self.audio is None:
@@ -524,7 +635,7 @@ class QaSession:
                 "source_slides": list(result["source_slides"]),
                 "grounded": bool(result["grounded"]),
             })
-            await self._speak(result["answer"])
+            await self._speak(result["answer"], kind="answer")
         except asyncio.CancelledError:
             raise
         except (QaError, deck_qa.DeckQaError) as e:
@@ -542,11 +653,13 @@ class QaSession:
             return
         self._cancel_task()
         self._reset()
+        self._terminal()
 
     async def _resume(self, rid: str) -> None:
         if rid != self.request_id or self.state != "answered":
             return
         self._reset()
+        self._terminal()
 
     async def _context_switch(self, msg: dict) -> None:
         deck_id = msg.get("deck_id")

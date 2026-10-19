@@ -535,7 +535,11 @@ class DemoQuota:
 
         return self._update(mutate)
 
-    def remaining_today(self) -> int:
+    def remaining_today_or_none(self) -> Optional[int]:
+        """Sessions left in today's global budget, or ``None`` when the store cannot be read.
+
+        Unlike :meth:`remaining_today`, an outage is not reported as "0 left": the boot block shows
+        "unknown" for ``None`` instead of telling visitors the day's budget is used up."""
         day = self._day()
         try:
             if self._store is None:
@@ -546,7 +550,11 @@ class DemoQuota:
                 used = (doc or {}).get("total", 0)
             return max(0, demo_daily_sessions() - used)
         except Exception:
-            return 0
+            return None
+
+    def remaining_today(self) -> int:
+        remaining = self.remaining_today_or_none()
+        return 0 if remaining is None else remaining
 
     def reset(self) -> None:
         with self._lock:
