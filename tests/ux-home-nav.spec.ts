@@ -990,3 +990,14 @@ test.describe('Home basics', () => {
     await page.screenshot({ path: testInfo.outputPath('gate-search-desktop.png'), fullPage: true });
   });
 });
+
+test('[T1-13] a 401 toast offers the "Owner sign-in" text link, never a filled sign-in button', async ({ page }) => {
+  await open(page, '/');
+  await page.evaluate(() => window.dispatchEvent(
+    new CustomEvent('app:auth-error', { detail: { status: 401, url: '/api/podcast/render' } }),
+  ));
+  const toast = page.getByTestId('auth-toast');
+  await expect(toast).toBeVisible();
+  await expect(toast.getByRole('link', { name: 'Owner sign-in' })).toBeVisible();
+  await expect(toast.getByRole('button', { name: /sign in/i })).toHaveCount(0);
+});
