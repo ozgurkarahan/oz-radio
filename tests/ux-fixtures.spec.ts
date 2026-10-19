@@ -13,7 +13,8 @@ import {
   refuseDemoHandshake,
 } from './support/demo-ws-fixtures';
 import {
-  BOOT_ELEMENT_ID, BOOT_FAIL_CLOSED, BOOT_MARKER, BOOT_MAX_LIVE_DECKS, BOOT_VERSION, fetchBootFallback, normalizeBoot, parseBoot, pickDemoDeck,
+  BOOT_ELEMENT_ID, BOOT_FAIL_CLOSED, BOOT_MARKER, BOOT_MAX_LIVE_DECKS, BOOT_TELEMETRY_IKEY, BOOT_TELEMETRY_INGESTION, BOOT_VERSION,
+  fetchBootFallback, normalizeBoot, parseBoot, pickDemoDeck,
 } from '../demos/frontend/src/services/boot';
 import {
   DEMO_AZURE_EVENTS, DEMO_AUDIO_TAIL_GRACE_SECONDS, DEMO_CAPTION_KINDS, DEMO_CLOSE_CODES, DEMO_CLOSE_REASONS, DEMO_FALLBACK_LINKS,
@@ -358,6 +359,16 @@ test.describe('contract helpers (node)', () => {
     expect(str('BOOT_MARKER')).toBe(BOOT_MARKER);
     expect(num('BOOT_MAX_LIVE_DECKS')).toBe(BOOT_MAX_LIVE_DECKS);
     expect(py).toContain(`"session_seconds": ${BOOT_FAIL_CLOSED.demo.session_seconds},`);
+    // telemetry part of the boot block (WU-J): off is `{enabled:false}` and nothing else, on both sides; the two validation
+    // patterns are the exact twins of each other (a `/` is escaped in a RegExp source, not in the Python text)
+    expect(BOOT_FAIL_CLOSED.telemetry).toEqual({ enabled: false });
+    expect(py).toContain('"telemetry": {"enabled": False},');
+    const pyPattern = (name: string) => new RegExp(`^${name}\\s*=\\s*\\(?\\s*r"([^"]*)"`, 'm').exec(py)?.[1];
+    const plain = (re: RegExp) => re.source.replace(/\\\//g, '/');
+    expect(pyPattern('BOOT_TELEMETRY_IKEY_PATTERN'), 'BOOT_TELEMETRY_IKEY_PATTERN').toBe(plain(BOOT_TELEMETRY_IKEY));
+    expect(BOOT_TELEMETRY_IKEY.flags).toBe('i');
+    expect(pyPattern('BOOT_TELEMETRY_INGESTION_PATTERN'), 'BOOT_TELEMETRY_INGESTION_PATTERN').toBe(plain(BOOT_TELEMETRY_INGESTION));
+    expect(num('BOOT_TELEMETRY_SERVER_COLD_SECONDS')).toBe(60);
     expect(str('LIBRARY_UNAVAILABLE_DETAIL')).toBe(LIBRARY_UNAVAILABLE_DETAIL);
     expect(num('PUBLIC_SLIDE_TEXT_MAX_CHARS')).toBe(PUBLIC_SLIDE_TEXT_MAX);
 

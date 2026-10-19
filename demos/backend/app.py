@@ -30,7 +30,7 @@ from starlette.requests import Request
 
 import auth
 from auth import Principal, get_principal, require_admin
-from config import load_config, AzureConfig
+from config import load_config, AzureConfig, telemetry_boot
 from security import (
     DAILY_QUOTA,
     MAX_CHAT_MESSAGE_CHARS,
@@ -1802,7 +1802,8 @@ async def _boot_payload() -> dict:
             "remaining_today": None,
         },
         "live_demo_decks": [],
-        "telemetry": {"enabled": False},
+        # Off (the default) is exactly {"enabled": false}; on, the ingestion origin, the key and `server_cold`. Never raises.
+        "telemetry": telemetry_boot(),
     }
     if not enabled:
         return payload

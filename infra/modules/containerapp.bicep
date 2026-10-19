@@ -163,6 +163,12 @@ param demoQaDailyMax string = '40'
 @description('Demo Q&A questions per client IP per UTC day')
 param demoQaDailyPerIp string = '6'
 
+@description('Cookieless usage telemetry (true/false, default off)')
+param telemetryEnabled string = 'false'
+
+@description('Application Insights connection string for the telemetry events (public by design; empty = none)')
+param telemetryConnectionString string = ''
+
 @description('Tags to apply to every resource')
 param tags object = {}
 
@@ -279,6 +285,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DEMO_QA_SESSION_SECONDS', value: demoQaSessionSeconds }
             { name: 'DEMO_QA_DAILY_MAX', value: demoQaDailyMax }
             { name: 'DEMO_QA_DAILY_PER_IP', value: demoQaDailyPerIp }
+            { name: 'TELEMETRY_ENABLED', value: telemetryEnabled }
+            { name: 'TELEMETRY_CONNECTION_STRING', value: telemetryConnectionString }
           ]
         }
       ]

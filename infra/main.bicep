@@ -133,6 +133,12 @@ param demoQaDailyMax string = '40'
 @description('Demo Q&A questions per client IP per UTC day (durable)')
 param demoQaDailyPerIp string = '6'
 
+@description('Cookieless usage telemetry (true/false). Ships disabled: turn it on only after the privacy page lists the events. Effective only with telemetryConnectionString.')
+param telemetryEnabled string = 'false'
+
+@description('Application Insights connection string the browsers send the telemetry events to (InstrumentationKey=<guid>;IngestionEndpoint=https://...). Public by design: the instrumentation key is not a secret. Empty = no telemetry.')
+param telemetryConnectionString string = ''
+
 // ---------------------------------------------------------------------------
 // External (pre-existing) AI Services / Speech resource, e.g. one hosting custom photo avatars
 // ---------------------------------------------------------------------------
@@ -365,6 +371,8 @@ module containerapp 'modules/containerapp.bicep' = {
     demoQaSessionSeconds: demoQaSessionSeconds
     demoQaDailyMax: demoQaDailyMax
     demoQaDailyPerIp: demoQaDailyPerIp
+    telemetryEnabled: telemetryEnabled
+    telemetryConnectionString: telemetryConnectionString
     tags: tags
   }
 }

@@ -9,6 +9,7 @@ import { listLibrary as listVideos, type LibrarySummary as VideoSummary } from '
 import { listLibrary as listPodcasts, hasAudio, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
 import { usePrefersListen } from '../playback/prefersListen';
+import { markHomeCta } from '../services/telemetry';
 import {
   DemoActionLink, LiveDemoBadge, OWNER_SIGN_IN_HINT, liveSessionsLeft, recordedDemoReason, useDemoEntry, type DemoEntry,
 } from '../components/AuthGate';
@@ -142,6 +143,7 @@ export default function HomePage() {
   // Default deny: a visitor never sees owner tools as open links, not even before /api/me answers.
   const locked = !auth.is_admin;
   const entry = useDemoEntry();
+  useEffect(() => markHomeCta(entry.kind), [entry.kind]); // telemetry: the call to action is shown in its final form
   const { avatars } = useAvatars();
   const listenFirst = usePrefersListen();
   const { data, retry, retrying } = useHomeData();

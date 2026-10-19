@@ -155,6 +155,15 @@ BOOT_STALE_MAX_SECONDS = 60
 # On a cold cache wait at most this long for the first refresh, then serve BOOT_FAIL_CLOSED (ok=false).
 BOOT_COLD_WAIT_SECONDS = 0.15
 BOOT_MAX_LIVE_DECKS = 20
+# Telemetry part of the boot block: off — the default, and what BOOT_FAIL_CLOSED says — is {"enabled": false} and nothing
+# else. On, `ingestion` (https origin of the Application Insights ingestion endpoint), `ikey` (instrumentation key, a GUID,
+# public by design) and `server_cold` (this process started less than BOOT_TELEMETRY_SERVER_COLD_SECONDS ago) are added.
+# The patterns are the exact twins of BOOT_TELEMETRY_IKEY (matched case-insensitively) and BOOT_TELEMETRY_INGESTION in boot.ts.
+BOOT_TELEMETRY_IKEY_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+BOOT_TELEMETRY_INGESTION_PATTERN = (
+    r"^https://(?=[^/]{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$"
+)
+BOOT_TELEMETRY_SERVER_COLD_SECONDS = 60
 # What the server sends when it has no fresh data. Read-only: copy before changing.
 BOOT_FAIL_CLOSED = {
     "v": BOOT_VERSION,

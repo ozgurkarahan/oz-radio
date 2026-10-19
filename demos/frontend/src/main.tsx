@@ -8,12 +8,15 @@ import TopNav from './components/TopNav';
 import AuthToast from './components/AuthToast';
 import ErrorBoundary, { liveDemoHref } from './components/ErrorBoundary';
 import { AuthProvider, installAuthErrorInterceptor } from './services/auth';
+import { initTelemetry } from './services/telemetry';
 import { installPlayerDebug, isPlayerDebugEnabled } from './debug/playerDebug';
 import { PlaybackProvider } from './playback/PlaybackProvider';
 import { MiniPlayer } from './playback/MiniPlayer';
 import { ButtonLink, Spinner } from './ui';
 
 installAuthErrorInterceptor();
+// Cookieless telemetry: does nothing unless the boot block enables it and the visitor has not opted out (GPC, DNT, opt-out key).
+initTelemetry();
 
 // Opt-in on-device playback log (?debug=player): hooks before render, panel as a lazy chunk.
 const playerDebug = isPlayerDebugEnabled();

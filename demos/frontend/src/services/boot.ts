@@ -3,6 +3,8 @@
  *
  * FROZEN shared contract file (owner WU-F0, UX-fix run). Types, constants and pure helpers only: no UI.
  * Do not edit: ask the coordinator, who records the change in fleet/contracts.md.
+ * (The `telemetry` part — BootTelemetry, its two patterns and normalizeTelemetry — was extended by WU-J with the
+ * coordinator's approval; keep it in step with services/demo_protocol.py.)
  *
  *   server (WU-G)  replaces the `<!--OZ_BOOT-->` marker of index.html (WU-A adds it) with
  *                  `<script type="application/json" id="oz-boot">{…}</script>`
@@ -47,14 +49,37 @@ export interface BootLiveDeck {
   title: string;
 }
 
+/**
+ * What the boot block says about the cookieless telemetry (contracts §3.3). Off — the default, and what every fail-closed
+ * block says — is `{ enabled: false }` and nothing else. On, the other three fields are present and valid.
+ */
+export interface BootTelemetry {
+  enabled: boolean;
+  /** Origin of the Application Insights ingestion endpoint, `https://<dns name>` (events go to `<ingestion>/v2/track`). */
+  ingestion?: string;
+  /** Instrumentation key: a GUID. Public by design, it only says which resource receives the events. */
+  ikey?: string;
+  /** The server process started less than a minute ago: a slow first response was a cold start. */
+  server_cold?: boolean;
+}
+
 /** The JSON exactly as the server writes it. `ok:false` = the server could not read fresh data (fail closed). */
 export interface BootPayload {
   v: 1;
   ok: boolean;
   demo: BootDemo;
   live_demo_decks: BootLiveDeck[];
-  telemetry: { enabled: boolean };
+  telemetry: BootTelemetry;
 }
+
+/** `telemetry.ikey`. The Python twin is `BOOT_TELEMETRY_IKEY_PATTERN` (matched case-insensitively). */
+export const BOOT_TELEMETRY_IKEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * `telemetry.ingestion`: `https://` and a lower-case DNS name of at least two labels whose last label starts with a letter
+ * (so no IP address, no `localhost`); no credentials, port, path, query or fragment. The Python twin is
+ * `BOOT_TELEMETRY_INGESTION_PATTERN`.
+ */
+export const BOOT_TELEMETRY_INGESTION = /^https:\/\/(?=[^/]{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 
 /** What `readBoot()` returns: a payload with `ok: true`. */
 export type BootBlock = BootPayload & { ok: true };
@@ -87,6 +112,15 @@ function normalizeDeck(value: unknown): BootLiveDeck | null {
   };
 }
 
+/** Anything but an exact, valid enabled block reads as off: a malformed telemetry section can never turn it on. */
+function normalizeTelemetry(raw: unknown): BootTelemetry {
+  if (!isRecord(raw) || raw.enabled !== true) return { enabled: false };
+  const { ingestion, ikey, server_cold: cold } = raw;
+  if (typeof ingestion !== 'string' || !BOOT_TELEMETRY_INGESTION.test(ingestion)) return { enabled: false };
+  if (typeof ikey !== 'string' || !BOOT_TELEMETRY_IKEY.test(ikey)) return { enabled: false };
+  return { enabled: true, ingestion, ikey, server_cold: cold === true };
+}
+
 /**
  * Validates an untrusted object defensively. Returns null for anything that is not a usable, fresh block:
  * wrong version, `ok` not true, or a malformed `demo` section. Bad deck entries are dropped, not fatal.
@@ -102,7 +136,6 @@ export function normalizeBoot(raw: unknown): BootBlock | null {
     .map(normalizeDeck)
     .filter((d): d is BootLiveDeck => d !== null)
     .slice(0, BOOT_MAX_LIVE_DECKS);
-  const telemetry = isRecord(raw.telemetry) && raw.telemetry.enabled === true;
   return {
     v: 1,
     ok: true,
@@ -113,7 +146,7 @@ export function normalizeBoot(raw: unknown): BootBlock | null {
       remaining_today: wholeNumber(demo.remaining_today, 0),
     },
     live_demo_decks: decks,
-    telemetry: { enabled: telemetry },
+    telemetry: normalizeTelemetry(raw.telemetry),
   };
 }
 

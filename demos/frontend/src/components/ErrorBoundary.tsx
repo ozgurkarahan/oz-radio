@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Headphones, Play, RotateCcw, TriangleAlert } from 'lucide-react';
 import { pickDemoDeck, readBoot } from '../services/boot';
 import { demoDeckPath } from '../services/demoProtocol';
+import { reportUiError } from '../services/telemetry';
 import { buttonClass } from '../ui';
 
 interface State { error: Error | null }
@@ -44,6 +45,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[ErrorBoundary]', error, info.componentStack);
+    reportUiError(error); // the error's name and its top frame only, never the message or the component stack
   }
 
   componentDidMount() {

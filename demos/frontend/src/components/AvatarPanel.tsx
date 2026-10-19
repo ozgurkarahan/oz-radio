@@ -22,6 +22,7 @@ import { ICE_WAIT_FOR_GATHERING, IceOfferPlanner } from '../services/demoIce';
 import { narrationFor } from '../services/narration';
 import { AvatarPlayback, NarrationRate, rmsDbfs, type Completion, type TurnSnapshot } from '../services/avatarPlayback';
 import { VoiceCapture, micErrorMessage, type CaptureEnd } from '../services/voiceCapture';
+import { trackDemoEnd, trackDemoIce, trackDemoQuestion, trackDemoStage } from '../services/telemetry';
 
 interface Props {
   presentation: Presentation;
@@ -232,7 +233,7 @@ export default function AvatarPanel({
         setAvatarPlaying(!!s && s.phase === 'playing');
         setStalled(!!s && s.phase === 'stalled');
       },
-      onPlay: (p) => pacerRef.current?.start(p.responseId, p.at),
+      onPlay: (p) => { pacerRef.current?.start(p.responseId, p.at); trackDemoStage('first_word'); },
       onCancel: (c) => pacerRef.current?.cancel(c.responseId),
       log: (m, d) => console.info(m, d ?? ''),
     });
@@ -376,7 +377,7 @@ export default function AvatarPanel({
       presentingRef.current = false;
       setPresenting(false);
       // Demo: the visitor chooses what happens next (ask, or finish) instead of facing an idle avatar.
-      if (isDemoRef.current) { setNarrationDone('complete'); setStatus(''); } else setStatus('Presentation complete!');
+      if (isDemoRef.current) { setNarrationDone('complete'); trackDemoStage('complete'); setStatus(''); } else setStatus('Presentation complete!');
     }
   }, [scheduleSpeak]);
 
@@ -479,11 +480,13 @@ export default function AvatarPanel({
     // relay candidate — a UDP-blocked network no longer waits for the UDP attempts to time out; the admin presenter keeps
     // the old rule (gathering complete, or 5 s). Candidates are relay-only either way (iceTransportPolicy).
     const planner = new IceOfferPlanner(performance.now(), isDemoRef.current ? undefined : ICE_WAIT_FOR_GATHERING);
+    trackDemoIce('start');
     let sdpSent = false;
     let offerTimer: ReturnType<typeof setTimeout> | null = null;
     const sendSdpOffer = (reason: string) => {
       if (sdpSent || !pc.localDescription) return;
       sdpSent = true;
+      trackDemoIce('done');
       if (offerTimer) { clearTimeout(offerTimer); offerTimer = null; }
       const sdp = btoa(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
       console.log(`[WebRTC] Sending SDP offer (${reason}; ICE gathering state: ${pc.iceGatheringState})`);
@@ -606,6 +609,7 @@ export default function AvatarPanel({
     setQa((q) => ({ ...q, phase: 'inviting', mode: qaMode, requestId }));
     setStatus('Asking the presenter to take your question…');
     sendWs({ type: 'qa.begin', request_id: requestId, slide: currentSlideRef.current, mode: qaMode });
+    trackDemoQuestion();
     armQaTimer(12000, 'The presenter did not respond. Try again in a moment.');
   }, [failQa, setQa, sendWs, armQaTimer]);
 
@@ -620,6 +624,7 @@ export default function AvatarPanel({
       failQa(DEMO_COPY.sendFailed);
       return;
     }
+    trackDemoQuestion();
     armQaTimer(DEMO_TIMING.askTextAckTimeoutMs, DEMO_COPY.sendFailed);
   }, [setQa, sendWs, failQa, armQaTimer]);
 
@@ -1091,6 +1096,7 @@ export default function AvatarPanel({
   }, []);
 
   const showOutcome = useCallback((next: DemoOutcomeInfo) => {
+    trackDemoEnd(next);
     setOutcome(next);
     if (next.kind === 'quota') setQuotaBlocked(true);
     resolveRecording();
@@ -1128,6 +1134,7 @@ export default function AvatarPanel({
     playback.setMediaInterrupted(state === 'disconnected');
     if (state === 'connected') {
       mediaEverConnectedRef.current = true;
+      trackDemoStage('rtc_connected');
       clearDemoTimer(mediaDropTimerRef);
       setReconnecting(false);
       setConnected(true);
@@ -1156,6 +1163,7 @@ export default function AvatarPanel({
 
   const startDemoSession = useCallback(() => {
     if (wsRef.current) return;
+    trackDemoStage('tap');
     sessionSeqRef.current += 1;
     const seq = sessionSeqRef.current;
     openedRef.current = false;
@@ -1179,6 +1187,7 @@ export default function AvatarPanel({
     wsRef.current = ws;
     ws.onopen = () => {
       openedRef.current = true;
+      trackDemoStage('ws_open');
       // No session.update: the server owns the whole demo session config.
       // The server's cap starts at accept; `demo.started` re-syncs it.
       setDemoEndsAt(monoNow() + demoSecondsRef.current * 1000);
@@ -1464,6 +1473,7 @@ export default function AvatarPanel({
       if (videoRef.current) videoRef.current.srcObject = null;
       if (audioRef.current) { audioRef.current.pause(); audioRef.current.srcObject = null; }
     } catch {}
+    if (isDemoRef.current) trackDemoEnd();
     if (isDemoRef.current) resetDemoSession();
     boundDeckRef.current = null;
     setConnected(false);
