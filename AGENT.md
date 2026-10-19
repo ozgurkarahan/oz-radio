@@ -12,7 +12,7 @@ The repo covers complementary avatar features in a single app:
 - **Decks / Search / Playlists** at `/decks`, `/search`, `/playlists` — deck catalog + hybrid Azure AI Search + playlists + AI playlist recommendation
 - **Video** at `/video` — batch avatar MP4 pipeline
 - **Podcast** at `/podcast` — two-host conversation rendered as a two-avatar video plus a radio mix, or audio only (library: Watch / Listen)
-- **Public live demo** (off by default) — anonymous, narration-only live avatar on decks an admin marked *Live demo* (`/ws/voice/demo`, see `docs/live-demo.md`)
+- **Public live demo** (off by default) — anonymous live avatar on decks an admin marked *Live demo*: one tap presents the deck with live captions, with typed or spoken questions when `DEMO_QA_ENABLED` is on (`/ws/voice/demo`, protocol v2, see `docs/live-demo.md`)
 
 ## Features
 
@@ -36,7 +36,7 @@ The repo covers complementary avatar features in a single app:
 
 ## Security model
 
-Hybrid exposure: anonymous visitors may load the SPA and view **published** videos, podcasts and decks (slide images + titles only), and — only when `PUBLIC_DEMO_ENABLED=true` — watch the narration-only live demo on decks marked *Live demo*; only when `PODCAST_PUBLIC_AUDIO=true` can they also stream a published podcast's radio audio and read its transcript. Everything else requires a Microsoft Entra ID sign-in (Container Apps Easy Auth) whose object ID is in `ALLOWED_OBJECT_IDS` — default deny. Local dev uses `AUTH_MODE=disabled` (every caller is admin); never deploy that setting. Speech character names never leave the server (no blob names, sidecars, logs, ID3 tags or payloads). See `README.md` → *Security model*, `SECURITY.md`, `docs/live-demo.md` and `docs/podcast.md`.
+Hybrid exposure: anonymous visitors may load the SPA and view **published** videos, podcasts and decks (slide images, titles and the visible slide text; never speaker notes), and — only when `PUBLIC_DEMO_ENABLED=true` — run the live demo on decks marked *Live demo*; only when `PODCAST_PUBLIC_AUDIO=true` can they also stream a published podcast's radio audio and read its transcript. Everything else requires a Microsoft Entra ID sign-in (Container Apps Easy Auth) whose object ID is in `ALLOWED_OBJECT_IDS` — default deny. Local dev uses `AUTH_MODE=disabled` (every caller is admin); never deploy that setting (the backend refuses it on Azure Container Apps). Speech character names never leave the server (no blob names, sidecars, logs, ID3 tags or payloads). See `README.md` → *Security model*, `SECURITY.md`, `docs/live-demo.md` and `docs/podcast.md`.
 
 ## Deployment
 
@@ -74,11 +74,11 @@ To provision or deploy to Azure, follow [`BOOTSTRAP.md`](BOOTSTRAP.md). It gives
 | `demos/backend/services/podcast_compose.py` | ffmpeg video compose (geometry contract, live listener, reactions, 160 ms dissolves) |
 | `demos/backend/services/podcast_radio.py` · `podcast_cover.py` · `podcast_jingle.py` | Radio mix (gaps, −16 LUFS, CBR MP3 + allow-listed ID3, `transcript.json`, radio SRT) · 1400 px cover art · procedural sonic logo |
 | `demos/backend/services/podcast_library.py` | Blob library, manifest v2 (v1 read-compatible), public audio policy |
-| `demos/backend/maintenance/content.py` | Operator CLI in the container (`python -m maintenance.content`): seed, render-podcast `--format`, warm-listeners, publish `--off`, purge |
+| `demos/backend/maintenance/content.py` | Operator CLI in the container (`python -m maintenance.content`): seed, `script-podcast` / `script-video` (review before render), `render-*` (`--from-script`, `--unpublished`), publish / unpublish, `plan-switch` / `switch` / `rollback`, warm-listeners, purge. Runbook: `content/ai-enablement/README.md` |
 | `demos/backend/routers/video.py` | Batch-avatar MP4 (ingest, script stream NDJSON, render, library) |
 | `demos/backend/services/deck_search.py` | Azure AI Search client for the deck catalog (hybrid vector + keyword) |
 | `demos/backend/services/pptx_parser.py` | PPT parsing + LibreOffice → PDF → PNG image rendering |
-| `demos/backend/services/voice_proxy.py` | WebSocket proxy for VoiceLive avatar API (admin `/ws/voice` + narration-only demo) |
+| `demos/backend/services/voice_proxy.py` | WebSocket proxy for VoiceLive avatar API (admin `/ws/voice` + the public live demo, protocol v2); the shared demo constants (message types, close codes, timings, boot block) are in `services/demo_protocol.py`, the twin of `demoProtocol.ts` / `boot.ts` on the frontend |
 | `demos/backend/services/voice_questions.py` | Raise-hand voice Q&A over both voice WebSockets (`qa.*` protocol, audio validation, Speech STT, admin/demo limits) |
 | `demos/backend/services/deck_qa.py` | Deck-grounded answer to an audience question (GPT-4.1 JSON mode, no tools/history) |
 | `demos/backend/services/avatar_registry.py` | Avatar catalog: stock avatars, `CUSTOM_AVATARS_JSON`, `HIDE_STOCK_AVATARS`, podcast crops |
@@ -93,7 +93,7 @@ To provision or deploy to Azure, follow [`BOOTSTRAP.md`](BOOTSTRAP.md). It gives
 | `demos/frontend/src/components/RaiseHandPanel.tsx` | Raise-hand Q&A controls (rendered in `AvatarPanel`); mic capture in `src/services/voiceCapture.ts` |
 | `demos/frontend/src/components/LanguageSelector.tsx` | Language picker with `variant: 'dark' \| 'light'` (dark = gradient banners, light = white cards) |
 | `demos/frontend/src/services/decksApi.ts` | Decks API client (decks, search, playlists, recommend) |
-| `demos/frontend/src/services/demo.ts` | Public live demo config + close-code messages |
+| `demos/frontend/src/services/demo.ts` | Public live demo config (boot block, else `/api/demo/config`) and same-deck recording lookup; the protocol types and the close-code → outcome mapping are in `demoProtocol.ts`, the first-paint boot block in `boot.ts` |
 | `demos/frontend/src/services/teams.ts` | Microsoft Teams SDK integration helpers |
 | `demos/backend/auth.py` | Hybrid exposure model — Easy Auth principal parsing, `AUTH_MODE`, object-ID allowlist, `GET /api/me` |
 | `tests/e2e_full.py` | End-to-end runner — reset DB + upload 9 sample fixtures + decks / video / podcast smoke (30 checks); targets local dev (`AUTH_MODE=disabled`) via `AI_PRESENTER_BASE_URL` |

@@ -164,7 +164,7 @@ We chose a **single-container architecture** where the React frontend is built a
 
 **Why single container?**
 - PoC simplicity — one image, one service, one URL
-- Frontend is ~540 bytes (HTML) + ~200KB (JS bundle) — trivial to embed
+- Frontend: an HTML shell of about 7.9 kB (`index.html`, its branded first paint is inlined) and a main JS chunk of 290.75 kB (92.26 kB gzipped), with every page except Home as a lazy chunk — trivial to embed
 - No need for a CDN or separate static hosting for a demo
 - API and SPA share the same origin — no CORS issues in production
 
@@ -200,8 +200,8 @@ We chose a **single-container architecture** where the React frontend is built a
 ├── <your-container-app>               Microsoft.App/containerApps
 │   ├── System-Assigned Managed Identity
 │   ├── HTTPS Ingress (port 8000)
-│   ├── 1 vCPU / 2 GiB memory
-│   └── Auto-scale: 1–3 replicas (50 concurrent requests threshold)
+│   ├── 2 vCPU / 4 GiB memory
+│   └── Scale: 0–1 replicas (`MIN_REPLICAS`; 50 concurrent requests threshold)
 │
 └── <your-log-analytics>              Microsoft.OperationalInsights/workspaces (PerGB2018)
     └── 30-day retention
@@ -263,10 +263,10 @@ resource aiServices 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' ex
 | Setting | Value | Rationale |
 |---------|-------|-----------|
 | ACR SKU | Basic | Sufficient for PoC (10 GiB storage) |
-| Container CPU | 1 vCPU | LibreOffice rendering needs CPU headroom |
-| Container Memory | 2 GiB | PDF rendering + numpy vectors can spike |
-| Min Replicas | 1 | Always warm for demo |
-| Max Replicas | 3 | Auto-scale on HTTP concurrency (50 req threshold) |
+| Container CPU | 2 vCPU | LibreOffice rendering and ffmpeg compose need CPU headroom |
+| Container Memory | 4 GiB | Parallel slide renders and compose outgrew 2 GiB (OOM-kill wiped the in-memory job store) |
+| Min Replicas | `MIN_REPLICAS`: 0 in the template, 1 in production | Production keeps one replica warm; `0` scales to zero when idle ([provisioning §10](provisioning.md#10-cost-notes-and-teardown)) |
+| Max Replicas | 1 | Fixed: counters and quotas are in-process; the scale rule is 50 concurrent requests |
 | Ingress | External HTTPS | Auto-managed TLS certificate |
 | Transport | Auto | Supports both HTTP and WebSocket upgrades |
 | Identity | System-Assigned | For AAD-based access to AI services |
@@ -640,14 +640,14 @@ az containerapp update \
 | Azure OpenAI (GPT-4.1) | Standard, 30K TPM | ~$5–15 (pay-per-token) |
 | Azure OpenAI (embeddings) | GlobalStandard, 30K TPM | ~$1–3 (pay-per-token) |
 | Azure AI Services | S0 | $0 (pay-per-use TTS/avatar) |
-| Container Apps | 1 vCPU / 2 GiB, min 1 replica | ~$36/month |
+| Container Apps | 2 vCPU / 4 GiB, 1 warm replica (`MIN_REPLICAS=1`) | ~$47/month at idle rates (up to ~$158 if never idle) |
 | Container Registry | Basic (10 GiB) | ~$5/month |
 | Log Analytics | PerGB2018, 30-day retention | ~$2–5/month |
-| **Total (PoC)** | | **~$50–65/month** |
+| **Total (PoC)** | | **~$60–75/month** at idle |
 
 ### Cost Optimization for Production
 
-- Set `minReplicas: 0` with scale-to-zero (saves ~$36/month when idle)
+- Set `MIN_REPLICAS=0` to scale to zero when idle: that removes the always-on cost (about $47/month at idle rates) at the price of a cold start of about 30 s on the first request. Production runs one warm replica ([provisioning §10](provisioning.md#10-cost-notes-and-teardown)).
 - Use Premium Container Registry only if >10 GiB images needed
 - Consider Azure OpenAI provisioned throughput for predictable pricing at scale
 - Move slide images to Blob Storage to reduce container memory pressure

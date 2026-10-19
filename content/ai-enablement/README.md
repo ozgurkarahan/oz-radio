@@ -84,7 +84,7 @@ Signed in as an admin:
 5. **Live demo (demo cuts only).** After publishing
    `ai-enablement-demo-beginner.pptx` (and the `-fr` cut), click **Live demo off** on its row so it
    reads **Live demo on** (`POST /api/decks/{deck_id}/live-demo
-   {"enabled": true}`). Anonymous visitors then see **▶ Try the live demo** on
+   {"enabled": true}`). Anonymous visitors then see **Start the live demo** on Home, Decks and
    its present page when the public demo is enabled
    (`PUBLIC_DEMO_ENABLED=true`). See [docs/live-demo.md](../../docs/live-demo.md).
    The cut is sized for the default 180-second demo session

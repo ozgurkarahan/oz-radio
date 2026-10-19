@@ -10,7 +10,7 @@ A quick, opinionated map of what's in `docs/`. Start with whichever bucket match
 |---|---|---|
 | **Live** | Live avatar presenter over a single PowerPoint (WebRTC, real-time Q&A grounded in the slides); signed-in admins can also **raise a hand** and ask by voice | [architecture.md](architecture.md), [live-demo.md › Raise-hand Q&A](live-demo.md#raise-hand-qa), [diagrams/images/deck-present-sequence.png](diagrams/images/deck-present-sequence.png) |
 | **Decks, Search & Playlists** | Multi-deck catalog with hybrid search, playlists with progress tracking and AI playlist recommendation | [decks-search-playlists.md](decks-search-playlists.md) |
-| **Public live demo** | Anonymous, narration-only live avatar on decks an admin marked *Live demo*, with hard cost guardrails; optional voice Q&A (`DEMO_QA_ENABLED`) | [live-demo.md](live-demo.md) |
+| **Public live demo** | Anonymous live avatar on decks an admin marked *Live demo*: one tap presents the deck with live captions, under hard cost guardrails; optional typed and voice questions (`DEMO_QA_ENABLED`) | [live-demo.md](live-demo.md) |
 | **Video** | Narrated avatar video generated from a PowerPoint (batch, multilingual; MP4 / SRT / SCORM) | [video.md](video.md) |
 | **Podcast** | Two-avatar podcast-style video generated from any document | [podcast.md](podcast.md) |
 
@@ -67,7 +67,7 @@ PNGs are rendered from draw.io sources in [`diagrams/`](diagrams/).
 - **Where is the Live page?** → `demos/frontend/src/pages/LivePage.tsx` + the `/api/upload`, `/api/presentations`, `/ws/voice` endpoints in `demos/backend/app.py`
 - **Where is the video code?** → `demos/backend/routers/video.py` + `services/video_*.py` + `demos/frontend/src/pages/Video*.tsx`
 - **Where is the podcast code?** → `demos/backend/routers/podcast.py` + `services/podcast_*.py` + `demos/frontend/src/pages/Podcast*.tsx`
-- **Where is the public live demo code?** → `/ws/voice/demo` + `/api/demo/config` in `demos/backend/app.py`, `handle_demo_proxy` in `services/voice_proxy.py`, `demos/frontend/src/services/demo.ts`
+- **Where is the public live demo code?** → `/ws/voice/demo` + `/api/demo/config` in `demos/backend/app.py`, `handle_demo_proxy` in `services/voice_proxy.py`, the shared protocol constants in `services/demo_protocol.py`, `demos/frontend/src/services/{demo,demoProtocol,boot}.ts` and `components/AvatarPanel.tsx`
 - **Where is the raise-hand voice Q&A code?** → `demos/backend/services/voice_questions.py` (`qa.*` protocol, STT) + `services/deck_qa.py` (grounded answer) + `demos/frontend/src/components/RaiseHandPanel.tsx` + `src/services/voiceCapture.ts`
 - **Where are avatars configured?** → `demos/backend/services/avatar_registry.py` (stock avatars, `CUSTOM_AVATARS_JSON`, `HIDE_STOCK_AVATARS`)
 - **Where are the E2E test scripts?** → `tests/e2e_full.py` (decks / search / playlists + smoke, 30 checks) and `tests/e2e_render.py` (video + podcast full render, 10 checks) — run against local dev (`run-local.ps1`, `AUTH_MODE=disabled`), target set with `AI_PRESENTER_BASE_URL`

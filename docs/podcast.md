@@ -14,7 +14,7 @@
 - Upload documents (PPTX, PDF, DOCX, TXT, URL) + optional instructions → get a **podcast-style conversation** between two AI hosts, in the **format** picked at render time:
   - **`video`** (*Video + audio*) — the two-avatar video **and** the radio mix; the library offers **Watch** and **Listen** side by side;
   - **`audio`** (*Audio only*) — the radio mix only: DragonHD text-to-speech, no avatar synthesis, so it is faster and far cheaper (§7).
-- Deliverables per job: the radio **MP3** (ID3 tags + cover art), **`transcript.json`** (radio-timed captions, host turns, waveform peaks), **`cover.jpg`**, a radio-timed **SRT**, and a **SCORM ZIP** for LMS upload (radio MP3 + radio SRT). The video format adds the dual-avatar **MP4** and its video-timed **SRT**.
+- Deliverables per job: the radio **MP3** (ID3 tags, no embedded picture), **`transcript.json`** (radio-timed captions, host turns, waveform peaks), **`cover.jpg`**, a radio-timed **SRT**, and a **SCORM ZIP** for LMS upload (radio MP3 + radio SRT). The video format adds the dual-avatar **MP4** and its video-timed **SRT**.
 - The host who is not speaking looks **alive and listening** (a cached silent "listening" loop of its avatar, in full colour) and can react with audible, lip-synced **backchannels** ("Mm-hmm.", "Right.", "Exactly.") in both formats.
 - Synthesize each turn with its own batch avatar job (talking clips), run concurrently within the Speech job-creation quota. The listener and the radio layers degrade to fallbacks with a warning code; they never fail a render.
 - Reuse the shared deployment (one resource group, one `azd up`) for easy teardown.
@@ -41,7 +41,7 @@ The studio is a five-step wizard: **Source → Script → Review & cast → Rend
 5. **Review & cast:** picks the format — **Video + audio** or **Audio only** — reviews the script, names the two hosts and picks their voices and avatars (for *Audio only* the avatar becomes an optional **portrait**), sets the options **Background music** (only used when a licensed bed file is installed), **Intro & outro** and **Listener reactions**, and clicks **Render podcast**.
 6. **Render:** the backend starts the job and the UI polls stage-level progress (video: rendering 3/8 → composing → mixing → done; audio: synthesizing 3/8 → mixing → done).
 7. **Listen:** the result view shows the same Watch / Listen player as the library, the transcript and the downloads the format produced (MP4, MP3, SRT, radio SRT, transcript, cover, SCORM), plus any warning. The episode is saved to the library unpublished.
-8. In the library (`/podcast/library`), each episode shows **Watch** and **Listen** side by side (audio-only episodes: **Listen** and an *Audio only* chip); on touch devices Listen comes first as the primary action and the title opens Listen, and every row shows **Resume · m:ss left** or **Played** from the listener's progress. The player opens with Watch | Listen tabs that keep the position (mapped turn by turn) and play one medium at a time; `?episode=<id>&mode=watch|listen` deep-links to it. Listening continues in the mini-player after the player is closed (see §5.4).
+8. In the library (`/podcast/library`), each episode shows **Watch** and **Listen** side by side (audio-only episodes: **Listen** and an *Audio only* chip); each row shows its language and level; on touch devices Listen comes first as the primary action and the title opens Listen, and every row shows **Resume · m:ss left** or **Played** from the listener's progress. The player opens with Watch | Listen tabs that keep the position (mapped turn by turn) and play one medium at a time; `?episode=<id>&mode=watch|listen` deep-links to it. Listening continues in the mini-player after the player is closed (see §5.4).
 
 ---
 
@@ -60,6 +60,7 @@ GET    /api/podcast/jobs                       → List recent jobs
 GET    /api/podcast/jobs/{job_id}/file/{kind}  → mp4 | mp3 | srt | audio_srt | transcript | cover | scorm (local files)
 GET    /api/podcast/library                    → Library (admin: every item; anonymous: published items, public DTO)
 GET    /api/podcast/library/{job_id}           → Item with fresh SAS URLs + inline transcript (anonymous: see §6.1)
+GET    /api/podcast/library/{job_id}/captions.vtt → WebVTT captions of a published video episode (§6.1)
 POST   /api/podcast/library/{job_id}/publish   → Publish / unpublish (one flag for every rendition)
 DELETE /api/podcast/library/{job_id}           → Delete published item
 GET    /api/podcast/voices                     → Available voices per language (subset of the live presenter list)
@@ -73,7 +74,7 @@ GET    /api/podcast/avatars                    → Available avatars (stock and 
 | Module | Responsibility |
 |---|---|
 | `services/podcast_ingest.py` | Multi-format parsing: PPTX (reuse `pptx_parser`), PDF (`pypdf`), DOCX (`python-docx`), TXT/MD (plain), URL (`httpx` + `readability-lxml`). Returns normalized `Document`. |
-| `services/podcast_script.py` | GPT-4.1 structured output. Prompt builds context from `Document`, respects style / length / language, asks for radio-safe wording (no visual references) and optional per-turn backchannel hints. Returns `Script` (list of `DialogueTurn`). |
+| `services/podcast_script.py` | GPT-4.1 structured output. Prompt builds context from `Document`, respects style / length / language, asks for radio-safe wording (no visual references) and optional per-turn backchannel hints. Returns `Script` (list of `DialogueTurn`). The model gets the whole source (up to 48,000 characters, shortened slide by slide with a fair budget when longer) at temperature 0.4, under the rules of §3.2.2. |
 | `services/podcast_models.py` · `podcast_media.py` | HTTP/JSON contracts (render request, job, transcript, library DTOs) · internal engine contracts (turn audio, listener kits, reaction placements, radio result, library files), stable warning codes and the `PODCAST_*` env flags. |
 | `services/speech_rest.py` | Shared Speech REST plumbing: Entra token → custom-domain STS token (cached), resource-key fallback, one bounded retry policy (401 refresh once, 429 `Retry-After`, jittered backoff on 408/5xx, cooperative deadlines). Never logs tokens, bodies or SAS query strings. |
 | `services/podcast_render.py` | Batch avatar synthesis, **one job per turn** (the multi-input output shape of API 2024-08-01 proved unstable), run concurrently: admission `MAX_ACTIVE_BATCH_JOBS`, process-wide creation pacing `SPEECH_BATCH_CREATE_PER_MIN` (the service answers 429 beyond ≈ 2 creations per rolling minute), poll, download. Also builds the listener-kit jobs. |
@@ -90,12 +91,23 @@ GET    /api/podcast/avatars                    → Available avatars (stock and 
 
 | Level | Directive added to the system prompt |
 |---|---|
-| *Any (default)* → `null` | nothing — no `Audience:` line; the prompt stays byte-for-byte the SHA-pinned baseline (`tests/test_audience_level.py`, re-pinned once when the radio-safe directive and the reaction hints were added) |
+| *Any (default)* → `null` | nothing — no `Audience:` line; the prompt stays the SHA-pinned baseline (`tests/test_audience_level.py`): re-pinned when the radio-safe directive and the reaction hints were added, then for the content-quality rules (grounding, recorded episode, language, coverage and wrap-up) |
 | `beginner` | assume no prior AI/technical knowledge; define every term in plain words; everyday analogies; avoid jargon and acronyms (expand if unavoidable); one idea at a time |
 | `practitioner` | audience builds or operates solutions; concrete how-to, trade-offs, practical tips, common pitfalls; standard terminology OK |
 | `expert` | deep technical audience; architecture, internals, limits, failure modes, evaluation; precise vocabulary; stay strictly within the source — never invent numbers or details |
 
-The level is stored on the saved `Script` (`GET /api/podcast/scripts/{id}`), written to the library `manifest.json` (`audience_level`) and returned by the admin `GET /api/podcast/library` + `/library/{job_id}` responses — the library shows it as a small "*Level* audience" chip. The anonymous public DTO does not carry it. In the UI, the **Audience level** select sits next to **Style** in *Conversation settings*.
+The level is stored on the saved `Script` (`GET /api/podcast/scripts/{id}`), written to the library `manifest.json` (`audience_level`) and returned by the admin `GET /api/podcast/library` + `/library/{job_id}` responses. The library shows it as a level chip on each row and in the player, and the anonymous public DTO carries it too (`audience_level`, §6.1). In the UI, the **Audience level** select sits next to **Style** in *Conversation settings*.
+
+#### 3.2.2 Script rules
+
+Every script, at every audience level (including *Any*), is written under the same rules:
+
+- **Grounding.** Only what the source states. Every claim keeps the source's hedges, and no statistic, figure or product is invented.
+- **Recorded episode.** The episode is pre-recorded, so it never says or implies that nothing was recorded in advance. A source that describes a live demo or a live presenter is explained as a recording.
+- **One language.** No phrase from another language (no English phrase in a French episode). The Listen player labels the hosts in French for French episodes (*Journaliste* and *Expert*).
+- **Coverage.** The deep levels aim at a question and an answer per slide: practitioner covers 2 slides in every 3, expert 4 in every 5. The dialogue ends with a short wrap-up turn that recaps what the episode actually said.
+
+The model gets the whole source (48,000 characters at most; a longer source is shortened slide by slide with a fair budget, so no slide is dropped) at temperature 0.4. Lines stay radio-safe (no visual references).
 
 ### 3.3 Data model — Cosmos DB `podcasts` database (original design)
 
@@ -261,10 +273,10 @@ A dedicated broadcast-style master, built from the per-turn speech of either for
 3. **Levels and stereo:** every turn is levelled to −20 LUFS first (voices differ by up to ~12 LU); constant-power pan, interviewer slightly left (−0.15), expert slightly right (+0.15); backchannels on the listener's side at their placement.
 4. **Intro & outro:** the Oz Radio sonic logo (`podcast_jingle`: an original procedural FM-bell motif synthesised with ffmpeg — 2 s rising intro, 1.5 s falling outro, no samples or existing melody) a few dB under the voices; only its faded tail rings under the first word. A licensed bed is ducked under the voices when provided (none ships).
 5. **Loudness:** pre-gain + sample-peak limiter, then a **two-pass linear `loudnorm`** (I −16 LUFS, TP −1.5 dBTP, LRA 11; raw TTS would otherwise make loudnorm fall back to dynamic mode) → **CBR MP3 128 kb/s, 44.1 kHz stereo** (measures ≈ −16.3 LUFS after encoding).
-6. **ID3v2.3 allow-list** (nothing else is written): `title` (episode title), `artist` (host display names), `album_artist` "Oz Radio", `album` "Oz Radio Podcasts", `genre` "Podcast", `date` (year), `language`, `comment` "AI-generated voices", plus the cover as APIC (re-encoded JPEG, no EXIF) — i.e. exactly the frames `TIT2`, `TPE1`, `TPE2`, `TALB`, `TCON`, `TYER`, `TLAN`, `TXXX:comment` and `APIC`. Never voices, Speech character names or source file names.
+6. **ID3v2.3 allow-list** (nothing else is written): `title` (episode title), `artist` (host display names), `album_artist` "Oz Radio", `album` "Oz Radio Podcasts", `genre` "Podcast", `date` (year), `language`, `comment` "AI-generated voices" — i.e. exactly the frames `TIT2`, `TPE1`, `TPE2`, `TALB`, `TCON`, `TYER`, `TLAN` and `TXXX:comment`. No picture is embedded: an APIC frame delayed the first audio frame on slow links, so the cover stays the separate `cover.jpg`. Never voices, Speech character names or source file names.
 7. **Sidecars:** `transcript.json` (§3.10, with waveform peaks) and the radio-timed `audio.srt` (used for SCORM).
 
-**Cover art** (`podcast_cover.py`): 1400×1400 JPEG drawn with Pillow — brand gradient, "Oz Radio" wordmark, the wrapped episode title, two circular host portraits (the photo avatars' green background keyed out; monogram when there is no portrait) and an "AI-generated voices" note. It is the MP3's APIC picture and the thumbnail of audio-only items; a rendering error gives a plain branded cover (`cover_fallback`).
+**Cover art** (`podcast_cover.py`): 1400×1400 JPEG drawn with Pillow — brand gradient, "Oz Radio" wordmark, the wrapped episode title, two circular host portraits (the photo avatars' green background keyed out; monogram when there is no portrait) and an "AI-generated voices" note. It is the separate `cover.jpg` deliverable, the library cover (`cover_url`) and the thumbnail of audio-only items; it is not embedded in the MP3. A rendering error gives a plain branded cover (`cover_fallback`).
 
 ### 3.8 Live listener (`podcast_listener.py`)
 
@@ -383,21 +395,27 @@ The `PODCAST_*` flags are read on each use. `PODCAST_REACTIONS` and `PODCAST_LIS
 ```bash
 python -m maintenance.content inventory --json before.json     # decks, playlists, podcasts, videos (no URLs)
 python -m maintenance.content warm-listeners [--language en-US] [--timeout 900] [--dry-run]
+python -m maintenance.content script-podcast {beginner,practitioner,expert,demo-fr} --out script.json [--dry-run]
 python -m maintenance.content render-podcast {beginner,practitioner,expert,demo-fr,all} \
-    [--format video|audio] [--force] [--dry-run]
+    [--format video|audio] [--force] [--unpublished] [--from-script script.json] [--dry-run]
 python -m maintenance.content publish --podcast-id job-… [--podcast-id job-…] [--off] [--dry-run]
+python -m maintenance.content unpublish --podcast-id job-… [--dry-run]
+python -m maintenance.content plan-switch --out switch.json [--dry-run]
+python -m maintenance.content switch --manifest switch.json [--dry-run]
+python -m maintenance.content rollback --manifest switch.json [--dry-run]
 python -m maintenance.content purge --podcast-id job-… --record deleted.json [--dry-run]
 python -m maintenance.content --background /tmp/podcasts.log render-podcast all --force
 python -m maintenance.content logtail /tmp/podcasts.log -n 40
 ```
 
-- **`render-podcast`** renders and publishes an episode with the showcase cast (Sofia on `photo_female`, Lucas on `photo_male`, the DragonHD voices of the episode's language). `--format` overrides the episode's format (`video` for all four). Renders ask for backchannels; they are rendered only with `PODCAST_REACTIONS=true`. An item with the same title **and format** is only (re)published unless `--force`. The output lists the job id, format, `listener_mode` and warning codes.
+- **`script-podcast`** writes an episode's script to a JSON file for review. It makes no render, no library access and publishes nothing; it costs one model call (`--dry-run` makes none and writes nothing). It never overwrites a file, and each run prints a `SCRIPTED` line with the script's digest.
+- **`render-podcast`** renders an episode with the showcase cast (Sofia on `photo_female`, Lucas on `photo_male`, the DragonHD voices of the episode's language) and publishes it, unless `--unpublished` archives it privately. `--from-script` renders exactly the turns of a reviewed script file instead of generating new ones; the file is checked first (schema, the deck unchanged since the script was written, and a digest that refuses an edited file). `--format` overrides the episode's format (`video` for all four). Renders ask for backchannels; they are rendered only with `PODCAST_REACTIONS=true`. An item with the same title **and format** is only (re)published unless `--force`. The output lists the job id, format, `listener_mode` and warning codes.
 - **`warm-listeners`** builds — or finds cached — the listener kit of each cast avatar with its voice, for each podcast language (one paid batch avatar job per missing kit). It prints avatar ids, voices, modes, idle-loop facts, reaction ids and warning codes, never character names, and exits with 1 when a kit fell back or has no backchannel clips.
 - **`publish --off`** hides items from visitors without deleting them (a staged rollout keeps the superseded items for rollback); `publish` shows them again. Each entry warns when its title ends up with no published item, or with two.
 - `--background LOG` detaches the job so a short `az containerapp exec` call can start a long render; `logtail` prints the log with URL query strings redacted.
 - The CLI runs in its own process: its render limits and batch pacing do not coordinate with the server's, so do not render from the CLI and the studio at the same time.
 
-**Staged rollout** (as used for the showcase): deploy with `PODCAST_PUBLIC_AUDIO=false` → `inventory` → `warm-listeners` → `render-podcast all --force` → review as an admin → `publish --podcast-id <old id> --off` for each superseded item → `PODCAST_PUBLIC_AUDIO=true` → verify anonymously → `purge --podcast-id <old id> --record deleted.json`. Rollback before the purge: set the flags back, republish the old items and hide the new ones. See [`infra/README.md`](../infra/README.md#podcast-radio-and-listener-flags-staged-rollout).
+**Staged re-render** (as used for the showcase; the runbook is [`content/ai-enablement/README.md`](../content/ai-enablement/README.md)): `script-podcast NAME --out script.json` for each episode → review the transcript → `render-podcast NAME --from-script script.json --force --unpublished` → review the private renders as an admin → `plan-switch --out switch.json` → `switch --manifest switch.json`, which publishes each new item before it unpublishes its old one, so visitors see neither a gap nor a duplicate → `purge --podcast-id <old id> --record deleted.json` once the superseded items are no longer needed. `rollback --manifest switch.json` reverses a switch. Nothing is deleted before the purge. The public-audio flag and its rollout are in [`infra/README.md`](../infra/README.md#podcast-radio-and-listener-flags-staged-rollout).
 
 ---
 
@@ -431,6 +449,7 @@ src/components/podcast/JobStatus.tsx          // progress + final player
 - `src/components/RadioPlayer.tsx` (+ `src/styles/shared/radio-player.css`) — the **Listen** experience around a native `<audio preload="metadata">`: cover art; both hosts lit from `transcript.turns` (glow on reaction cues); the current speaker as text; a visible live caption (not announced — `aria-live="off"`, so screen readers don't talk over the hosts; the transcript stays available on demand) and a collapsible click-to-seek transcript; a seekable waveform from the precomputed peaks (`role="slider"`, turn ticks); play/pause, ±15 s, speed 0.75–2×; keyboard shortcuts (Space/K, J/L, arrows, Home/End); Media Session; an "AI-generated voices" note; autoplay-rejection handling; reduced motion; SAS-expiry recovery (at most one source refresh per minute, position and play state restored).
 - `src/pages/PodcastLibraryPage.tsx` — **Watch** and **Listen** side by side on each episode (audio-only: **Listen** + an *Audio only* chip; on touch devices Listen is first and primary and the title opens Listen; **Resume · m:ss left** / **Played** chips from `usePlaybackProgress`); a player with Watch | Listen tabs that maps the position turn by turn (`video_start`/`video_end` ↔ `start`/`end`) and keeps one active media element; deep link `?episode=<id>&mode=watch|listen` (without `mode`, touch devices open Listen when audio exists, desktops Watch).
 - `src/pages/PodcastPage.tsx` — the format choice at the top of **Review & cast**, the **Listener reactions** and **Intro & outro** options, format-aware stages and the same Watch / Listen player in the result view (it keeps its own local radio player).
+- **Language, level, captions and failures** (library and player): every row and the player carry the episode's language (`lang` on the title, captions and transcript, WCAG 3.1.2) and a level chip when the episode has one, so both are visible before play. A video's captions are a `<track kind="captions">` built from `captions_vtt_url`; the track is never `default`, because the picture already has burned-in captions. A stale or missing episode, an offline tap and a storage failure each get their own sentence and a next step (*Try again*, *Back to all episodes*, or *Listen instead* when the other medium exists). A failed list is never shown as an empty one.
 
 #### Persistent listening (`src/playback/`)
 
@@ -461,9 +480,9 @@ An opt-in event log for testing listening on a real phone (screen locked, earbud
 ## 6. Security & compliance
 
 - **No secrets in code.** All Azure auth via `DefaultAzureCredential` (existing pattern in `services/avatar.py`).
-- **SAS tokens**: minted on demand, blob-scoped and read-only — 24 h for admins, 15 min for anonymous visitors; manifests store blob names only; responses that carry SAS URLs are sent with `Cache-Control: no-store`.
+- **SAS tokens**: minted on demand, blob-scoped and read-only — 24 h for admins; 15 min for anonymous media; anonymous thumbnails and covers are shared per 10-minute window, with at least 10 minutes left. Manifests store blob names only; responses that carry SAS URLs are sent with `Cache-Control: no-store`.
 - **Speech character names** (they can identify the customer) never appear in blob names, manifests, listener-kit sidecars, logs, job warnings, ID3 tags or API payloads; batch avatar status payloads, which echo the character, are never logged or stored. Hosts are identified by display name and avatar registry id.
-- **ID3 allow-list** (§3.7): the radio MP3 carries only the episode title, host display names, brand album/artist, genre, year, language, an "AI-generated voices" comment and the re-encoded cover — no voices, file names or EXIF.
+- **ID3 allow-list** (§3.7): the radio MP3 carries only the episode title, host display names, brand album/artist, genre, year, language and an "AI-generated voices" comment — no picture, voices, file names or EXIF.
 - **Listener cache**: private `podcast-cache/listener-kit/` prefix, never listed by the library and never SAS-signed; anonymous traffic never triggers synthesis.
 - **Content filtering**: Azure OpenAI default content filter stays on; the generated script is shown for review (Review & cast) before anything is rendered.
 - **PII**: Documents uploaded are stored in blob (encrypted at rest) for the lifetime of the job; lifecycle rule deletes after 30 days.
@@ -477,8 +496,10 @@ Anonymous visitors only ever see **published** episodes (one publish flag covers
 |---|---|---|
 | Video episodes in the list / detail | yes | yes |
 | Audio-only episodes | hidden (detail → 404) | listed and playable |
-| `mp4_url` / `video_url`, `thumbnail_url` (15-min SAS) | yes | yes |
-| `audio_url` = `mp3_url` (radio MP3, 15-min SAS), `cover_url` | `null` | yes |
+| `mp4_url` / `video_url` (15-min SAS), `thumbnail_url` (shared per 10-minute window) | yes | yes |
+| `audio_url` = `mp3_url` (radio MP3, 15-min SAS), `cover_url` (shared per 10-minute window) | `null` | yes |
+| `captions_vtt_url` (WebVTT captions of a video episode, §3.1) | yes | yes |
+| `audience_level`, `source_deck_id` | yes | yes |
 | `transcript` (inline, live captions) | `null` | yes |
 | `hosts`, `speaker_names` | empty | yes |
 | `format`, `has_video`, `has_audio` | yes (`has_audio: false`) | yes |
@@ -502,7 +523,7 @@ Every response carrying SAS URLs is sent with `Cache-Control: no-store`. Turning
 **Fixed (standing) infra cost** for a podcast-only deployment:
 | Item | Estimate |
 |---|---|
-| Container App (web) min-replicas=0 → scale-to-zero, so ~$0 idle | ~$0–5/mo |
+| Container App (web). `MIN_REPLICAS=0` scales to zero (~$0 idle, about 30 s for the first request); production runs `MIN_REPLICAS=1`, about $47/month at idle rates ([provisioning §10](provisioning.md#10-cost-notes-and-teardown)) | ~$0–5/mo at `MIN_REPLICAS=0`; ~$47/mo at `MIN_REPLICAS=1` |
 | Container Apps Job (worker) — consumption; bills only while running | ~$0–3/mo for 200 jobs |
 | Cosmos serverless | ~$2–5/mo |
 | Storage (100 podcasts retained × ~200 MB) | ~$1/mo |
@@ -515,7 +536,7 @@ Every response carrying SAS URLs is sent with `Cache-Control: no-store`. Turning
 - Fixed:   ~**$200–400/yr**
 - **All-in: ~$650–850/yr**
 
-**Radio and listener (rough):** DragonHD TTS is billed per character (≈ $22 per 1M characters at the time of writing, ≈ $0.02 per minute of speech), so an audio-only episode costs cents and the radio mix adds about as much to a video episode; the avatar minutes dominate (custom photo avatars are billed at a higher per-minute rate than the pre-built avatar above). A listener kit is one ≈ 25 s batch avatar job per (avatar, voice, language), paid once and cached.
+**Radio and listener (rough):** DragonHD TTS is billed per character (≈ $22 per 1M characters at the time of writing, ≈ $0.02 per minute of speech), so an audio-only episode costs cents and the radio mix adds about as much to a video episode; the avatar minutes dominate (custom photo avatars are billed at a higher per-minute rate than the pre-built avatar above: this deployment's renders were billed about $1.00 per minute of avatar video, meter "TTS Standard Avatar Batch Speech", October 2026). A listener kit is one ≈ 25 s batch avatar job per (avatar, voice, language), paid once and cached.
 
 ---
 
@@ -546,6 +567,8 @@ Every response carrying SAS URLs is sent with `Cache-Control: no-store`. Turning
 
 - **Unit**: pydantic schema round-trips, SRT time math, ffmpeg command builder.
 - **Radio + listener (offline, `demos/backend/tests`)**: contracts and env flags, conditional avatar validation, zero avatar calls in audio mode, deadlines and batch admission/pacing, reaction planning and fit (no overlap, measured cues), radio mix loudness/CBR/ID3 allow-list, manifest v1/v2 normalization, public DTOs with the flag on and off (exact keys, 404 for hidden audio-only items, `no-store`), sentinel test that a fake character name never reaches blob names, sidecars, logs, warnings, ID3 tags or public JSON, and the operator CLI with fakes (`test_maintenance_content.py`).
+- **Public listening API (offline, `demos/backend/tests`)**: the public DTO v2 (`test_public_dto_v2.py`), the WebVTT captions route (`test_captions_vtt.py`), the 503 instead of an empty list when storage fails (`test_library_unavailable.py`) and the shared 10-minute SAS buckets (`test_sas_buckets.py`).
+- **Listen and watch UI (mocked, no backend)**: `tests/ux-listen-watch.spec.ts` and the phone half `tests/mobile-ux-listen-watch.spec.ts` (see [README › Testing](../README.md#ux-fix-suites-mocked)).
 - **Integration**: hit Azure OpenAI with a fixture doc → assert script JSON shape.
 - **E2E smoke** (`tests/e2e_render.py`): upload a sample deck → generate → render 3-turn podcast → verify MP4/MP3/SRT exist and have non-zero duration. Gate deployment on this.
 - **Cost guard**: track token/minute usage in Cosmos; assert smoke test stays under $0.50.

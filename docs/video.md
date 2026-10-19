@@ -89,12 +89,16 @@ The first batch-avatar prototype used **one batch job per presentation** — a m
 
 | Level | Directive added to the system prompt |
 |---|---|
-| *Any (default)* → `null` | nothing — the prompt is byte-for-byte the pre-existing one |
+| *Any (default)* → `null` | nothing: the generic prompt, which carries the grounding, recorded-video and language rules at every level (pinned by `tests/test_audience_level.py`) |
 | `beginner` | assume no prior AI/technical knowledge; define every term in plain words; everyday analogies; avoid jargon and acronyms (expand if unavoidable); one idea at a time |
 | `practitioner` | audience builds or operates solutions; concrete how-to, trade-offs, practical tips, common pitfalls; standard terminology OK |
 | `expert` | deep technical audience; architecture, internals, limits, failure modes, evaluation; precise vocabulary; stay strictly within the source — never invent numbers or details |
 
-The level is saved on `VideoScript`, written to the library `manifest.json` (`audience_level`) and returned by the admin `GET /api/video/library` + `/library/{job_id}` responses (shown as an "*Level* audience" chip). The anonymous public DTO is unchanged. In the UI, the **Audience level** select sits next to **Style** in the *Narration* panel and is also sent on per-slide regeneration requests.
+The level is saved on `VideoScript`, written to the library `manifest.json` (`audience_level`) and returned by the admin `GET /api/video/library` + `/library/{job_id}` responses. The anonymous public DTO carries it too (`audience_level`, with `source_deck_id` and `captions_vtt_url`), and the library shows it as a level chip on each row and in the player. In the UI, the **Audience level** select sits next to **Style** in the *Narration* panel and is also sent on per-slide regeneration requests.
+
+### Narration rules
+
+Every narration, at every audience level, follows the same rules: it uses only what the slides and their notes state (no invented figures or products), it never presents the video as live, it keeps one language (no English phrase in a French video), and it gives exactly one narration per slide, in slide order. The model gets the whole source (up to 48,000 characters; a longer deck is shortened slide by slide, with a fair share for each slide) at temperature 0.4.
 
 ---
 
@@ -198,7 +202,9 @@ flowchart LR
     G3 --> L3b["📚 Library (/podcast/library)"]
 ```
 
-Every link has a `title` tooltip explaining what the segment does; admin-only links show a 🔒 for anonymous visitors. The Video and Podcast groups are prefixed with a small muted label.
+Entries that need sign-in are marked *Sign-in required* for anonymous visitors, who sign in only through the **Owner sign-in** text link.
+
+The library opens a video from its link: `/video/library?video=<job_id>` (the same-deck recording that a live-demo visitor is sent to). A failing video offers **Try again** (a fresh fetch of the item) and, when the episode has audio (admins only: the public video DTO carries no audio URL), **Listen instead**. Each row shows its language and level. The captions are a WebVTT track that is never on by default, because the picture already carries burned-in captions.
 
 ---
 
@@ -216,8 +222,9 @@ All under `/api/video` (prefix from `routers/video.py`).
 | `POST` | `/render/{doc_id}` | start render job |
 | `GET`  | `/jobs/{job_id}` | poll `VideoJob` with nested `progress` + outputs |
 | `GET`  | `/jobs/{job_id}/file/{kind}` | local fallback stream `mp4` / `mp3` / `srt` / `thumb` / `scorm` |
-| `GET`  | `/library` | list published videos |
+| `GET`  | `/library` | list published videos (anonymous: published only; `503 Library temporarily unavailable` when storage fails) |
 | `GET`  | `/library/{job_id}` | full manifest of one entry with fresh MP4 / MP3 / SRT / SCORM SAS URLs |
+| `GET`  | `/library/{job_id}/captions.vtt` | WebVTT captions of a published video (`text/vtt`; 404 when there are none) |
 | `DELETE` | `/library/{job_id}` | remove from library |
 
 ---
@@ -275,11 +282,11 @@ az storage account update -n <name> -g <rg> `
   --public-network-access Enabled --default-action Allow
 ```
 
-Blob containers stay private either way: media is served through short-lived, read-only SAS URLs (15 min for anonymous viewers of published items).
+Blob containers stay private either way: media is served through short-lived, read-only SAS URLs (15 min for anonymous viewers of published items). Public thumbnails are signed per 10-minute window, so the browser cache can reuse them.
 
 Symptom when this is wrong: job goes `state=done` but `archive_state=failed` and `library` returns `[]`.
 
-The Bicep modules set Container Apps `minReplicas: 0` by default. This keeps idle demo cost low and prevents stale Speech streaming sessions from surviving after a presentation.
+Production runs one warm replica (`MIN_REPLICAS=1`, set in the azd environment). The Bicep default is `MIN_REPLICAS=0`, which keeps idle demo cost low and prevents stale Speech streaming sessions from surviving after a presentation. See [infra/README.md](../infra/README.md#always-on-min_replicas).
 
 ---
 

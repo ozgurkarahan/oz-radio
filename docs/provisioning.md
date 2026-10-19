@@ -244,12 +244,12 @@ Values live in `.azure/<env>/.env`. That folder is git-ignored and **holds the c
 | `PODCAST_REACTIONS` | | `false` | Hard kill switch for listener backchannels ("mm-hmm", "right") in podcast video and radio |
 | `PODCAST_LISTENER_MODE` / `PODCAST_LISTENER_TIMEOUT_SEC` | | `auto` / `900` | Listener look (`auto`, `idle_loop`, `procedural`, `still`) / max wait for the cached listener kits |
 | `MAX_CONCURRENT_COMPOSES` / `MAX_ACTIVE_BATCH_JOBS` / `SPEECH_BATCH_CREATE_PER_MIN` | | `1` / `8` / `2` | ffmpeg video composes at a time / batch avatar jobs in flight / batch job creations per minute (Speech quota) |
-| `PUBLIC_DEMO_ENABLED` | | `false` | Kill switch for the anonymous narration-only demo ([live-demo.md](live-demo.md)) |
+| `PUBLIC_DEMO_ENABLED` | | `false` | Kill switch for the anonymous live avatar demo ([live-demo.md](live-demo.md)) |
 | `DEMO_MAX_CONCURRENT` / `DEMO_SESSION_SECONDS` | | `1` / `180` | Demo concurrency / per-session cap |
 | `DEMO_DAILY_SESSIONS` / `DEMO_DAILY_SESSIONS_PER_IP` / `DEMO_DAILY_MINUTES` | | `20` / `3` / `60` | Demo daily caps (durable in Cosmos) |
 | `DEMO_MAX_SPEAKS` | | `0` | Narrations per demo session (`0` = 2 × slides, max 40) |
 | `DEMO_QUOTA_EXEMPT_IPS` | | empty | IPs/CIDRs exempt from demo daily quotas. Keep it out of git |
-| `DEMO_QA_ENABLED` | | `false` | Raise-hand voice Q&A in the public demo (needs `PUBLIC_DEMO_ENABLED=true` too). See [§6.3](#63-voice-qa-in-the-public-demo-demo_qa_enabled) |
+| `DEMO_QA_ENABLED` | | `false` | Raise-hand voice and typed Q&A in the public demo (needs `PUBLIC_DEMO_ENABLED=true` too). See [§6.3](#63-voice-qa-in-the-public-demo-demo_qa_enabled) |
 | `DEMO_QA_MAX_QUESTIONS` / `DEMO_QA_SESSION_SECONDS` | | `2` / `300` | Questions per demo session / demo session cap used **instead of** `DEMO_SESSION_SECONDS` when demo Q&A is on |
 | `DEMO_QA_DAILY_MAX` / `DEMO_QA_DAILY_PER_IP` | | `40` / `6` | Demo questions per UTC day, global / per client IP (durable in Cosmos, fails closed) |
 | `USE_EXTERNAL_AI_SERVICES` | | `false` | `true` = don't create `ais-*`; use the resource described below |
@@ -386,7 +386,7 @@ The AI enablement demo cut (`content/ai-enablement/ai-enablement-demo-beginner.p
 **Raise-hand Q&A** lets the audience ask a spoken question about the deck being presented. The browser records
 the question (≤ 15 s) and streams it to the backend. The backend transcribes it once with Speech and answers
 **only from the deck** with `gpt-4.1`. The avatar speaks the answer, then the deck resumes. Audio and transcripts
-are never logged or sent to Voice Live. Details: [live-demo.md › Raise-hand Q&A](live-demo.md#raise-hand-qa).
+are never logged or sent to Voice Live. In the public demo visitors can also type a question (≤ 500 characters); it takes the same deck-only answer path and counts against the same limits. Details: [live-demo.md › Raise-hand Q&A](live-demo.md#raise-hand-qa).
 
 - **Signed-in admins** always have it when the avatar presents a deck (Live, a deck's present page, playlists; `/ws/voice` with a deck bound). No flag.
   Each question uses one unit of `DAILY_GENERATION_QUOTA`, up to 10 per session.
@@ -469,8 +469,7 @@ Run this in a **real browser** (Edge/Chrome) on the network your users are on.
       az containerapp logs show -n <app-name> -g <rg> --type system --tail 50
       ```
 - [ ] If you configured a budget: `az consumption budget list --resource-group <rg> -o table` shows `budget-<env>`.
-- [ ] If you enabled the public demo: in a private window, **Try the live demo** narrates a live-demo deck and stops at `DEMO_SESSION_SECONDS` (or `DEMO_QA_SESSION_SECONDS` when demo Q&A is on)
-      (`DEMO_QA_SESSION_SECONDS` when demo Q&A is on).
+- [ ] If you enabled the public demo: in a private window, **Start the live demo** narrates a live-demo deck with live captions and ends by itself, at the latest at `DEMO_SESSION_SECONDS` (`DEMO_QA_SESSION_SECONDS` when demo Q&A is on).
 - [ ] If you enabled demo Q&A ([§6.3](#63-voice-qa-in-the-public-demo-demo_qa_enabled)): in the private window, raise a hand,
       ask one spoken question, hear the answer and see the deck resume. After `DEMO_QA_MAX_QUESTIONS` questions, **Raise hand** is disabled.
 - [ ] If you configured custom avatars ([§4.1](#41-custom-photo-avatars-optional)): `curl -s <app-url>/api/avatars` lists them with
