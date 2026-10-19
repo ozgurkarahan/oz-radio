@@ -946,7 +946,7 @@ test.describe('mockDemoSocket', () => {
     expect(mock.closes).toEqual([{ code: 4001, reason: 'Demo finished' }]);
   });
 
-  test('the current demo page tolerates the v2 protocol (UI smoke: update here only if the start flow changes on purpose)', async ({ page }) => {
+  test('the demo page speaks protocol v2 with the fixtures (UI smoke: one Start tap presents the first slide)', async ({ page }) => {
     test.setTimeout(75_000); // loads the whole app: a cold Vite compiles it on first use
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -954,14 +954,11 @@ test.describe('mockDemoSocket', () => {
     const mock = await mockDemoSocket(page, { slideCount: 3, idleCloseMs: false });
     await page.goto('/decks/deck-live/present', { waitUntil: 'domcontentloaded' });
     const start = page.getByTestId('demo-start');
-    await start.waitFor({ timeout: 30_000 }).catch(() => undefined);
-    test.skip((await start.count()) === 0, 'the start control changed: ux-demo.spec.ts covers the new flow');
+    await expect(start).toBeVisible({ timeout: 30_000 });
     await start.click();
     await expect.poll(() => mock.connections).toBe(1);
     await demoHooks.connected(page);
-    const present = page.getByRole('button', { name: 'Present this slide' });
-    test.skip((await present.count()) === 0, 'the present control changed: ux-demo.spec.ts covers the new flow');
-    await present.click();
+    // One Start tap = connect + present every slide: the first narration is requested without another tap.
     await mock.waitForSent('demo.speak');
     expect(mock.ofType('demo.speak')[0].slide).toBe(0);
     await expect.poll(() => mock.items.length).toBe(1);
@@ -969,16 +966,16 @@ test.describe('mockDemoSocket', () => {
     expect(errors).toEqual([]);
   });
 
-  test('refusing the handshake leaves the current demo page usable', async ({ page }) => {
+  test('refusing the handshake leaves the demo page usable (outcome card + Start again)', async ({ page }) => {
     test.setTimeout(75_000); // loads the whole app: a cold Vite compiles it on first use
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     await refuseDemoHandshake(page, { afterMs: 80 });
     await page.goto('/decks/deck-live/present', { waitUntil: 'domcontentloaded' });
     const start = page.getByTestId('demo-start');
-    await start.waitFor({ timeout: 30_000 }).catch(() => undefined);
-    test.skip((await start.count()) === 0, 'the start control changed: ux-demo.spec.ts covers the new flow');
+    await expect(start).toBeVisible({ timeout: 30_000 });
     await start.click();
+    await expect(page.getByTestId('demo-outcome')).toHaveAttribute('data-outcome', /^(connect|outage)$/, { timeout: 10_000 });
     await expect(start).toBeVisible({ timeout: 10_000 });
     expect(errors).toEqual([]);
   });

@@ -693,11 +693,11 @@ test.describe('@demo anonymous live demo', () => {
     attachConsole(page, 'demo');
     const me = await (await page.request.get('/api/me')).json();
     expect(me.is_admin).toBe(false);
-    // Anonymous deck JSON: titles + images only.
+    // Anonymous deck JSON: titles, images and the slide's visible text (contracts §2.2) — never notes or body.
     const anonDeck = await (await page.request.get(`/api/decks/${demoDeck}`)).json();
     saveJson('D-anonymous-deck.json', anonDeck);
     for (const s of anonDeck.slides) {
-      expect(Object.keys(s).sort()).toEqual(['image_url', 'index', 'title']);
+      expect(Object.keys(s).sort()).toEqual(['image_url', 'index', 'text', 'title']);
     }
     expect(JSON.stringify(anonDeck)).not.toMatch(/notes|"body"|translated/);
     const cfg = await (await page.request.get('/api/demo/config')).json();
@@ -738,12 +738,13 @@ test.describe('@demo anonymous live demo', () => {
     // 5 slides × ~35 s fit in 5:00 → no coverage note.
     await expect(page.getByTestId('demo-coverage-note')).toHaveCount(0);
     await expect(page.getByTestId('ask-now')).toHaveCount(0);
-    await expect(page.getByTestId('qa-text-input')).toHaveCount(0);
+    // Protocol v2: visitors can type a question too.
+    await expect(page.getByTestId('qa-text-input')).toBeVisible();
     await expect(page.getByTestId('qa-remaining')).toHaveText('2 questions left');
     await shot(page, 'D-connected');
 
+    // One Start tap presents every slide: no "Present all" for visitors.
     const t0 = await pageNow(page);
-    await page.getByRole('button', { name: 'Present all' }).click();
     // Q1 during slide 1, Q2 during slide 3 (after_slide → answers then next slide).
     for (const [slideNo, left] of [[1, 1], [3, 0]] as const) {
       await expect(page.getByTestId('slide-counter')).toHaveText(`Slide ${slideNo} of 5`, { timeout: 4 * 60_000 });

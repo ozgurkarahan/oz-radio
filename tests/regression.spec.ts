@@ -316,8 +316,9 @@ test.describe('Regression — redesign behaviours', () => {
     await expect(left).toHaveText('Demo time left 3:00');
     await page.clock.runFor(1000);
     await expect(left).toHaveText('Demo time left 2:59');
-    await page.clock.runFor(60_000);
-    await expect(left).toHaveText('Demo time left 1:59');
+    // Within the 15 s setup limit: a silent avatar is given up after that (T3-14, covered in ux-demo.spec.ts).
+    await page.clock.runFor(9_000);
+    await expect(left).toHaveText('Demo time left 2:50');
   });
 
   test('host disc falls back to a monogram when the avatar image fails', async ({ page }) => {
