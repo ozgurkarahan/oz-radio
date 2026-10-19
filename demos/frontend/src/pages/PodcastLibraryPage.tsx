@@ -1,5 +1,5 @@
 import {
-  type ComponentProps, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
+  type ComponentProps, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -25,6 +25,7 @@ import {
   type OpenFailure,
 } from '../playback/libraryStates';
 import { VideoProblem, VideoReconnecting, useVideoRecovery } from '../playback/videoRecovery';
+import { prefersListen, usePrefersListen } from '../playback/prefersListen';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner, Tabs,
   type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, humanizeTitle, langAttr, languageName, pluralize,
@@ -44,11 +45,6 @@ const MODE_PARAM = 'mode';
 const ROLE_ORDER: Record<string, number> = { interviewer: 0, expert: 1 };
 /** Rows whose playable details are prefetched for a one-tap Listen. */
 const PREFETCH_ROWS = 10;
-/**
- * Touch-first phones: an episode opened without a mode starts in Listen when it has audio, and
- * episode rows lead with Listen (the owner listens with the screen locked; video stops there).
- */
-const PHONE_QUERY = '(hover: none) and (pointer: coarse)';
 /** A bookmark from this many seconds in is offered as "Resume" (earlier, the episode just starts over). */
 const RESUME_FROM_SEC = 3;
 /** Row thumbnail box (16:9 at its desktop width): the reserved space keeps the list from shifting as images arrive. */
@@ -93,21 +89,8 @@ function resolveMode(item: LibraryItem, wanted: Mode): Mode {
   return available.includes(wanted) ? wanted : available[0] ?? (isAudioOnly(item) ? 'listen' : 'watch');
 }
 
-function prefersListen(): boolean {
-  return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
-}
-
-function onPhoneQueryChange(listener: () => void): () => void {
-  if (typeof window.matchMedia !== 'function') return () => {};
-  const query = window.matchMedia(PHONE_QUERY);
-  query.addEventListener?.('change', listener);
-  return () => query.removeEventListener?.('change', listener);
-}
-
-/** `prefersListen()` for rendering (library rows, Home episode links); follows input changes (a docked tablet). */
-export function usePrefersListen(): boolean {
-  return useSyncExternalStore(onPhoneQueryChange, prefersListen);
-}
+// Re-exported for existing importers; the helpers live in playback/prefersListen.ts (no page import from Home).
+export { usePrefersListen };
 
 /** The listener's progress on an episode: "Resume · 1:12 left" (a bookmark) or "Played" (heard to the end). */
 function progressChip(saved: ProgressSnapshot | null) {

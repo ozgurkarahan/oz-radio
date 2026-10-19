@@ -8,7 +8,7 @@ import { type Deck, listDecks } from '../services/decksApi';
 import { listLibrary as listVideos, type LibrarySummary as VideoSummary } from '../services/videoApi';
 import { listLibrary as listPodcasts, hasAudio, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
-import { usePrefersListen } from './PodcastLibraryPage';
+import { usePrefersListen } from '../playback/prefersListen';
 import {
   DemoActionLink, LiveDemoBadge, OWNER_SIGN_IN_HINT, liveSessionsLeft, recordedDemoReason, useDemoEntry, type DemoEntry,
 } from '../components/AuthGate';
