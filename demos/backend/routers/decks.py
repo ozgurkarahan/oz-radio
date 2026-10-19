@@ -10,8 +10,10 @@ Endpoints:
 - POST   /api/decks/{deck_id}/live-demo   — allow/deny the anonymous live avatar demo
 - POST   /api/search                      — cross-deck hybrid semantic search
 
-Anonymous callers may only list/view *published* decks (titles + slide
-images); everything else is admin-only.
+Anonymous callers may only list/view *published* decks (titles, slide images
+and the slide's visible text — never body, notes or the uploaded file name);
+everything else is admin-only. A read that fails because Cosmos DB is down
+answers 503, never an empty list or a 404.
 """
 from __future__ import annotations
 
@@ -29,8 +31,10 @@ from pydantic import BaseModel, Field
 from auth import Principal, get_principal, require_admin
 from config import AzureConfig, load_config
 from security import DAILY_QUOTA, UUID_RE, read_upload_limited, require_id, safe_filename
+from services.demo_protocol import LIBRARY_UNAVAILABLE_DETAIL, PUBLIC_SLIDE_TEXT_MAX_CHARS
 from services.pptx_parser import parse_pptx
-from services.storage import PUBLIC_SAS_MINUTES, PresentationStore, deck_title
+from services.podcast_models import audience_level_or_none
+from services.storage import PUBLIC_SAS_MINUTES, PresentationStore, StorageUnavailable, deck_title
 from services.translation import get_openai_client, translate_text
 from services.deck_search import DeckSlide, get_deck_search
 
@@ -58,17 +62,26 @@ class DeckSummary(BaseModel):
     published: bool = False
     # Anonymous visitors may run the narration-only live avatar demo on it.
     live_demo: bool = False
+    # Audience level of the deck (beginner | practitioner | expert); None when it is not recorded.
+    audience_level: Optional[str] = None
 
 
-class PublicSlidePayload(BaseModel):
-    """Anonymous slide view: title + image only (no body, notes or translations)."""
+class _SlideBase(BaseModel):
     index: int
     title: str
     image_url: str = ""
 
 
-class SlidePayload(PublicSlidePayload):
-    """Admin slide view, including speaker notes and cached note translations."""
+class PublicSlidePayload(_SlideBase):
+    """Anonymous slide view: title, image and the visible text (no body, notes or translations)."""
+    # The slide body, whitespace collapsed and capped (alt text for the slide image). Never speaker notes.
+    text: str = ""
+
+
+class SlidePayload(_SlideBase):
+    """Admin slide view, including speaker notes and cached note translations.
+
+    Deliberately not a subclass of ``PublicSlidePayload``: the admin payload has its ``body`` and no ``text``."""
     body: str = ""
     notes: str = ""
     # language code -> translated speaker notes (only values already cached in Cosmos).
@@ -78,6 +91,7 @@ class SlidePayload(PublicSlidePayload):
 class PublicDeckDetail(DeckSummary):
     # Aliases for frontend compatibility with existing `Presentation` shape.
     id: str = ""
+    # The deck's display title, never the uploaded file name (admins get the real file name).
     filename: str = ""
     slides: list[PublicSlidePayload]
 
@@ -172,7 +186,23 @@ def _doc_to_summary(doc: dict) -> DeckSummary:
         tags=doc.get("tags") or [],
         published=doc.get("published") is True,
         live_demo=doc.get("published") is True and doc.get("live_demo") is True,
+        audience_level=audience_level_or_none(doc.get("audience_level")),
     )
+
+
+def _slide_text(slide: dict) -> str:
+    """Visible text of a slide for the anonymous payload: its body, whitespace collapsed, capped at
+    ``PUBLIC_SLIDE_TEXT_MAX_CHARS`` characters (a trailing ``…`` included). Never the speaker notes."""
+    body = slide.get("body")
+    text = " ".join(body.split()) if isinstance(body, str) else ""
+    if len(text) > PUBLIC_SLIDE_TEXT_MAX_CHARS:
+        text = text[: PUBLIC_SLIDE_TEXT_MAX_CHARS - 1] + "…"
+    return text
+
+
+def _library_unavailable() -> HTTPException:
+    """503 of a deck read whose storage is failing: never an empty list and never a 404 (contracts §2.4)."""
+    return HTTPException(status_code=503, detail=LIBRARY_UNAVAILABLE_DETAIL, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------
@@ -312,15 +342,22 @@ def list_decks(
     cfg: AzureConfig = Depends(get_cfg),
     principal: Principal = Depends(get_principal),
 ) -> list[DeckSummary]:
-    """Admins see every deck; anonymous callers only published ones."""
+    """Admins see every deck; anonymous callers only published ones.
+
+    ``[]`` means no deck is published (or Cosmos DB is not configured at all). A
+    Cosmos DB that is configured but failing answers 503 — never an empty list."""
     store = _store(cfg)
-    if not store or not store.cosmos_available:
+    if not store:
+        if cfg.cosmos_endpoint:
+            raise _library_unavailable()
         return []
     try:
-        docs = store.list_decks()
+        docs = store.list_decks(strict=True)
+    except StorageUnavailable:
+        raise _library_unavailable()
     except Exception:
         log.exception("list_decks failed")
-        return []
+        raise _library_unavailable()
     out: list[DeckSummary] = []
     for d in docs:
         if not isinstance(d, dict) or not d.get("id"):
@@ -337,15 +374,24 @@ def get_deck(
     cfg: AzureConfig = Depends(get_cfg),
     principal: Principal = Depends(get_principal),
 ) -> DeckDetail | PublicDeckDetail:
-    """Full deck for admins; titles + slide images only for anonymous callers.
+    """Full deck for admins; titles, slide images and slide text only for anonymous callers.
 
     Two distinct response models keep the anonymous payload free of body,
-    notes and translated notes (not just empty values)."""
+    notes and translated notes (not just empty values). Anonymous slides carry
+    ``text`` (the visible body, capped) and the deck's ``filename`` is its
+    display title. 404 means the deck does not exist (or is not published); a
+    storage failure answers 503, never 404."""
     require_id(deck_id, UUID_RE, "Deck")
     store = _store(cfg)
     if not store or not store.cosmos_available:
-        raise HTTPException(status_code=503, detail="Storage unavailable")
-    doc = store.get_presentation(deck_id)
+        raise _library_unavailable()
+    try:
+        doc = store.get_presentation(deck_id, strict=True)
+    except StorageUnavailable:
+        raise _library_unavailable()
+    except Exception:
+        log.exception("get_presentation failed for deck %s", deck_id)
+        raise _library_unavailable()
     if not doc or doc.get("source") != "deck":
         raise HTTPException(status_code=404, detail="Deck not found")
     public = not principal.is_admin
@@ -380,12 +426,13 @@ def get_deck(
         return PublicDeckDetail(
             **summary.model_dump(),
             id=deck_id,
-            filename=doc.get("filename") or deck_id,
+            filename=summary.title,
             slides=[
                 PublicSlidePayload(
                     index=int(s.get("index", i)),
                     title=s.get("title") or f"Slide {i + 1}",
                     image_url=_image_url(s, i),
+                    text=_slide_text(s),
                 )
                 for i, s in raw_slides
             ],

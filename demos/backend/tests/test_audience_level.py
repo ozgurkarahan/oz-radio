@@ -254,16 +254,16 @@ class _Lib:
                      "published": True, "audience_level": "expert"}
         self.url_key = url_key
 
-    def list(self, *, published_only: bool = False):
+    def list(self, *, published_only: bool = False, strict: bool = False):
         return [dict(self.item)]
 
-    def get(self, job_id, *, public: bool = False):
+    def get(self, job_id, *, public: bool = False, strict: bool = False):
         return {**self.item, self.url_key: "https://blob/v?sas"} if job_id == self.item["job_id"] else None
 
 
 @pytest.mark.parametrize("kind,job,url_key", [("podcast", "job-0000aaaa", "mp4_url"),
                                                ("video", "sv-0000aaaa", "video_url")])
-def test_library_api_exposes_level_to_admins_only(client, easyauth, monkeypatch, kind, job, url_key):
+def test_library_api_exposes_level_to_everyone(client, easyauth, monkeypatch, kind, job, url_key):
     import routers.podcast as pc
     import routers.video as rv
 
@@ -272,5 +272,8 @@ def test_library_api_exposes_level_to_admins_only(client, easyauth, monkeypatch,
     admin_list = client.get(f"/api/{kind}/library", headers=easyauth()).json()
     assert admin_list[0]["audience_level"] == "expert"
     assert client.get(f"/api/{kind}/library/{job}", headers=easyauth()).json()["audience_level"] == "expert"
-    # Anonymous public DTO keeps its fixed shape.
-    assert "audience_level" not in client.get(f"/api/{kind}/library").json()[0]
+    # The anonymous public DTO carries the level too (C2.3: visible before play) — and still nothing else private.
+    anon_list = client.get(f"/api/{kind}/library").json()
+    assert anon_list[0]["audience_level"] == "expert"
+    assert client.get(f"/api/{kind}/library/{job}").json()["audience_level"] == "expert"
+    assert "document_title" not in anon_list[0] and "voice" not in anon_list[0]

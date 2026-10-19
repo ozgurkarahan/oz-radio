@@ -21,7 +21,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from auth import Principal, get_principal, require_admin
 from config import AzureConfig, load_config
@@ -33,9 +33,15 @@ from security import (
     VIDEO_JOB_RE,
     UUID_RE,
     acquire_render_slot,
+    is_valid,
     read_upload_limited,
     require_id,
     safe_filename,
+)
+from services.demo_protocol import (
+    CAPTIONS_VTT_CACHE_CONTROL,
+    CAPTIONS_VTT_MEDIA_TYPE,
+    LIBRARY_UNAVAILABLE_DETAIL,
 )
 from services.scorm_packager import build_scorm_package
 from services.voice_catalog import HD_VOICES, is_allowed_voice
@@ -57,9 +63,16 @@ from services.video_models import (
     VideoScript,
     VoiceOption,
 )
-from services.podcast_models import audience_level_or_none
+from services.podcast_models import (
+    LibraryUnavailable,
+    audience_level_or_none,
+    source_deck_id_or_none,
+    srt_to_vtt,
+)
 
 log = logging.getLogger(__name__)
+# Failed library reads (and captions of an unpublished item) must never be cached.
+NO_STORE = "no-store"
 # Everything on `router` is admin-only (default deny). Anonymous library
 # reads (published items only) live on `public_router`.
 router = APIRouter(prefix="/api/video", tags=["video"], dependencies=[Depends(require_admin)])
@@ -395,14 +408,34 @@ def download_job_file(job_id: str, kind: str):
 # ---------------------------------------------------------------------------
 # Library
 # ---------------------------------------------------------------------------
+def _library_unavailable(cause: Exception | None = None) -> HTTPException:
+    """503 of a library read whose storage is failing: never an empty list and never a 404 (contracts §2.4)."""
+    if cause is not None:
+        log.warning("Video library unavailable: %s", cause)
+    return HTTPException(status_code=503, detail=LIBRARY_UNAVAILABLE_DETAIL, headers={"Cache-Control": NO_STORE})
+
+
+def _captions_url(job_id: object) -> Optional[str]:
+    """Same-origin URL of an item's WebVTT captions (None unless ``job_id`` is a library video id)."""
+    return f"/api/video/library/{job_id}/captions.vtt" if is_valid(job_id, VIDEO_JOB_RE) else None
+
+
 def _public_item(item: dict) -> dict:
-    """Anonymous DTO: no audio/subtitles/SCORM/script, video + thumbnail only."""
+    """Anonymous DTO: no audio/subtitles/SCORM/script, video + thumbnail only.
+
+    Carries the audience level, the source deck (``source_deck_id``, null
+    unless the manifest links one) and, when the item has a subtitle blob, the
+    same-origin ``captions_vtt_url`` (WebVTT served by ``captions.vtt``); the
+    SAS-signed ``srt_url`` stays None."""
     return {
         "job_id": item.get("job_id"),
         "title": item.get("title") or "",
         "created_at": item.get("created_at") or "",
         "duration_sec": item.get("duration_sec"),
         "language": item.get("language") or "en-US",
+        "audience_level": audience_level_or_none(item.get("audience_level")),
+        "source_deck_id": source_deck_id_or_none(item.get("source_deck_id")),
+        "captions_vtt_url": _captions_url(item.get("job_id")) if item.get("has_captions") is True else None,
         "thumbnail_url": item.get("thumbnail_url"),
         "video_url": item.get("video_url"),
         "audio_url": None,
@@ -437,19 +470,28 @@ def list_library(
     cfg: AzureConfig = Depends(get_cfg),
     principal: Principal = Depends(get_principal),
 ) -> list[dict]:
-    """Admins: every archived video (+ `published`); anonymous: published only."""
+    """Admins: every archived video (+ `published`); anonymous: published only.
+
+    ``[]`` means nothing is published (or storage is not configured at all). A
+    storage that is configured but failing answers 503 — never an empty list.
+    """
     lib = _get_library(cfg)
     if not lib.available:
+        if lib.configured:
+            raise _library_unavailable()
         return []
-    if principal.is_admin:
-        return [LibrarySummary(**{**item, "title": item.get("title") or "",
-                                  "document_title": item.get("document_title") or "",
-                                  "created_at": item.get("created_at") or "",
-                                  "language": item.get("language") or "en-US",
-                                  "audience_level": audience_level_or_none(item.get("audience_level"))
-                                  }).model_dump()
-                for item in lib.list()]
-    return [_public_item(item) for item in lib.list(published_only=True)]
+    try:
+        if principal.is_admin:
+            return [LibrarySummary(**{**item, "title": item.get("title") or "",
+                                      "document_title": item.get("document_title") or "",
+                                      "created_at": item.get("created_at") or "",
+                                      "language": item.get("language") or "en-US",
+                                      "audience_level": audience_level_or_none(item.get("audience_level"))
+                                      }).model_dump()
+                    for item in lib.list(strict=True)]
+        return [_public_item(item) for item in lib.list(published_only=True, strict=True)]
+    except LibraryUnavailable as exc:
+        raise _library_unavailable(exc) from exc
 
 
 @public_router.get("/library/{job_id}")
@@ -458,19 +500,51 @@ def get_library_item(
     cfg: AzureConfig = Depends(get_cfg),
     principal: Principal = Depends(get_principal),
 ) -> dict:
+    """404 means the item does not exist (or is not published); a storage failure answers 503, never 404."""
     require_id(job_id, VIDEO_JOB_RE, "Library item")
     lib = _get_library(cfg)
     if not lib.available:
-        raise HTTPException(503, "Library storage not available")
-    if principal.is_admin:
-        item = lib.get(job_id)
-        if not item:
-            raise HTTPException(404, "Library item not found")
-        return _full_item(item)
-    item = lib.get(job_id, public=True)
+        raise _library_unavailable()
+    try:
+        item = lib.get(job_id, strict=True) if principal.is_admin else lib.get(job_id, public=True, strict=True)
+    except LibraryUnavailable as exc:
+        raise _library_unavailable(exc) from exc
     if not item:
         raise HTTPException(404, "Library item not found")
-    return _public_item(item)
+    return _full_item(item) if principal.is_admin else _public_item(item)
+
+
+@public_router.get("/library/{job_id}/captions.vtt", response_class=Response)
+def get_library_captions(
+    job_id: str,
+    cfg: AzureConfig = Depends(get_cfg),
+    principal: Principal = Depends(get_principal),
+) -> Response:
+    """WebVTT captions of a library video, for the player's ``<track>``.
+
+    Same visibility as the item route: anonymous callers get published
+    items only (404 otherwise), admins any item. The SRT timed on the video
+    is converted server-side. Published items are cacheable for 10 minutes;
+    an unpublished item read by an admin is not.
+    """
+    require_id(job_id, VIDEO_JOB_RE, "Library item")
+    lib = _get_library(cfg)
+    if not lib.available:
+        raise _library_unavailable()
+    try:
+        source = lib.captions_source(job_id, public=not principal.is_admin)
+    except LibraryUnavailable as exc:
+        raise _library_unavailable(exc) from exc
+    if source is None:
+        raise HTTPException(404, "Library item not found", headers={"Cache-Control": NO_STORE})
+    vtt = srt_to_vtt(source.text) if source.text else None
+    if vtt is None:
+        raise HTTPException(404, "Captions not available", headers={"Cache-Control": NO_STORE})
+    return Response(
+        vtt,
+        media_type=CAPTIONS_VTT_MEDIA_TYPE,
+        headers={"Cache-Control": CAPTIONS_VTT_CACHE_CONTROL if source.published else NO_STORE},
+    )
 
 
 @router.post("/library/{job_id}/publish")

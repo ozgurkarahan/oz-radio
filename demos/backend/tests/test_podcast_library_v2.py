@@ -19,6 +19,7 @@ from services.podcast_models import (
     LibraryItem,
     LibrarySummary,
     PodcastHost,
+    SasWindow,
     Transcript,
     TranscriptCue,
     TranscriptTurn,
@@ -219,6 +220,12 @@ def _seed_v1(svc: FakeBlobService, job: str = JOB, **overrides) -> dict:
 def _populated(item: dict) -> set[str]:
     assert all(k in item for k in URL_KEYS)
     return {k for k in URL_KEYS if item[k]}
+
+
+def _minted(svc: FakeBlobService) -> list[tuple]:
+    """What each blob was signed for: the minutes of a per-request URL, or ``"window"`` for the fixed window that
+    public thumbnails and covers share within a 10-minute bucket (contracts §2.5)."""
+    return sorted((blob, "window" if isinstance(life, SasWindow) else life) for blob, life in svc.minted)
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +517,8 @@ def test_public_get_without_public_audio_serves_video_and_thumbnail_only(lib, sv
     item = lib.get(JOB, public=True)
 
     assert _populated(item) == {"mp4_url", "thumbnail_url"}
-    assert sorted(svc.minted) == [(f"{PREFIX}/thumb.jpg", PUBLIC), (f"{PREFIX}/video.mp4", PUBLIC)]
+    # The video keeps its per-request 15-minute SAS; the thumbnail shares the current bucket's window.
+    assert _minted(svc) == [(f"{PREFIX}/thumb.jpg", "window"), (f"{PREFIX}/video.mp4", PUBLIC)]
     assert PUBLIC == 15
     assert item["transcript"] is None and item["hosts"] == [] and item["speaker_names"] == []
     assert (item["has_video"], item["has_audio"], item["audio_duration_sec"]) == (True, False, None)
@@ -527,8 +535,9 @@ def test_public_get_with_public_audio_adds_audio_cover_hosts_and_transcript(lib,
     assert _populated(item) == {"mp4_url", "thumbnail_url", "mp3_url", "audio_url", "cover_url"}
     assert item["audio_url"] == item["mp3_url"]
     assert item["srt_url"] is item["audio_srt_url"] is item["scorm_url"] is None
-    assert sorted(svc.minted) == sorted((f"{PREFIX}/{n}", PUBLIC) for n in
-                                        ("video.mp4", "thumb.jpg", "audio.mp3", "cover.jpg"))
+    assert _minted(svc) == sorted(
+        [(f"{PREFIX}/video.mp4", PUBLIC), (f"{PREFIX}/audio.mp3", PUBLIC),
+         (f"{PREFIX}/thumb.jpg", "window"), (f"{PREFIX}/cover.jpg", "window")])
     assert item["transcript"] == _transcript()
     assert (item["hosts"], item["speaker_names"], item["has_audio"]) == (HOST_DICTS, ["Ann", "Bob"], True)
 
@@ -545,7 +554,8 @@ def test_public_get_of_an_audio_only_item_needs_public_audio(lib, svc, probes, t
         return
     assert _populated(item) == {"thumbnail_url", "mp3_url", "audio_url", "cover_url"}
     assert item["format"] == "audio" and item["mp4_url"] is None and item["transcript"]["cues"]
-    assert {m for _, m in svc.minted} == {PUBLIC}
+    assert _minted(svc) == sorted(
+        [(f"{PREFIX}/audio.mp3", PUBLIC), (f"{PREFIX}/thumb.jpg", "window"), (f"{PREFIX}/cover.jpg", "window")])
 
 
 def test_public_get_of_a_v1_item_with_public_audio_derives_the_transcript(lib, svc, monkeypatch):
@@ -555,7 +565,8 @@ def test_public_get_of_a_v1_item_with_public_audio_derives_the_transcript(lib, s
     assert _populated(item) == {"mp4_url", "thumbnail_url", "mp3_url", "audio_url"}  # v1: no cover
     assert item["transcript"]["cues"][0]["text"] == "Welcome to the show."
     assert item["hosts"] == NAME_HOSTS
-    assert {m for _, m in svc.minted} == {PUBLIC}
+    assert _minted(svc) == sorted(
+        [(f"{PREFIX}/video.mp4", PUBLIC), (f"{PREFIX}/audio.mp3", PUBLIC), (f"{PREFIX}/thumb.jpg", "window")])
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +605,7 @@ def test_list_normalizes_items_and_hides_audio_only_ones_from_visitors(lib, svc,
     assert [i["job_id"] for i in visitors] == ["job-0000000a"]
     assert (visitors[0]["has_audio"], visitors[0]["hosts"], visitors[0]["speaker_names"]) == (False, [], [])
     assert visitors[0]["audio_duration_sec"] is None
-    assert svc.minted == [("podcast-library/job-0000000a/thumb.jpg", PUBLIC)]
+    assert _minted(svc) == [("podcast-library/job-0000000a/thumb.jpg", "window")]
 
     monkeypatch.setenv("PODCAST_PUBLIC_AUDIO", "true")
     visitors = lib.list(published_only=True)

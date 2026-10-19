@@ -2,14 +2,20 @@
 
 Internal (non-HTTP) types shared by the render engines — turn audio, listener
 kits, reaction placements, radio results, library files — live in
-``services.podcast_media``.
+``services.podcast_media``. The last section holds the small pure helpers the
+podcast and video libraries share (public SAS window, SRT → WebVTT, ids).
 """
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Literal, Optional, get_args
+from typing import Literal, NamedTuple, Optional, get_args
 
 from pydantic import BaseModel, Field, model_validator
+
+from services.demo_protocol import SAS_BUCKET_MINUTES, SAS_SKEW_MINUTES, SAS_WINDOW_MINUTES
 
 
 # -----------------------------------------------------------------------------
@@ -355,3 +361,118 @@ class AvatarOption(BaseModel):
 
 class PublishRequest(BaseModel):
     published: bool
+
+
+# -----------------------------------------------------------------------------
+# Public library helpers shared by the podcast and video libraries (contracts v1.2 §2)
+# -----------------------------------------------------------------------------
+
+# Catalog deck ids are uuid4 strings: the pattern of ``security.UUID_RE`` (services never import the web layer).
+_DECK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def source_deck_id_or_none(value: object) -> Optional[str]:
+    """The catalog deck a recording was made from (a stored manifest field), else None."""
+    return value if isinstance(value, str) and _DECK_ID_RE.fullmatch(value) else None
+
+
+class LibraryUnavailable(Exception):
+    """Blob storage is configured but failing (init, listing or read) — which is not "nothing published"."""
+
+
+@dataclass(frozen=True)
+class SasWindow:
+    """Fixed validity of a shared SAS URL: ``start`` (in the past, for clock skew) up to ``expiry``."""
+    start: datetime
+    expiry: datetime
+
+
+def sas_bucket_window(now: datetime) -> SasWindow:
+    """Window of the public thumbnail and cover URLs: one value per 10-minute bucket.
+
+    ``start = floor(now, 10 min) - 5 min`` and ``expiry = floor(now, 10 min) + 20 min``: every caller of a bucket
+    gets the same URL (so the browser cache keeps hitting) and every URL handed out has more than 10 minutes left.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    bucket = SAS_BUCKET_MINUTES * 60
+    seconds = int(now.timestamp())
+    bucket_start = datetime.fromtimestamp(seconds - seconds % bucket, tz=timezone.utc)
+    return SasWindow(
+        start=bucket_start - timedelta(minutes=SAS_SKEW_MINUTES),
+        expiry=bucket_start + timedelta(minutes=SAS_WINDOW_MINUTES),
+    )
+
+
+class CaptionsSource(NamedTuple):
+    """The video-timed captions of a library item the caller may see.
+
+    ``text`` is the SRT, or None when the item has none (no video rendition, no subtitle blob, a blob that is
+    missing or too large). ``published`` tells whether anonymous visitors can see the item (caching).
+    """
+    text: Optional[str]
+    published: bool
+
+
+# One SRT timestamp: H+:MM:SS with a comma (or dot) before the milliseconds.
+_SRT_TIME = r"([0-9]{1,3}):([0-9]{1,2}):([0-9]{1,2})(?:[,.]([0-9]{1,3}))?"
+_SRT_CUE_TIMING_RE = re.compile(rf"\s*{_SRT_TIME}\s*-->\s*{_SRT_TIME}")
+# SRT carries <i>, <b> and <u>: after escaping every "<", exactly these tags (and their closers) are restored.
+_VTT_ALLOWED_TAG_RE = re.compile(r"&lt;(/?)([ibu])>", re.IGNORECASE)
+
+
+def _srt_ms(hours: str, minutes: str, seconds: str, fraction: Optional[str]) -> int:
+    millis = int(fraction.ljust(3, "0")) if fraction else 0
+    return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + millis
+
+
+def _vtt_timestamp(total_ms: int) -> str:
+    hours, rest = divmod(total_ms, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
+def _vtt_text(line: str) -> str:
+    """One cue text line made safe for WebVTT: ``&`` and ``<`` escaped (except <i> <b> <u>), no ``-->``."""
+    text = line.replace("&", "&amp;").replace("<", "&lt;")
+    text = _VTT_ALLOWED_TAG_RE.sub(lambda m: f"<{m.group(1)}{m.group(2).lower()}>", text)
+    return text.replace("-->", "--&gt;")
+
+
+def _vtt_cue(block: list[str]) -> Optional[str]:
+    """The WebVTT cue of one SRT block (index line, timing line, text lines); None without text or duration."""
+    for position, line in enumerate(block):
+        timing = _SRT_CUE_TIMING_RE.match(line)
+        if timing is None:
+            continue
+        groups = timing.groups()
+        start, end = _srt_ms(*groups[:4]), _srt_ms(*groups[4:])
+        text = [_vtt_text(part) for part in block[position + 1:]]
+        if not text or end <= start:
+            return None
+        return f"{_vtt_timestamp(start)} --> {_vtt_timestamp(end)}\n" + "\n".join(text)
+    return None
+
+
+def srt_to_vtt(srt: str) -> Optional[str]:
+    """WebVTT of an SRT document, or None when it holds no usable cue.
+
+    The BOM is stripped and CRLF/CR become LF. Output: ``WEBVTT`` and a blank line, then one cue per SRT block
+    (timestamps ``HH:MM:SS.mmm``, no numeric identifier, positions dropped). Cues without text (or without a
+    duration) are dropped, and the text is escaped: ``&`` and ``<`` become entities except for ``<i> <b> <u>``, and
+    ``-->`` (which would end the cue) is neutralised. Blocks are found line by line, so the cost is linear.
+    """
+    lines = srt.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cues: list[str] = []
+    block: list[str] = []
+    for line in [*lines, ""]:
+        stripped = line.strip()
+        if stripped:
+            block.append(stripped)
+            continue
+        cue = _vtt_cue(block)
+        block = []
+        if cue is not None:
+            cues.append(cue)
+    return "WEBVTT\n\n" + "\n\n".join(cues) + "\n" if cues else None

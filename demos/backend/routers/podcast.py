@@ -57,6 +57,11 @@ from security import (
 )
 from services import avatar_registry
 from services import podcast_media as media
+from services.demo_protocol import (
+    CAPTIONS_VTT_CACHE_CONTROL,
+    CAPTIONS_VTT_MEDIA_TYPE,
+    LIBRARY_UNAVAILABLE_DETAIL,
+)
 from services.scorm_packager import build_scorm_package
 from services.voice_catalog import HD_VOICES, is_allowed_voice
 from services.podcast_models import (
@@ -68,6 +73,7 @@ from services.podcast_models import (
     JobState,
     LibraryItem,
     LibrarySummary,
+    LibraryUnavailable,
     PodcastHost,
     PodcastJob,
     PublishRequest,
@@ -80,6 +86,8 @@ from services.podcast_models import (
     VoiceOption,
     audience_level_or_none,
     podcast_format_or_default,
+    source_deck_id_or_none,
+    srt_to_vtt,
 )
 
 logger = logging.getLogger(__name__)
@@ -439,16 +447,31 @@ def _names(value: object) -> list[str]:
     return [n for n in value if isinstance(n, str)] if isinstance(value, list) else []
 
 
+def _library_unavailable(cause: Exception | None = None) -> HTTPException:
+    """503 of a library read whose storage is failing: never an empty list and never a 404 (contracts §2.4)."""
+    if cause is not None:
+        logger.warning("Podcast library unavailable: %s", cause)
+    return HTTPException(status_code=503, detail=LIBRARY_UNAVAILABLE_DETAIL, headers={"Cache-Control": NO_STORE})
+
+
+def _captions_url(job_id: object) -> Optional[str]:
+    """Same-origin URL of an item's WebVTT captions (None unless ``job_id`` is a library job id)."""
+    return f"/api/podcast/library/{job_id}/captions.vtt" if is_valid(job_id, PODCAST_JOB_RE) else None
+
+
 def _public_item(item: dict) -> dict:
     """Anonymous DTO (allow-list) of a published library item.
 
-    Always: identity, duration, language, format, ``has_video``/``has_audio``,
-    the thumbnail and the video (``video_url`` = ``mp4_url``). Only with
-    ``PODCAST_PUBLIC_AUDIO`` on: the audio (``audio_url`` = ``mp3_url``), its
-    duration, the cover, hosts, speaker names and the inline transcript.
-    ``PodcastLibrary`` already applies that policy; it is re-applied here so
-    the DTO never depends on it. Never: ``srt_url``, ``audio_srt_url``,
-    ``scorm_url``, ``script`` (always None) or ``document_title``.
+    Always: identity, duration, language, audience level, the source deck
+    (``source_deck_id``, null unless the manifest links one), format,
+    ``has_video``/``has_audio``, the thumbnail, the video (``video_url`` =
+    ``mp4_url``) and, for an item with a video rendition and a subtitle blob,
+    the same-origin ``captions_vtt_url``. Only with ``PODCAST_PUBLIC_AUDIO``
+    on: the audio (``audio_url`` = ``mp3_url``), its duration, the cover,
+    hosts, speaker names and the inline transcript. ``PodcastLibrary`` already
+    applies that policy; it is re-applied here so the DTO never depends on it.
+    Never: ``srt_url``, ``audio_srt_url``, ``scorm_url``, ``script`` (always
+    None) or ``document_title``.
     """
     audio_public = media.public_audio_enabled()
     fmt = podcast_format_or_default(item.get("format"))
@@ -463,6 +486,10 @@ def _public_item(item: dict) -> dict:
         "duration_sec": item.get("duration_sec"),
         "audio_duration_sec": item.get("audio_duration_sec") if has_audio else None,
         "language": item.get("language") or "en-US",
+        "audience_level": audience_level_or_none(item.get("audience_level")),
+        "source_deck_id": source_deck_id_or_none(item.get("source_deck_id")),
+        "captions_vtt_url": _captions_url(item.get("job_id")) if has_video and _flag(item.get("has_captions"), False)
+        else None,
         "format": fmt,
         "has_video": has_video,
         "has_audio": has_audio,
@@ -536,14 +563,23 @@ def list_library(
     Admins see every item (with its `published` flag); anonymous callers
     only see published items as public DTOs. Media URLs are minted by
     `GET /library/{job_id}` when the user opens the player.
+
+    ``[]`` means nothing is published (or storage is not configured at
+    all). A storage that is configured but failing answers 503 — never an
+    empty list.
     """
     response.headers["Cache-Control"] = NO_STORE
     lib = _get_library(cfg)
     if not lib.available:
+        if lib.configured:
+            raise _library_unavailable()
         return []
-    if principal.is_admin:
-        return [_summary_item(item) for item in lib.list()]
-    return [_public_item(item) for item in lib.list(published_only=True)]
+    try:
+        if principal.is_admin:
+            return [_summary_item(item) for item in lib.list(strict=True)]
+        return [_public_item(item) for item in lib.list(published_only=True, strict=True)]
+    except LibraryUnavailable as exc:
+        raise _library_unavailable(exc) from exc
 
 
 @public_router.get("/library/{job_id}")
@@ -553,21 +589,56 @@ def get_library_item(
     cfg: AzureConfig = Depends(get_cfg),
     principal: Principal = Depends(get_principal),
 ) -> dict:
-    """A library item with fresh signed URLs (public DTO for anonymous callers)."""
+    """A library item with fresh signed URLs (public DTO for anonymous callers).
+
+    404 means the item does not exist (or is not published); a storage
+    failure answers 503, never 404."""
     require_id(job_id, PODCAST_JOB_RE, "Library item")
     response.headers["Cache-Control"] = NO_STORE
     lib = _get_library(cfg)
     if not lib.available:
-        raise HTTPException(503, "Library storage not available")
-    if principal.is_admin:
-        item = lib.get(job_id)
-        if not item:
-            raise HTTPException(404, "Library item not found")
-        return _full_item(item)
-    item = lib.get(job_id, public=True)
+        raise _library_unavailable()
+    try:
+        item = lib.get(job_id, strict=True) if principal.is_admin else lib.get(job_id, public=True, strict=True)
+    except LibraryUnavailable as exc:
+        raise _library_unavailable(exc) from exc
     if not item:
         raise HTTPException(404, "Library item not found")
-    return _public_item(item)
+    return _full_item(item) if principal.is_admin else _public_item(item)
+
+
+@public_router.get("/library/{job_id}/captions.vtt", response_class=Response)
+def get_library_captions(
+    job_id: str,
+    cfg: AzureConfig = Depends(get_cfg),
+    principal: Principal = Depends(get_principal),
+) -> Response:
+    """WebVTT captions of a library video, for the player's ``<track>``.
+
+    Same visibility as the item route: anonymous callers get published
+    items only (404 otherwise), admins any item. Only items with a video
+    rendition have captions (an audio-only episode's transcript is inline).
+    The SRT timed on the video is converted server-side. Published items are
+    cacheable for 10 minutes; an unpublished item read by an admin is not.
+    """
+    require_id(job_id, PODCAST_JOB_RE, "Library item")
+    lib = _get_library(cfg)
+    if not lib.available:
+        raise _library_unavailable()
+    try:
+        source = lib.captions_source(job_id, public=not principal.is_admin)
+    except LibraryUnavailable as exc:
+        raise _library_unavailable(exc) from exc
+    if source is None:
+        raise HTTPException(404, "Library item not found", headers={"Cache-Control": NO_STORE})
+    vtt = srt_to_vtt(source.text) if source.text else None
+    if vtt is None:
+        raise HTTPException(404, "Captions not available", headers={"Cache-Control": NO_STORE})
+    return Response(
+        vtt,
+        media_type=CAPTIONS_VTT_MEDIA_TYPE,
+        headers={"Cache-Control": CAPTIONS_VTT_CACHE_CONTROL if source.published else NO_STORE},
+    )
 
 
 @router.post("/library/{job_id}/publish")

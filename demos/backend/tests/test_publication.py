@@ -12,14 +12,15 @@ UUID_PUB = "0b5f2a7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 UUID_PRIV = "1c6f2a7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
 
 VIDEO_PUBLIC_KEYS = {
-    "job_id", "title", "created_at", "duration_sec", "language", "thumbnail_url", "video_url",
-    "audio_url", "srt_url", "scorm_url", "script",
+    "job_id", "title", "created_at", "duration_sec", "language", "audience_level", "source_deck_id",
+    "captions_vtt_url", "thumbnail_url", "video_url", "audio_url", "srt_url", "scorm_url", "script",
 }
 # One schema whatever PODCAST_PUBLIC_AUDIO says: the flag only decides the values.
 PODCAST_PUBLIC_KEYS = {
-    "job_id", "title", "created_at", "duration_sec", "audio_duration_sec", "language", "format",
-    "has_video", "has_audio", "thumbnail_url", "cover_url", "video_url", "mp4_url", "audio_url", "mp3_url",
-    "hosts", "speaker_names", "transcript", "srt_url", "audio_srt_url", "scorm_url", "script",
+    "job_id", "title", "created_at", "duration_sec", "audio_duration_sec", "language", "audience_level",
+    "source_deck_id", "captions_vtt_url", "format", "has_video", "has_audio", "thumbnail_url", "cover_url",
+    "video_url", "mp4_url", "audio_url", "mp3_url", "hosts", "speaker_names", "transcript", "srt_url",
+    "audio_srt_url", "scorm_url", "script",
 }
 PODCAST_ALWAYS_NONE = ("srt_url", "audio_srt_url", "scorm_url", "script")
 PODCAST_AUDIO_KEYS = ("audio_url", "mp3_url", "cover_url", "transcript", "audio_duration_sec")
@@ -33,19 +34,21 @@ class FakeLibrary:
     def __init__(self, kind: str = "video"):
         self.kind = kind
         self.available = True
+        self.configured = True
         pfx = "sv-"
         self.items = {
             f"{pfx}0000aaaa": {"job_id": f"{pfx}0000aaaa", "title": "Public", "created_at": "2026-01-02",
                                "duration_sec": 12.5, "language": "en-US", "published": True,
                                "document_title": "secret doc", "voice": "en-US-Ava:DragonHDLatestNeural",
-                               "speaker_names": ["A", "B"]},
+                               "speaker_names": ["A", "B"], "audience_level": "practitioner",
+                               "has_captions": True},
             f"{pfx}0000bbbb": {"job_id": f"{pfx}0000bbbb", "title": "Private", "created_at": "2026-01-01",
                                "duration_sec": 3.0, "language": "fr-FR", "published": False},
         }
         self.sas_minutes: list[int] = []
         self.published_calls: list = []
 
-    def list(self, *, published_only: bool = False):
+    def list(self, *, published_only: bool = False, strict: bool = False):
         out = []
         for it in self.items.values():
             if published_only and not it["published"]:
@@ -53,7 +56,7 @@ class FakeLibrary:
             out.append({**it, "thumbnail_url": "https://blob/thumb?sas"})
         return out
 
-    def get(self, job_id, *, public: bool = False):
+    def get(self, job_id, *, public: bool = False, strict: bool = False):
         it = self.items.get(job_id)
         if not it:
             return None
@@ -95,6 +98,9 @@ def test_video_anonymous_list_only_published(client, easyauth, video_lib):
     assert set(items[0]) == VIDEO_PUBLIC_KEYS
     assert items[0]["audio_url"] is None and items[0]["srt_url"] is None and items[0]["scorm_url"] is None
     assert "document_title" not in items[0] and "voice" not in items[0]
+    # Visible before play (C2.3): the level, the (still unlinked) source deck and the same-origin captions route.
+    assert items[0]["audience_level"] == "practitioner" and items[0]["source_deck_id"] is None
+    assert items[0]["captions_vtt_url"] == "/api/video/library/sv-0000aaaa/captions.vtt"
 
 
 def test_video_anonymous_detail(client, easyauth, video_lib):
@@ -103,6 +109,8 @@ def test_video_anonymous_detail(client, easyauth, video_lib):
     body = r.json()
     assert set(body) == VIDEO_PUBLIC_KEYS
     assert body["video_url"] and body["audio_url"] is None and body["scorm_url"] is None
+    assert body["audience_level"] == "practitioner"
+    assert body["captions_vtt_url"] == "/api/video/library/sv-0000aaaa/captions.vtt"
     assert client.get("/api/video/library/sv-0000bbbb").status_code == 404
 
 
@@ -191,16 +199,20 @@ def _rendition(tmp_path: Path, name: str, *, video: bool, hosts):
 @pytest.fixture
 def podcast_library(monkeypatch, tmp_path):
     """Real PodcastLibrary with three items: a published video, a published audio-only
-    episode and an unpublished video. SAS URLs encode their lifetime (``se=<minutes>m``)."""
+    episode and an unpublished video. SAS URLs encode their lifetime: ``se=<minutes>m`` for a per-request URL,
+    ``se=bucket`` for the window public thumbnails and covers share."""
     import routers.podcast as pc
     from config import load_config
     from services import podcast_library as pl
-    from services.podcast_models import PodcastHost
+    from services.podcast_models import PodcastHost, SasWindow
+
+    def fake_sas(blob, lifetime=pl.DEFAULT_SAS_MINUTES):
+        return f"https://sas.example/{blob}?se={'bucket' if isinstance(lifetime, SasWindow) else f'{lifetime}m'}"
 
     lib = pl.PodcastLibrary(load_config())
     lib._initialised = True
     lib._blob = MemBlobService()
-    lib._sas = lambda blob, minutes=pl.DEFAULT_SAS_MINUTES: f"https://sas.example/{blob}?se={minutes}m"
+    lib._sas = fake_sas
     monkeypatch.setattr(pl, "_ffprobe_duration", lambda p: {".mp4": 61.0, ".mp3": 55.5}.get(Path(p).suffix))
 
     def fake_frame(mp4, out, *, ts):
@@ -243,9 +255,12 @@ def test_podcast_anonymous_without_public_audio(client, easyauth, podcast_librar
     item = items[0]
     _assert_public_shape(item)
     assert (item["format"], item["has_video"], item["has_audio"]) == ("video", True, False)
-    assert item["thumbnail_url"].endswith("se=15m")
+    assert item["thumbnail_url"].endswith("se=bucket")  # public thumbnails share their 10-minute bucket's URL
     assert all(item[k] is None for k in PODCAST_AUDIO_KEYS)
     assert item["hosts"] == [] and item["speaker_names"] == []
+    # C2.3: the level is visible before play; a watchable item links its same-origin captions.
+    assert item["audience_level"] == "expert" and item["source_deck_id"] is None
+    assert item["captions_vtt_url"] == "/api/podcast/library/job-0000aaaa/captions.vtt"
 
     r = client.get("/api/podcast/library/job-0000aaaa")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
@@ -254,6 +269,7 @@ def test_podcast_anonymous_without_public_audio(client, easyauth, podcast_librar
     assert body["mp4_url"] == "https://sas.example/podcast-library/job-0000aaaa/video.mp4?se=15m"
     assert all(body[k] is None for k in PODCAST_AUDIO_KEYS)
     assert body["hosts"] == [] and body["speaker_names"] == [] and body["has_audio"] is False
+    assert body["audience_level"] == "expert" and body["captions_vtt_url"] == item["captions_vtt_url"]
 
     # Audio-only episodes need PODCAST_PUBLIC_AUDIO, even by direct link.
     assert client.get("/api/podcast/library/job-0000cccc").status_code == 404
@@ -274,14 +290,17 @@ def test_podcast_anonymous_with_public_audio(client, easyauth, podcast_library, 
                                  {"role": "expert", "display_name": "Bob", "avatar_id": "photo_male"}]
         assert item["speaker_names"] == ["Ann", "Bob"] and item["has_audio"] is True
     assert (items["job-0000cccc"]["format"], items["job-0000cccc"]["has_video"]) == ("audio", False)
+    # Captions are the video rendition's: an audio-only episode has its transcript inline instead.
+    assert items["job-0000cccc"]["captions_vtt_url"] is None
+    assert items["job-0000aaaa"]["captions_vtt_url"] == "/api/podcast/library/job-0000aaaa/captions.vtt"
 
     r = client.get("/api/podcast/library/job-0000cccc")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     body = r.json()
     _assert_public_shape(body)
-    assert body["video_url"] is None and body["has_video"] is False
+    assert body["video_url"] is None and body["has_video"] is False and body["captions_vtt_url"] is None
     assert body["audio_url"] == "https://sas.example/podcast-library/job-0000cccc/audio.mp3?se=15m"
-    assert body["cover_url"].endswith("cover.jpg?se=15m") and body["thumbnail_url"].endswith("se=15m")
+    assert body["cover_url"].endswith("cover.jpg?se=bucket") and body["thumbnail_url"].endswith("se=bucket")
     assert set(body["transcript"]) == set(Transcript.model_fields)
     assert [c["kind"] for c in body["transcript"]["cues"]] == ["speech", "speech", "reaction"]
     assert body["audio_duration_sec"] == 55.5
@@ -344,12 +363,16 @@ class LeakyLibrary:
             "hosts": [{"role": "interviewer", "display_name": "Ann", "avatar_id": None, "voice": SECRET_VOICE},
                       {"role": "bogus"}],
             "speaker_names": ["Ann", 3],
+            # Values the DTO must not trust: an unknown level, a source that is not a deck id, captions of an
+            # item without a video rendition.
+            "audience_level": "guru", "source_deck_id": "../../secret", "has_captions": True,
+            "subtitle_blob": "podcast-library/job-0000dddd/subtitles.srt",
         }
 
-    def list(self, *, published_only: bool = False):
+    def list(self, *, published_only: bool = False, strict: bool = False):
         return [dict(self.item)]
 
-    def get(self, job_id, *, public: bool = False):
+    def get(self, job_id, *, public: bool = False, strict: bool = False):
         return dict(self.item) if job_id == self.item["job_id"] else None
 
 
@@ -363,7 +386,9 @@ def test_podcast_public_dto_is_an_allow_list(client, easyauth, monkeypatch, publ
         assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
         body = r.json()[0] if isinstance(r.json(), list) else r.json()
         _assert_public_shape(body)
-        assert SECRET_VOICE not in r.text and "secret" not in r.text
+        assert SECRET_VOICE not in r.text and "secret" not in r.text and "subtitle_blob" not in r.text
+        assert body["audience_level"] is None and body["source_deck_id"] is None
+        assert body["captions_vtt_url"] is None  # no video rendition, whatever the flag says
         if public_audio:
             assert body["audio_url"] == "https://blob/audio?sas" and body["cover_url"] == "https://blob/cover?sas"
             assert body["hosts"] == [{"role": "interviewer", "display_name": "Ann", "avatar_id": None}]
@@ -374,11 +399,12 @@ def test_podcast_public_dto_is_an_allow_list(client, easyauth, monkeypatch, publ
 
 
 # ---------------------------------------------------------------------------
-# Library classes: unpublished hidden, 15-minute SAS, video/thumb only
+# Library classes: unpublished hidden, 15-minute media SAS, a shared window for thumbnails
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("kind", ["video", "podcast"])
 def test_library_public_get_uses_short_sas(kind):
     from config import load_config
+    from services.podcast_models import SasWindow
 
     if kind == "video":
         from services.video_library import PUBLIC_SAS_MINUTES, VideoLibrary as Lib
@@ -393,7 +419,7 @@ def test_library_public_get_uses_short_sas(kind):
     manifest = {"job_id": job, "title": "t", "video_blob": "v", "thumbnail_blob": "t",
                 "audio_blob": "a", "subtitle_blob": "s", "scorm_blob": "z"}
     lib._read_json_blob = lambda name: dict(manifest)  # type: ignore[assignment]
-    minted: list[tuple[str, int]] = []
+    minted: list[tuple[str, object]] = []
     lib._sas = lambda blob, minutes=24 * 60: minted.append((blob, minutes)) or f"sas:{blob}"  # type: ignore[assignment]
 
     assert lib.get(job, public=True) is None  # published flag absent => false
@@ -402,7 +428,9 @@ def test_library_public_get_uses_short_sas(kind):
     assert item[video_key] == "sas:v"
     assert all(item[k] is None for k in extra)
     assert {b for b, _ in minted} == {"v", "t"}
-    assert all(m == PUBLIC_SAS_MINUTES == 15 for _, m in minted)
+    lifetimes = dict(minted)
+    assert lifetimes["v"] == PUBLIC_SAS_MINUTES == 15  # the video keeps a per-request 15-minute URL
+    assert isinstance(lifetimes["t"], SasWindow)  # the thumbnail shares its 10-minute bucket's window
     assert lib.get("../" + job, public=True) is None
 
 
@@ -423,10 +451,10 @@ class FakeStore:
                         "slides": slides},
         }
 
-    def list_decks(self):
+    def list_decks(self, strict=False):
         return [{k: v for k, v in d.items() if k != "slides"} for d in self.docs.values()]
 
-    def get_presentation(self, pid):
+    def get_presentation(self, pid, strict=False):
         return self.docs.get(pid)
 
     def set_deck_published(self, pid, published):
@@ -457,13 +485,17 @@ def test_decks_anonymous_detail_has_no_notes_body_or_pptx(client, easyauth, deck
     r = client.get(f"/api/decks/{UUID_PUB}")
     assert r.status_code == 200
     text = r.text
-    assert "SECRET-NOTES" not in text and "BODY-TEXT" not in text
+    assert "SECRET-NOTES" not in text and "notes" not in text
     assert "pptx_url" not in r.json() and "old-sas" not in text
     slide = r.json()["slides"][0]
     assert slide["title"] == "Intro" and slide["image_url"] == f"/api/slides/{UUID_PUB}/0.png"
+    # The body is visible slide text and travels as `text` — never as `body`; the file name never travels at all.
+    assert slide["text"] == "BODY-TEXT" and "body" not in slide
+    assert r.json()["filename"] == "Public" and "Public.pptx" not in text
     assert client.get(f"/api/decks/{UUID_PRIV}").status_code == 404
     admin = client.get(f"/api/decks/{UUID_PRIV}", headers=easyauth()).json()
-    assert admin["slides"][0]["notes"] == "SECRET-NOTES"
+    assert admin["slides"][0]["notes"] == "SECRET-NOTES" and admin["filename"] == "Private.pptx"
+    assert "text" not in admin["slides"][0]
 
 
 def test_decks_publish(client, easyauth, decks_store):
