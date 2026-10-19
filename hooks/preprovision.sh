@@ -11,6 +11,19 @@ get_value() {
   printf '%s' "$v"
 }
 
+# AUTH_MODE is read from the azd environment ONLY, never from the process environment:
+# run-local sets AUTH_MODE=disabled in developer shells, which must not decide a deployment.
+# Checked first so that no other path (including ALLOW_INSECURE_NO_AUTH) can skip it.
+auth_mode=$(azd env get-value AUTH_MODE 2>/dev/null) || auth_mode=""
+auth_mode=$(printf '%s' "$auth_mode" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+if [ "$auth_mode" = "disabled" ]; then
+  echo "ERROR: refusing to provision: AUTH_MODE=disabled is set in the azd environment." >&2
+  echo "It makes every caller an admin and the deployed backend refuses it on Azure Container Apps anyway." >&2
+  echo "Fix it with: azd env set AUTH_MODE easyauth" >&2
+  echo "To test production as an admin use Entra bearer tokens (AUTH_EXTRA_CLIENT_APPS): docs/provisioning.md section 3.1" >&2
+  exit 1
+fi
+
 insecure=$(get_value ALLOW_INSECURE_NO_AUTH | tr '[:upper:]' '[:lower:]')
 missing=""
 for name in AUTH_CLIENT_ID AUTH_CLIENT_SECRET ALLOWED_OBJECT_IDS; do

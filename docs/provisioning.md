@@ -36,7 +36,7 @@ Placeholders look like `<this>`. Never commit real IDs or secrets.
 | Cosmos DB `cosmos-*` | Presentations, decks, playlists, demo quota counters | Bicep (`cosmos.bicep`) | **Serverless**, `disableLocalAuth: true`. Database `ai-presenter`. Containers `presentations` (`/id`) and `playlist_progress` (`/user_id`). Identity has Built-in Data Contributor |
 | Storage account `st*` | Slide images, source files, rendered media | Bicep (`storage.bicep`) | StorageV2 LRS. **`allowSharedKeyAccess: false`**. No public blob access. Container `slide-images`. SAS URLs use a user-delegation key. Identity has Storage Blob Data Contributor |
 | Log Analytics `cae-*-logs` | Container Apps logs; Blob `StorageRead` access logs (podcast audio reads, unless `ENABLE_BLOB_ACCESS_LOGS=false`) | Bicep (`containerapp.bicep`, `blob-access-logs.bicep`) | PerGB2018, 30-day retention |
-| Container Apps environment `cae-*` and app `ca-*` | Hosts the FastAPI backend and the built React SPA (port 8000) | Bicep (`containerapp.bicep`) | **2 vCPU / 4 GiB**, scale **0–1** replicas. External HTTPS ingress. `AUTH_MODE=easyauth`. `USE_LOCAL_SEARCH=true` |
+| Container Apps environment `cae-*` and app `ca-*` | Hosts the FastAPI backend and the built React SPA (port 8000) | Bicep (`containerapp.bicep`) | **2 vCPU / 4 GiB**, scale **0–1** replicas (`MIN_REPLICAS`: `0` = scale to zero, the default; `1` = always on, see [§10](#10-cost-notes-and-teardown)). External HTTPS ingress. `AUTH_MODE=easyauth` (the backend refuses `disabled` on Container Apps). `USE_LOCAL_SEARCH=true` |
 | Easy Auth (Microsoft Entra ID) | Sign-in. Hybrid mode: anonymous visitors are let through and the backend authorizes each route | Bicep (`authConfigs`), **only when `AUTH_CLIENT_ID` is set** | `unauthenticatedClientAction: AllowAnonymous`, `requireHttps`. Issuer `…/<tenant>/v2.0`. The client secret is stored as a Container App secret |
 | Budget `budget-<env>` | Cost alert on the resource group | Bicep (`budget.bicep`), **only when `BUDGET_CONTACT_EMAILS` is set** | Monthly, `BUDGET_AMOUNT` (default 50). Alerts at 80% actual and 100% forecasted |
 | Entra app registration | Easy Auth client | **You** (manual, [§3](#3-entra-app-registration-easy-auth)) | Not created by Bicep and not deleted by `azd down` |
@@ -179,8 +179,40 @@ azd env set ALLOWED_OBJECT_IDS <oid-1>,<oid-2>
 2. Pre-authorize the Azure CLI client `04b07795-8ddb-461a-bbee-02f9e1bf7b46`.
 3. Run `azd env set AUTH_EXTRA_CLIENT_APPS 04b07795-8ddb-461a-bbee-02f9e1bf7b46`.
 
+The same tokens are how you test production as an admin: see [§3.1](#31-admin-tests-against-production).
+
 > `ALLOW_INSECURE_NO_AUTH=true` skips the hook for a **throw-away, public, read-only** demo.
 > Easy Auth isn't configured and nobody can be admin. Don't use it for a real instance.
+
+### 3.1 Admin tests against production
+
+**Never flip `AUTH_MODE` on Azure** (for example with `az containerapp update --set-env-vars AUTH_MODE=disabled`) to run admin
+tests. `AUTH_MODE=disabled` makes every caller an admin for as long as it is set. Bicep hard-codes `AUTH_MODE=easyauth`, and the
+backend now refuses `disabled` on Azure Container Apps:
+
+- When `CONTAINER_APP_NAME` or `CONTAINER_APP_REVISION` is set (the platform sets both on every replica), `auth_mode()` returns
+  `easyauth` whatever `AUTH_MODE` says, and logs one `CRITICAL` line per process: `AUTH_MODE=disabled was refused: …`.
+  There is no flag to override this. Local development (no such variables) is unchanged.
+- The preprovision hook stops `azd provision` when the azd environment contains `AUTH_MODE=disabled`. It reads the azd
+  environment only, never your shell, so a shell that ran `run-local.ps1` is not a problem.
+- To find a refused attempt: `ContainerAppConsoleLogs_CL | where Log_s has "AUTH_MODE=disabled was refused"`.
+  (Older replicas logged `AUTH_MODE=disabled — every caller is treated as admin`.)
+
+Test production as an **allowlisted user with an Entra ID bearer token** instead. After the three setup steps above
+(scope, pre-authorized client, `AUTH_EXTRA_CLIENT_APPS`) and an `azd provision`:
+
+```powershell
+az login --tenant <tenant-id>             # an account whose object ID is in ALLOWED_OBJECT_IDS
+$token = az account get-access-token --scope api://<client-id>/user_impersonation --query accessToken -o tsv
+curl.exe -s -H "Authorization: Bearer $token" <app-url>/api/me     # "is_admin": true, "auth_mode": "easyauth"
+```
+
+Easy Auth validates the token and injects the principal headers, so the backend sees a real admin and every gated route behaves
+as it does for a signed-in browser. Send the header from your test client (`requests`, Playwright's `request` fixture). Tokens
+last about an hour: for long runs refresh them (`scripts/video_regen.py` and `scripts/podcast_regen.py` do it through
+`AI_PRESENTER_BEARER_TOKEN` and `AI_PRESENTER_TOKEN_COMMAND`, see [README](../README.md#seeding-a-deployed-showcase-library)).
+A browser page cannot add an `Authorization` header to the `/ws/voice` WebSocket handshake: for UI flows that open it, sign in once as the allowlisted
+account (`/.auth/login/aad`) and reuse the saved browser state (`storageState`), whose session cookie travels with the handshake.
 
 ---
 
@@ -200,7 +232,7 @@ Values live in `.azure/<env>/.env`. That folder is git-ignored and **holds the c
 | `AUTH_CLIENT_SECRET` | ✅ | — | Client secret. Stored as a Container App secret. **Never print or commit it** |
 | `ALLOWED_OBJECT_IDS` | ✅ | — | Comma-separated admin object IDs (GUIDs) |
 | `AUTH_TENANT_ID` | | subscription tenant | Tenant used for the Easy Auth issuer and the backend `tid` check |
-| `AUTH_EXTRA_CLIENT_APPS` | | empty | Extra client app IDs allowed to send bearer tokens |
+| `AUTH_EXTRA_CLIENT_APPS` | | empty | Extra client app IDs allowed to send bearer tokens. This is how admin tests run against production ([§3.1](#31-admin-tests-against-production)) |
 | `ALLOW_INSECURE_NO_AUTH` | | `false` | Hook escape hatch for a throw-away read-only demo only (see §3) |
 | `ALLOWED_ORIGINS` | | empty (same-origin) | Extra CORS / WebSocket origins |
 | `CUSTOM_AVATARS_JSON` | | empty | JSON array of custom photo avatars ([§4.1](#41-custom-photo-avatars-optional)). Thumbnails must exist in `demos/backend/static/avatars/` (git-ignored) at build time |
@@ -225,12 +257,14 @@ Values live in `.azure/<env>/.env`. That folder is git-ignored and **holds the c
 | `ASSIGN_EXTERNAL_AI_SERVICES_ROLES` | | `true` | Assign the three AI roles on the external resource |
 | `EXTRA_TAGS_JSON` | | empty | JSON object merged into every resource's tags (policy) |
 | `ENABLE_BLOB_ACCESS_LOGS` | | `true` | Blob `StorageRead` diagnostic setting → the Log Analytics workspace (audio reads, expired-SAS 403s, user agents). See [infra/README.md](../infra/README.md) |
+| `MIN_REPLICAS` | | `0` | Container App minimum replicas, `0` or `1` (the maximum is fixed at 1). `0` scales to zero when idle (about 30 s cold start). `1` keeps one replica always on: about **$47/month** at idle rates, up to about **$158/month** if never idle. Raise `BUDGET_AMOUNT` with it ([§10](#10-cost-notes-and-teardown)) |
 | `BUDGET_CONTACT_EMAILS` | recommended | empty (no budget) | Comma-separated recipients. The budget is deployed only when this is set |
 | `BUDGET_AMOUNT` / `BUDGET_START_DATE` | | `50` / current month | Monthly amount / `yyyy-MM-01`. Pin the date to keep re-provisions idempotent |
 
 Not set through azd: `FRAME_ANCESTORS` (the backend default allows Teams/Office) and `LOG_FORWARDING_CHAIN`
 (diagnostics only, see [live-demo.md](live-demo.md#implementation-notes)). Set them on the Container App if you need them.
-`AUTH_MODE` is hard-coded to `easyauth` in Bicep.
+`AUTH_MODE` is hard-coded to `easyauth` in Bicep. The backend also refuses `AUTH_MODE=disabled` on Container Apps, and the preprovision hook
+stops if the azd environment contains it ([§3.1](#31-admin-tests-against-production)).
 
 **JSON values must be backslash-escaped.** azd copies the value verbatim into `main.parameters.json`, so each `"` inside the value must be written `\"`.
 The same single-quoted string works in **bash** and **PowerShell 7.3+**. In Windows PowerShell 5.1 the backslashes may be stripped; use `pwsh`.
@@ -329,7 +363,7 @@ Before the first `azd deploy`, the app runs a placeholder `containerapps-hellowo
 
 ### 6.1 First use
 
-1. Open `AZURE_CONTAINER_APP_URL`. The first request can be slow because the app scales from zero.
+1. Open `AZURE_CONTAINER_APP_URL`. With the default `MIN_REPLICAS=0` the app scales to zero, so the first request after an idle period can take about 30 s ([§10](#10-cost-notes-and-teardown) for the always-on option).
 2. Sign in from the header link (`/.auth/login/aad`). Consent if prompted.
 3. **Decks:** upload a `.pptx`. Samples are in `tests/fixtures/samples/`.
 4. **Seed content (optional):** the repo ships an avatar-narrated **AI enablement** series in `content/ai-enablement/`
@@ -429,7 +463,7 @@ Run this in a **real browser** (Edge/Chrome) on the network your users are on.
 - [ ] The podcast library shows **Watch** and **Listen** side by side; *Listen* plays the radio version with live captions.
       An *Audio only* render (`/podcast`, format picker) completes in about a minute and appears with *Listen* only.
 - [ ] Publish an item. In a private window (anonymous) it's visible and plays. Unpublished items aren't listed.
-- [ ] No startup warnings in the logs: no `AUTH_MODE=disabled`, no `ALLOWED_OBJECT_IDS is empty`, no `AUTH_TENANT_ID is not set`:
+- [ ] No startup warnings in the logs: no `AUTH_MODE=disabled`, no `ALLOWED_OBJECT_IDS is empty`, no `AUTH_TENANT_ID is not set`, and no `CRITICAL` line `AUTH_MODE=disabled was refused` (it means something set `AUTH_MODE=disabled` on the app; remove it, [§3.1](#31-admin-tests-against-production)):
       ```bash
       az containerapp logs show -n <app-name> -g <rg> --tail 200
       az containerapp logs show -n <app-name> -g <rg> --type system --tail 50
@@ -458,6 +492,8 @@ Run this in a **real browser** (Edge/Chrome) on the network your users are on.
 3. `./run-local.ps1` (Windows). It sets `AUTH_MODE=disabled`, starts the backend on `:8000` and Vite on `:5173`.
    On macOS/Linux, follow [README › Manual Setup](../README.md#manual-setup-macos--linux).
 4. `AUTH_MODE=disabled` makes **every caller an admin**. Use it **only on localhost**. Never set it in Azure and never expose a local instance.
+   The backend refuses it on Azure Container Apps (when `CONTAINER_APP_NAME` or `CONTAINER_APP_REVISION` is set, which the platform does
+   on every replica) and the preprovision hook stops `azd provision` if the azd environment contains it. Locally, and in a plain `docker run`, it works as before.
 5. **`.env` wins over the shell.** `demos/backend/config.py` loads `demos/backend/.env` with `override=True`, so a key in that file
    replaces the same variable set in your shell or by `run-local.ps1` (including `AUTH_MODE`). Change values in `.env`, or remove the key from it,
    then restart the backend.
@@ -484,6 +520,8 @@ Run this in a **real browser** (Edge/Chrome) on the network your users are on.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `azd provision` stops with *refusing to provision without authentication* | Hook: `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET` or `ALLOWED_OBJECT_IDS` missing | Do [§3](#3-entra-app-registration-easy-auth). Don't use `ALLOW_INSECURE_NO_AUTH` for a real instance |
+| Hook: *refusing to provision: AUTH_MODE=disabled is set in the azd environment* | `AUTH_MODE=disabled` in `.azure/<env>/.env`. The hook reads only the azd environment, not your shell | `azd env set AUTH_MODE easyauth`. For admin tests use bearer tokens ([§3.1](#31-admin-tests-against-production)) |
+| Log line `CRITICAL … AUTH_MODE=disabled was refused` | `AUTH_MODE=disabled` was set on the Container App outside Bicep (for example with `az containerapp update --set-env-vars`). The backend ignored it and kept Easy Auth | `azd provision` resets `AUTH_MODE=easyauth`, or remove the variable. Use bearer tokens for admin tests ([§3.1](#31-admin-tests-against-production)) |
 | Hook: *expected GUID value(s)* | UPN/e-mail or stray spaces in `ALLOWED_OBJECT_IDS`, `AUTH_CLIENT_ID` or `AUTH_TENANT_ID` | Use object/client/tenant GUIDs |
 | `AADSTS50011` redirect URI mismatch | FQDN callback not registered | `az ad app update --web-redirect-uris "<url>/.auth/login/aad/callback"` |
 | Sign-in loop or `AADSTS700054` (id_token not enabled) | ID tokens disabled | Enable **ID tokens** on the app registration |
@@ -504,7 +542,7 @@ Run this in a **real browser** (Edge/Chrome) on the network your users are on.
 | 401/403 from OpenAI, Speech, Cosmos or Storage in the logs | Role assignments not propagated yet, or missing on an external resource | Wait, or assign the roles ([§1](#1-what-gets-deployed)) |
 | Slides render with wrong fonts or reflow | Font missing in the image. The image ships Liberation, Carlito, Caladea and DejaVu | Embed fonts in the PPTX, or add the font package to the `Dockerfile` |
 | Uploads or renders fail with storage 403 on a policy-managed subscription | Storage `publicNetworkAccess` forced to Disabled | [video.md §8](video.md#8-deployment-topology) |
-| First request very slow or times out | Scale-to-zero cold start (`minReplicas: 0`) | Retry. That's expected |
+| First request very slow or times out | Scale-to-zero cold start (`MIN_REPLICAS=0`, the default) | Retry: the first request wakes the app (about 30 s). To remove the wait, `azd env set MIN_REPLICAS 1` and `azd provision` (always on, about $47/month at idle rates, [§10](#10-cost-notes-and-teardown)) |
 
 ---
 
@@ -518,9 +556,22 @@ Main cost drivers (check [Azure pricing](https://azure.microsoft.com/pricing/cal
 | Raise-hand Q&A | Per question: one Speech speech-to-text request (≤ 15 s audio) plus one small `gpt-4.1` call. Demo questions are capped by `DEMO_QA_*` ([§6.3](#63-voice-qa-in-the-public-demo-demo_qa_enabled)) |
 | Batch avatar (video/podcast renders) | Per minute of generated video |
 | Azure OpenAI | Per token. Capacity is only a rate limit for GlobalStandard |
-| Container Apps | Per vCPU-second and GiB-second while a replica runs (2 vCPU / 4 GiB). Scales to zero when idle |
+| Container Apps | Per vCPU-second and GiB-second while a replica runs (2 vCPU / 4 GiB). `MIN_REPLICAS=0` (the default) scales to zero when idle; `MIN_REPLICAS=1` keeps one replica always on (see below) |
 | ACR Basic | Daily fixed fee plus build minutes |
 | Cosmos DB serverless, Storage LRS, Log Analytics | Per request unit, per GB stored, per GB ingested (30-day retention) |
+
+**Always-on cost (`MIN_REPLICAS=1`).** The default `MIN_REPLICAS=0` scales to zero, so the first request after an idle period
+waits about 30 s for a cold start. `azd env set MIN_REPLICAS 1` and `azd provision` keep one 2 vCPU / 4 GiB replica warm and remove
+that wait. At the pay-as-you-go rates of the [Container Apps pricing page](https://azure.microsoft.com/pricing/details/container-apps/)
+(check your region), before the monthly free grants:
+
+- **Idle** (no requests, the usual case): (2 vCPU × $0.000003 + 4 GiB × $0.000003) per second × about 2.63 M seconds per month ≈ **$47/month**.
+- **Never idle** (the active vCPU rate is $0.000024/s): (2 vCPU × $0.000024 + 4 GiB × $0.000003) per second × 2.63 M seconds ≈ **$158/month**.
+
+The default budget is `BUDGET_AMOUNT=50`: the always-on replica alone is close to it, so raise `BUDGET_AMOUNT` when you use `1`
+(the template doesn't change the default for you). Go back with `azd env set MIN_REPLICAS 0` and `azd provision`. The maximum stays
+one replica (counters and quotas are in-process), so only `0` and `1` are accepted. Set the value in the azd environment:
+`az containerapp update --min-replicas` is overwritten by the next `azd provision`.
 
 Keep `BUDGET_CONTACT_EMAILS` set. The budget alerts; it **doesn't stop** spend.
 

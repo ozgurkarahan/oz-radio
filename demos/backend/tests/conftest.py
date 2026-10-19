@@ -33,6 +33,10 @@ _OFFLINE_ENV = {
     "AZURE_SPEECH_ENDPOINT": "",
     "AZURE_SPEECH_KEY": "",
     "AUTH_MODE": "disabled",
+    # Azure Container Apps sets these on every replica and auth_mode() refuses AUTH_MODE=disabled
+    # when either is set: empty = unset, so a developer shell can never flip the tests.
+    "CONTAINER_APP_NAME": "",
+    "CONTAINER_APP_REVISION": "",
     "AUTH_TENANT_ID": "",
     "ALLOWED_OBJECT_IDS": "",
     "ALLOWED_ORIGINS": "",

@@ -52,6 +52,11 @@ param containerCpu string = '2'
 @description('Memory per replica (must match the CPU ratio, e.g. 2 vCPU => 4Gi)')
 param containerMemory string = '4Gi'
 
+@minValue(0)
+@maxValue(1)
+@description('Minimum replicas: 0 scales to zero when idle (cold start of about 30 s), 1 keeps one replica always on. The maximum is fixed at 1 because rate limits and quotas are in-process')
+param minReplicas int = 0
+
 @description('Microsoft Entra ID app registration client ID for Easy Auth (empty disables Easy Auth; nobody is admin)')
 param authClientId string = ''
 
@@ -278,7 +283,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: 0
+        minReplicas: minReplicas
         maxReplicas: 1
         rules: [
           {

@@ -11,6 +11,9 @@
     "backendImageName": {
       "value": "${SERVICE_BACKEND_IMAGE_NAME=}"
     },
+    "minReplicas": {
+      "value": "${MIN_REPLICAS=0}"
+    },
     "authClientId": {
       "value": "${AUTH_CLIENT_ID=}"
     },

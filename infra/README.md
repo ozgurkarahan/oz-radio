@@ -9,7 +9,7 @@
 |---|---|
 | User-assigned managed identity `id-*` | Created first; used for ACR pull and every data-plane call (`AZURE_CLIENT_ID`). |
 | Container Registry `cr*` | Admin user disabled; the identity has `AcrPull`. |
-| Container Apps environment + app `ca-*` | Scale 0–1 replicas, Easy Auth (Microsoft Entra ID) in hybrid mode. |
+| Container Apps environment + app `ca-*` | Scale 0–1 replicas (`MIN_REPLICAS`, default 0 = scale to zero), Easy Auth (Microsoft Entra ID) in hybrid mode. |
 | Azure OpenAI `oai-*` | Local (key) auth disabled. |
 | Azure AI Services `ais-*` (Speech/Avatar) | Skipped when an external resource is used. Local auth disabled. |
 | Cosmos DB (serverless) | Local (key) auth disabled; RBAC data contributor for the identity. |
@@ -39,12 +39,19 @@ For a throw-away, public, read-only demo only, `azd env set ALLOW_INSECURE_NO_AU
 skips the check (loud warning). Easy Auth is then not configured and the admin
 allowlist is forced empty, so nobody can act as admin.
 
+Never run production with `AUTH_MODE=disabled` (every caller would be admin). Bicep
+hard-codes `AUTH_MODE=easyauth`, the backend refuses `disabled` on Azure Container Apps
+(it enforces Easy Auth and logs one `CRITICAL` line), and the hook stops when the azd
+environment has `AUTH_MODE=disabled`. To test production as an admin, use Entra bearer
+tokens through `AUTH_EXTRA_CLIENT_APPS`:
+[`docs/provisioning.md` §3.1](../docs/provisioning.md#31-admin-tests-against-production).
+
 ## Optional settings (azd env)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ALLOWED_ORIGINS` | empty | Extra CORS / WebSocket origins (comma-separated); same-origin is always allowed. |
-| `AUTH_EXTRA_CLIENT_APPS` | empty | Extra client application IDs allowed to call the app with bearer tokens (e.g. Azure CLI `04b07795-8ddb-461a-bbee-02f9e1bf7b46` for scripted tests, which also needs pre-authorization on the app registration). Empty = only the app itself. |
+| `AUTH_EXTRA_CLIENT_APPS` | empty | Extra client application IDs allowed to call the app with bearer tokens (e.g. Azure CLI `04b07795-8ddb-461a-bbee-02f9e1bf7b46` for scripted tests, which also needs pre-authorization on the app registration). Empty = only the app itself. This is how admin tests run against production, never with `AUTH_MODE=disabled`: see [`docs/provisioning.md` §3.1](../docs/provisioning.md#31-admin-tests-against-production). |
 | `CUSTOM_AVATARS_JSON` | empty | JSON array of custom photo avatars (`id`, `character`, `display_name`, `gender`, `thumbnail`, `default`, `kind`, optional `podcast_crop`). Thumbnails must exist in `demos/backend/static/avatars/` at build time. Photo avatars need the Speech resource that hosts them (`USE_EXTERNAL_AI_SERVICES`). See [`docs/provisioning.md` §4.1](../docs/provisioning.md#41-custom-photo-avatars-optional). |
 | `HIDE_STOCK_AVATARS` | `false` | When `true` **and** at least one custom avatar is configured, the stock avatars are hidden from every picker/catalog; stock ids still resolve, as aliases to a same-gender custom avatar. Ignored when `CUSTOM_AVATARS_JSON` is empty. |
 | `ENABLE_URL_INGEST` | `false` | Allow podcast URL ingestion. |
@@ -70,6 +77,7 @@ allowlist is forced empty, so nobody can act as admin.
 | `ASSIGN_EXTERNAL_AI_SERVICES_ROLES` | `true` | Grant the app identity `Cognitive Services User`, `Cognitive Services Speech User` and `Foundry User` on the external resource. Requires Owner / User Access Administrator on its resource group; set `false` and assign them manually otherwise. |
 | `ENABLE_BLOB_ACCESS_LOGS` | `true` | Diagnostic setting `blob-access-logs` sending Blob **read** logs (`StorageRead` only) to the Log Analytics workspace, table `StorageBlobLogs`. See [Blob access logs](#blob-access-logs-podcast-audio). |
 | `EXTRA_TAGS_JSON` | empty | JSON object merged into every resource's tags, e.g. `{"CostCenter":"demo"}`. Use it for tags required or exempted by policy on policy-managed enterprise subscriptions. |
+| `MIN_REPLICAS` | `0` | Container App minimum replicas, `0` or `1` (the maximum is fixed at 1). `0` scales to zero when idle, so the first visit waits about 30 s for a cold start. `1` keeps one replica always on and removes that wait, for about $47/month at idle rates (up to about $158/month if never idle). See [Always-on](#always-on-min_replicas). |
 | `BUDGET_CONTACT_EMAILS` | empty | Comma-separated recipients; the budget is deployed only when set. |
 | `BUDGET_AMOUNT` | `50` | Monthly amount in the billing currency. |
 | `BUDGET_START_DATE` | current month | `yyyy-MM-01`; pin it to the creation month if a later re-provision rejects a changed start date. |
@@ -86,6 +94,30 @@ are durable in Cosmos (`demo-quota-<day>`), survive restarts and scale-to-zero, 
 Per-IP counting uses the rightmost `X-Forwarded-For` entry, which is the one
 the Container Apps ingress appends; put no other proxy in front without
 revisiting that assumption.
+
+### Always-on (`MIN_REPLICAS`)
+
+The template default is `MIN_REPLICAS=0`: the app scales to zero when idle, so a
+fresh deployment costs next to nothing at rest, but the first request after an idle
+period waits about 30 s for a cold start. `azd env set MIN_REPLICAS 1` then
+`azd provision` keeps one replica warm and removes that wait. The app is capped at
+one replica (counters and quotas are in-process), so only `0` and `1` are accepted.
+Keep the value in the azd environment: a change made with
+`az containerapp update --min-replicas` is overwritten by the next `azd provision`.
+
+Cost of the warm replica (2 vCPU / 4 GiB), before the monthly free grants, at the
+pay-as-you-go rates of the [Container Apps pricing page](https://azure.microsoft.com/pricing/details/container-apps/)
+(check your region):
+
+| Replica state | Per second | Per month (about 2.63 M s) |
+|---|---|---|
+| Idle (no requests) | 2 vCPU × $0.000003 + 4 GiB × $0.000003 = $0.000018 | about **$47** |
+| Never idle (active vCPU rate $0.000024/s) | 2 vCPU × $0.000024 + 4 GiB × $0.000003 = $0.000060 | about **$158** |
+
+The default budget (`BUDGET_AMOUNT`, 50) alerts at 80 % actual and 100 % forecasted, and
+the idle estimate alone is close to it, so raise `BUDGET_AMOUNT` when you use `1`
+(then `azd provision`; the template does not change the default for you). Go back with
+`azd env set MIN_REPLICAS 0` and `azd provision`.
 
 ### Podcast radio and listener flags (staged rollout)
 
