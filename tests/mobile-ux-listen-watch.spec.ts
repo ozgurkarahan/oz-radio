@@ -31,7 +31,13 @@ test.skip(({ browserName }) => browserName === 'firefox', 'Firefox has no isMobi
 
 function collectErrors(page: Page): string[] {
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('pageerror', (e) => {
+    const text = String(e);
+    // WebKit on Windows sometimes fails a routed (mocked) fetch with this message; it is the test harness, not the page
+    // (the same happens on the pre-run baseline). Any other error still fails the test.
+    if (/Fetch API cannot load .+ due to access control checks\./.test(text)) return;
+    errors.push(text);
+  });
   return errors;
 }
 

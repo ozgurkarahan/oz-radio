@@ -36,8 +36,29 @@ function preloadCriticalFonts(): Plugin {
   };
 }
 
+/**
+ * Dev server only: a browser that resets a connection (WebKit aborts media requests it loads outside the test mocks) must
+ * not crash Vite. Node throws an `error` event that has no listener, and such a reset reaches the client socket as
+ * `read ECONNRESET`: every incoming socket gets a listener (Node's own handling of the socket still runs).
+ */
+function survivePeerResets(): Plugin {
+  type Emitter = { on(event: string, listener: (...args: never[]) => void): unknown };
+  return {
+    name: 'oz-survive-peer-resets',
+    apply: 'serve',
+    configureServer(server) {
+      const http = server.httpServer as unknown as Emitter | null;
+      http?.on('connection', (socket: Emitter) => {
+        socket.on('error', (err: Error & { code?: string }) => {
+          if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') server.config.logger.warn(`[dev server] socket error: ${err.code ?? err.message}`);
+        });
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), preloadCriticalFonts()],
+  plugins: [react(), preloadCriticalFonts(), survivePeerResets()],
   server: {
     port: 5173,
     // Test servers shared by parallel Playwright runs set OZ_VITE_HMR=off, so an edit never reloads a page under test.

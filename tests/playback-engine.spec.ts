@@ -438,7 +438,8 @@ test.describe('Playback engine — deep links', () => {
   test.describe('phone', () => {
     test.use(PHONE);
 
-    test('an episode link without a mode opens Listen when the episode has audio', async ({ page }) => {
+    test('an episode link without a mode opens Listen when the episode has audio', async ({ page, browserName }) => {
+      test.skip(mockedMediaUnavailable({ browserName }), MOCKED_MEDIA_REASON); // it asserts the radio's playback state (fails 3/5 on WebKit at 1b41947 too)
       const errors = await open(page, `/podcast/library?episode=${POD_VIDEO.job_id}`);
       const d = dialog(page);
       await expect(d).toHaveAttribute('data-mode', 'listen');
