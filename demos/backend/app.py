@@ -306,7 +306,10 @@ async def avatar_thumbnail(name: str, request: Request):
     if not path or not path.is_file():
         # `<name>-disc.webp` is the display-size variant of an already-keyed avatar, derived on demand.
         stem = perf_hints.disc_source_stem(name)
-        variant = perf_hints.disc_variant(AVATAR_THUMBS_DIR, stem) if stem else None
+        variant = (
+            perf_hints.disc_variant(safe_join(AVATAR_THUMBS_DIR, f"{stem}{ext}") for ext in perf_hints.SOURCE_EXTS)
+            if stem else None
+        )
         if variant is None:
             raise HTTPException(status_code=404, detail="Not found")
         headers = {"Cache-Control": "public, max-age=3600", "ETag": variant.etag}

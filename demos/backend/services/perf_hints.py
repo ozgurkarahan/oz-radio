@@ -10,7 +10,7 @@ import io
 import os
 import re
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Iterable, NamedTuple, Optional
 from urllib.parse import urlsplit
 
 _ACCOUNT_RE = re.compile(r"^[a-z0-9]{3,24}$")
@@ -71,7 +71,7 @@ def preconnect_links(origin: Optional[str]) -> str:
 DISC_SUFFIX = "-disc"
 DISC_MAX_SIDE = 384          # host discs are at most ~260 CSS px: 1.5x at the largest, plenty for the rest
 DISC_QUALITY = 82
-_SOURCE_EXTS = (".png", ".webp", ".jpg", ".jpeg")
+SOURCE_EXTS = (".png", ".webp", ".jpg", ".jpeg")
 _MAX_CACHED = 16
 
 
@@ -112,11 +112,13 @@ def _build_disc(path: Path) -> Optional[DiscVariant]:
         return None
 
 
-def disc_variant(directory: Path, stem: str) -> Optional[DiscVariant]:
-    """The light variant of ``<stem>.<png|webp|jpg|jpeg>`` in ``directory``, built once per file version (memory
-    only: the avatar directory may be read-only)."""
-    for ext in _SOURCE_EXTS:
-        path = directory / f"{stem}{ext}"
+def disc_variant(sources: Iterable[Optional[Path]]) -> Optional[DiscVariant]:
+    """The light variant of the first existing file among ``sources`` (the caller's already-contained
+    ``<stem>.<png|webp|jpg|jpeg>`` candidates), built once per file version (memory only: the avatar directory may be
+    read-only)."""
+    for path in sources:
+        if path is None:
+            continue
         try:
             st = path.stat()
         except OSError:

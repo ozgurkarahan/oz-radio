@@ -38,8 +38,9 @@ function preloadCriticalFonts(): Plugin {
 
 /**
  * Build only: the entry stylesheet no longer blocks the first paint. `index.html` carries the branded shell's own styles
- * inline, so the shell paints from the first byte; `media="print"` downloads the sheet at full priority without holding
- * rendering. `main.tsx` waits for it and then sets `media="all"` before React renders, so the app never shows unstyled.
+ * inline, so the shell paints from the first byte. `media="print"` keeps the sheet from blocking rendering, but browsers
+ * then fetch it at the lowest priority (Firefox one at a time), so a `preload` restores a high-priority, parallel fetch.
+ * `main.tsx` waits for the sheet and then sets `media="all"` before React renders, so the app never shows unstyled.
  */
 function nonBlockingEntryCss(): Plugin {
   return {
@@ -48,8 +49,12 @@ function nonBlockingEntryCss(): Plugin {
     transformIndexHtml: {
       order: 'post',
       handler(html) {
-        return html.replace(/<link rel="stylesheet"([^>]*)>/g, (tag, attrs: string) =>
-          /\bmedia=|data-oz-entry-css/.test(attrs) ? tag : `<link rel="stylesheet"${attrs} media="print" data-oz-entry-css>`);
+        return html.replace(/<link rel="stylesheet"([^>]*)>/g, (tag, attrs: string) => {
+          if (/\bmedia=|data-oz-entry-css/.test(attrs)) return tag;
+          const href = /\bhref="([^"]+)"/.exec(attrs)?.[1];
+          const preload = href ? `<link rel="preload" as="style" crossorigin href="${href}">` : '';
+          return `${preload}<link rel="stylesheet"${attrs} media="print" data-oz-entry-css>`;
+        });
       },
     },
   };
