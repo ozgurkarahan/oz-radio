@@ -75,6 +75,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Audio and video lengths that genuinely differ are shown per format, never one forced onto the other. */
+.library-row__durs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
 .library-row__duration svg {
   width: 13px;
   height: 13px;
@@ -101,7 +110,8 @@
   object-fit: cover;
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-sm);
-  background: var(--c-surface);
+  /* Token-coloured box while the image loads (never a blank white tile). */
+  background: var(--c-sand);
 }
 
 .library-row--thumb .episode-row__body {
@@ -163,6 +173,29 @@
   width: 100%;
   max-height: 70vh;
   background: var(--c-stage);
+}
+
+/* Portrait phones: the video takes the whole width with no height cap (its burned-in text is small), and the video dialog goes full-bleed like the podcast sheet. */
+@media (max-width: 640px) and (orientation: portrait) {
+  .library-player__screen video {
+    max-height: none;
+  }
+
+  .modal__panel.library-player:not(.library-player--podcast) {
+    position: fixed;
+    inset: 0;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    padding:
+      env(safe-area-inset-top, 0px)
+      env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px)
+      env(safe-area-inset-left, 0px);
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 
 /* A failed video stays in the DOM under its fault panel (the next refresh mounts a fresh one). */
@@ -311,7 +344,7 @@
 /* ---------- Podcasts only: Watch / Listen (the video library is unchanged) ---------- */
 /* Fixed actions column so every row's columns line up (Watch + Listen fit on one line). */
 .library--podcast .library-row {
-  grid-template-columns: 52px minmax(0, 1fr) 170px 84px 72px 12.5rem;
+  grid-template-columns: 52px minmax(0, 1fr) 170px 84px 5.5rem 12.5rem;
 }
 
 .library--podcast .library-row__play,
@@ -380,7 +413,7 @@
 @media (max-width: 960px) {
   /* The actions get their own line under the title instead of squeezing it. */
   .library--podcast .library-row {
-    grid-template-columns: 44px minmax(0, 1fr) 72px 64px;
+    grid-template-columns: 44px minmax(0, 1fr) 72px 5.5rem;
   }
 
   .library--podcast .library-row .episode-row__actions {
@@ -503,6 +536,59 @@
   .library-player--podcast .radio-player__cues {
     max-height: none;
     overflow: visible;
+  }
+}
+
+/* Reading mode: with the transcript open on a phone, the cover scene folds away and the pinned dock shrinks to
+   play / pause, the seek bar and the time (skip, speed and the AI note return when the transcript is closed). */
+@media (max-width: 640px), (max-height: 500px) and (orientation: landscape) and (pointer: coarse) {
+  .library-player--podcast .radio-player[data-transcript='open'] {
+    gap: var(--sp-3);
+    padding-top: var(--sp-3);
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__cover,
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__tags,
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__hosts,
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__caption {
+    display: none;
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__dock {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--sp-3);
+    padding-block: var(--sp-2);
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__transport {
+    flex: none;
+    order: -1;
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__seek {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__buttons {
+    flex: none;
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__skip,
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__speed,
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__note,
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__onair {
+    display: none;
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__play {
+    --btn-h: 48px;
+  }
+
+  .library-player--podcast .radio-player[data-transcript='open'] .radio-player__play svg {
+    width: 24px;
+    height: 24px;
   }
 }
 

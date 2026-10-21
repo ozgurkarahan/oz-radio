@@ -151,7 +151,25 @@ function prefetchPagesOnIntent() {
 }
 prefetchPagesOnIntent();
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+/**
+ * The production build loads the entry stylesheet without blocking the first paint (see `nonBlockingEntryCss` in
+ * vite.config.ts), so the inline shell shows before it arrives. React must not render unstyled: it waits for the sheet.
+ * Resolves at once in dev and when the stylesheet is already applied; a failed sheet resolves too (render anyway).
+ */
+function entryCssReady(): Promise<void> {
+  const links = Array.from(document.querySelectorAll<HTMLLinkElement>('link[data-oz-entry-css]'));
+  return Promise.all(links.map((link) => new Promise<void>((resolve) => {
+    const done = () => { link.media = 'all'; resolve(); };
+    if (link.sheet) done();
+    else {
+      link.addEventListener('load', done, { once: true });
+      link.addEventListener('error', done, { once: true });
+    }
+  }))).then(() => undefined);
+}
+
+const rootElement = document.getElementById('root')!;
+entryCssReady().then(() => ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     {/* A crash in a provider, the masthead or the mini-player lands here instead of a blank page. */}
     <ErrorBoundary scope="app">
@@ -175,4 +193,4 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       {PlayerDebugPanel && <React.Suspense fallback={null}><PlayerDebugPanel /></React.Suspense>}
     </ErrorBoundary>
   </React.StrictMode>
-);
+));

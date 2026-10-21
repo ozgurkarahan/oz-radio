@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO)
 
 from fastapi import APIRouter, Depends, FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.requests import Request
@@ -62,6 +62,7 @@ from security import (
 )
 from services import avatar_registry
 from services import demo_protocol as dp
+from services import perf_hints
 from services.pptx_parser import parse_pptx, PresentationData
 from services.translation import get_openai_client, translate_text, detect_language
 from services.avatar import submit_batch_synthesis, get_batch_synthesis_status
@@ -297,13 +298,21 @@ AVATAR_THUMBS_DIR = Path(__file__).resolve().parent / "static" / "avatars"
 
 
 @app.get("/static/avatars/{name}")
-async def avatar_thumbnail(name: str):
+async def avatar_thumbnail(name: str, request: Request):
     """Serve avatar thumbnails referenced by ``thumbnail_url``."""
     if not is_valid(name, AVATAR_FILE_RE):
         raise HTTPException(status_code=404, detail="Not found")
     path = safe_join(AVATAR_THUMBS_DIR, name)
     if not path or not path.is_file():
-        raise HTTPException(status_code=404, detail="Not found")
+        # `<name>-disc.webp` is the display-size variant of an already-keyed avatar, derived on demand.
+        stem = perf_hints.disc_source_stem(name)
+        variant = perf_hints.disc_variant(AVATAR_THUMBS_DIR, stem) if stem else None
+        if variant is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        headers = {"Cache-Control": "public, max-age=3600", "ETag": variant.etag}
+        if request.headers.get("if-none-match") == variant.etag:
+            return Response(status_code=304, headers=headers)
+        return Response(variant.body, media_type="image/webp", headers=headers)
     # Revalidate (cheap 304 via ETag) so replaced thumbnails show up immediately.
     return FileResponse(path, media_type=MEDIA_TYPES[path.suffix.lower()], headers={"Cache-Control": "no-cache"})
 
@@ -1835,7 +1844,7 @@ async def _index_response(index: Path) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Not found") from None
     marker = dp.BOOT_MARKER.encode("ascii")
     if marker in raw:
-        tag = await _boot_script_tag()
+        tag = perf_hints.preconnect_links(perf_hints.media_origin()) + await _boot_script_tag()
         raw = raw.replace(marker, tag.encode("ascii"), 1)
     return HTMLResponse(content=raw, headers=_NO_CACHE)
 

@@ -25,9 +25,9 @@ const OWNER_NAV: Tool[] = [
 ];
 
 const CREATE: Tool[] = [
-  { to: '/live', label: 'Live presentation', desc: 'Upload a deck; the live avatar presents it with Q&A.', icon: Mic },
-  { to: '/video', label: 'Narrated video', desc: 'Render a narrated avatar video from a .pptx.', icon: Clapperboard },
-  { to: '/podcast', label: 'Two-host podcast', desc: 'Turn a document into a two-avatar conversation.', icon: Headphones },
+  { to: '/live', label: 'Present a deck live', desc: 'Upload a deck; the live avatar presents it with Q&A.', icon: Mic },
+  { to: '/video', label: 'Create a narrated video', desc: 'Render a narrated avatar video from a .pptx.', icon: Clapperboard },
+  { to: '/podcast', label: 'Create a podcast', desc: 'Turn a document into a two-avatar conversation.', icon: Headphones },
 ];
 
 /** The sheet's own breakpoint (shell.css): the open sheet must not outlive it. */
@@ -67,6 +67,8 @@ export default function TopNav() {
     setSheetFor(open ? pathname : null);
   };
   const headerRef = useRef<HTMLElement>(null);
+  const [sheetToolsOpen, setSheetToolsOpen] = useState(false);
+  useEffect(() => { if (!sheetOpen) setSheetToolsOpen(false); }, [sheetOpen]);
   const createRef = useRef<HTMLDivElement>(null);
   const createBtnRef = useRef<HTMLButtonElement>(null);
   const sheetBtnRef = useRef<HTMLButtonElement>(null);
@@ -218,14 +220,31 @@ export default function TopNav() {
               ))}
             </nav>
             <nav className="sheet__group" aria-label={toolsLabel}>
-              <span className="eyebrow">{toolsLabel}</span>
-              {locked && <p className="sheet__hint">Sign-in required. {OWNER_SIGN_IN_HINT}</p>}
-              {tools.map((c) => (
-                <NavLink key={c.to} to={c.to} end className="sheet__link" onClick={() => closeSheetFor(c.to)}>
-                  {c.label}
-                  {locked && <small>Sign-in required</small>}
-                </NavLink>
-              ))}
+              {locked ? (
+                // Anonymous visitors: owner tools stay one tap away, folded out of the way by default.
+                <button
+                  type="button"
+                  className="sheet__toggle eyebrow"
+                  aria-expanded={sheetToolsOpen}
+                  aria-controls={`${menuId}-sheet-tools`}
+                  onClick={() => setSheetToolsOpen((o) => !o)}
+                >
+                  {toolsLabel} <ChevronDown aria-hidden />
+                </button>
+              ) : (
+                <span className="eyebrow">{toolsLabel}</span>
+              )}
+              {(!locked || sheetToolsOpen) && (
+                <div id={`${menuId}-sheet-tools`} className="sheet__tools">
+                  {locked && <p className="sheet__hint">Sign-in required. {OWNER_SIGN_IN_HINT}</p>}
+                  {tools.map((c) => (
+                    <NavLink key={c.to} to={c.to} end className="sheet__link" onClick={() => closeSheetFor(c.to)}>
+                      {c.label}
+                      {locked && <small>Sign-in required</small>}
+                    </NavLink>
+                  ))}
+                </div>
+              )}
             </nav>
           </>
         )}

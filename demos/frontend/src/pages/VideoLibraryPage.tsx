@@ -17,9 +17,10 @@ import {
   type OpenFailure,
 } from '../playback/libraryStates';
 import { VideoProblem, VideoReconnecting, useVideoRecovery } from '../playback/videoRecovery';
+import { useSuppressMiniPlayer } from '../playback/PlaybackProvider';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner,
-  buttonClass, episodeNumber, formatDate, formatDuration, humanizeTitle, langAttr, languageName, pluralize,
+  buttonClass, episodeNumber, formatDate, formatDuration, recordingTitle, langAttr, languageName, pluralize,
 } from '../ui';
 import '../styles/pages/library.css';
 
@@ -85,6 +86,9 @@ export default function VideoLibraryPage() {
   const queuedOpenRef = useRef<string | null>(null);
 
   useLayoutEffect(() => { navigateRef.current = navigate; });
+
+  // Same rule as the podcast Watch path: the mini-player stays hidden behind any video dialog.
+  useSuppressMiniPlayer(!!(selected || loadingId));
 
   async function refresh() {
     setListError(null);
@@ -265,7 +269,7 @@ export default function VideoLibraryPage() {
     }
   }
 
-  const title = selected ? humanizeTitle(selected.title) : '';
+  const title = selected ? recordingTitle(selected.title) : '';
   const titleLang = langAttr(selected?.language);
   const listenInstead = selected?.audio_url
     ? { label: 'Listen instead', onClick: () => setAudioOnly(true) }
@@ -306,7 +310,7 @@ export default function VideoLibraryPage() {
           <div className="library__count eyebrow">{pluralize(items.length, 'episode')}</div>
           <EpisodeList label="Videos" className="library-list">
             {items.map((it, i) => {
-              const rowTitle = humanizeTitle(it.title);
+              const rowTitle = recordingTitle(it.title);
               return (
                 <EpisodeRow
                   key={it.job_id}
@@ -341,7 +345,7 @@ export default function VideoLibraryPage() {
                         size="sm"
                         iconOnly
                         icon={Play}
-                        variant={i === 0 ? 'primary' : 'outline'}
+                        variant="primary"
                         aria-label={`Play ${rowTitle}`}
                         onClick={() => openVideo(it.job_id)}
                       />

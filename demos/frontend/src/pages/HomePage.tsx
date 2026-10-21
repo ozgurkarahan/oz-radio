@@ -15,7 +15,7 @@ import {
 } from '../components/AuthGate';
 import {
   Alert, Button, ButtonLink, EmptyState, EpisodeList, EpisodeRow, HostDisc, HostsMini, SectionHead, Spinner,
-  episodeNumber, formatDuration, humanizeTitle, languageName, loadErrorMessage, pluralize,
+  episodeNumber, formatDuration, humanizeTitle, languageName, loadErrorMessage, pluralize, recordingTitle,
   type AudienceLevelValue,
 } from '../ui';
 import '../styles/pages/home.css';
@@ -33,7 +33,7 @@ const PUBLIC_DEPARTMENTS: Dept[] = [
 const OWNER_DEPARTMENTS: Dept[] = [
   { to: '/search', icon: Search, kicker: 'Search', title: 'Ask your decks', desc: 'Ask anything; the right slide is found and presented for you.' },
   { to: '/playlists', icon: ListMusic, kicker: 'Playlists', title: 'Learning paths', desc: 'Chain decks into ordered playlists and resume where you left off.' },
-  { to: '/live', icon: Mic, kicker: 'Live', title: 'Present a new deck', desc: 'Drop a .pptx and the avatar presents it, with Q&A grounded in the slides.' },
+  { to: '/live', icon: Mic, kicker: 'Live', title: 'Present a deck live', desc: 'Drop a .pptx and the avatar presents it, with Q&A grounded in the slides.' },
 ];
 
 type Kind = { icon: LucideIcon; label: string };
@@ -125,14 +125,24 @@ function DemoStatus({ entry }: { entry: DemoEntry }) {
   let quota: string | null = null;
   if (entry.kind === 'live') {
     const minutes = Math.max(1, Math.round(entry.sessionSeconds / 60));
-    note = `${entry.qa ? 'Ask questions by voice' : 'Narration-only'} · up to ${minutes} min · no sign-in`;
+    // Each segment keeps its trailing dot (nowrap): a wrapped line never starts with "·".
+    note = [`${entry.qa ? 'Ask questions by voice' : 'Narration-only'}`, `up to ${minutes} min`, 'no sign-in'].join(' · ');
     quota = entry.remaining === null ? null : liveSessionsLeft(entry.remaining);
   } else if (entry.kind === 'recorded') {
     note = recordedDemoReason(entry.reason);
   }
   return (
     <p className="home-hero__status">
-      {note && <span data-testid="home-demo-note">{note}</span>}
+      {note && (
+        <span data-testid="home-demo-note">
+          {note.split(' · ').map((part, i, all) => (
+            <React.Fragment key={part}>
+              {i > 0 && ' '}
+              <span className="home-hero__seg">{i < all.length - 1 ? `${part} ·` : part}</span>
+            </React.Fragment>
+          ))}
+        </span>
+      )}
       {quota && <span data-testid="home-demo-quota">{quota}</span>}
     </p>
   );
@@ -172,14 +182,14 @@ export default function HomePage() {
         };
       }),
       ...data.videos.map((v) => ({
-        key: `video-${v.job_id}`, kind: VIDEO, title: humanizeTitle(v.title || v.document_title), date: time(v.created_at),
-        to: '/video/library', meta: ['Narrated video', languageName(v.language)], hosts: [lead],
+        key: `video-${v.job_id}`, kind: VIDEO,         title: recordingTitle(v.title || v.document_title), date: time(v.created_at),
+                to: `/video/library?video=${encodeURIComponent(v.job_id)}`, meta: ['Narrated video', languageName(v.language)], hosts: [lead],
         duration: formatDuration(v.duration_sec), level: v.audience_level, language: v.language,
       })),
       ...data.podcasts.map((p) => {
         const named = (p.speaker_names ?? []).map(byName).filter(Boolean) as AvatarInfo[];
         return {
-          key: `podcast-${p.job_id}`, kind: PODCAST, title: humanizeTitle(p.title || p.document_title), date: time(p.created_at),
+          key: `podcast-${p.job_id}`, kind: PODCAST, title: recordingTitle(p.title || p.document_title), date: time(p.created_at),
           to: podcastLink(p, listenFirst), meta: ['Podcast', languageName(p.language)],
           hosts: named.length ? named : [lead, co], duration: formatDuration(p.duration_sec),
           level: p.audience_level, language: p.language,
@@ -192,7 +202,8 @@ export default function HomePage() {
 
   const failedCount = Object.values(data.failed).filter(Boolean).length;
   const allFailed = failedCount === 3;
-  const total = data.decks.length + data.videos.length + data.podcasts.length;
+  const episodeCount = data.videos.length + data.podcasts.length; // decks are slides, not episodes
+  const total = data.decks.length + episodeCount;
 
   return (
     <div className="container page" style={{ paddingTop: 0 }}>
@@ -218,7 +229,7 @@ export default function HomePage() {
           <DemoStatus entry={entry} />
         </div>
 
-        <div className="home-hosts" aria-label="Your hosts">
+        <div className="home-hosts" role="group" aria-label="Your hosts">
           {lead && (
             <div className="home-host home-host--lead">
               <HostDisc host={lead} ring speaking style={{ '--disc': 'clamp(170px, 22vw, 260px)' } as React.CSSProperties} />
@@ -244,7 +255,7 @@ export default function HomePage() {
         <SectionHead
           className="home-section__head"
           title={<span id="home-episodes">Latest on Oz Radio</span>}
-          aside={ready && episodes.length > 0 ? pluralize(total, 'episode') : undefined}
+          aside={ready && episodeCount > 0 ? pluralize(episodeCount, 'episode') : undefined}
         />
         {!ready ? (
           <div className="home-episodes__loading" aria-busy="true"><Spinner label="Loading episodes…" /></div>
@@ -278,7 +289,8 @@ export default function HomePage() {
                       <Link
                         to={e.to}
                         className={`btn btn--icon btn--sm${i === 0 ? ' btn--primary' : ''}`}
-                        aria-label={`Open ${e.title}`}
+                        aria-hidden
+                        tabIndex={-1}
                       >
                         <Play aria-hidden />
                       </Link>
@@ -310,7 +322,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="home-section" aria-labelledby="home-owner" data-testid="home-owner-tools">
+      <section className={`home-section${locked ? ' home-section--locked' : ''}`} aria-labelledby="home-owner" data-testid="home-owner-tools">
         <SectionHead
           className="home-section__head"
           title={<span id="home-owner">Owner tools</span>}

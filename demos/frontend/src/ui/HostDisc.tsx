@@ -37,7 +37,7 @@ export function HostDisc({ host, size = 104, speaking = false, ring = false, ton
       {ring && <span className="host-disc__ring" aria-hidden />}
       <span className="host-disc__face">
         {src && status !== 'pending' ? (
-          <img src={src} alt="" className={status === 'original' ? 'is-cover' : undefined} draggable={false} />
+          <img src={src} alt="" decoding="async" className={status === 'original' ? 'is-cover' : undefined} draggable={false} />
         ) : status === 'none' ? (
           <span className="host-disc__monogram" aria-hidden>{(name[0] ?? '?').toUpperCase()}</span>
         ) : null}

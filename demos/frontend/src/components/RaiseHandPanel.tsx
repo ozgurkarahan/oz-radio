@@ -30,6 +30,8 @@ interface Props {
   onTypedFocus?: () => void;
   remaining: number | null;
   level: number;
+  /** Language of the presenter's answers (the deck's), so a screen reader pronounces them right. */
+  lang?: string;
   transcript: string | null;
   answer: QaAnswerView | null;
   error: string | null;
@@ -62,7 +64,7 @@ const PHASE_TEXT: Partial<Record<QaPhase, string>> = {
 export default function RaiseHandPanel(props: Props) {
   const {
     phase, available, disabledReason, narrating, canAskNow, canType, demo, typedQueued, draft, onDraftChange, onTypedFocus, remaining,
-    level, transcript, answer, error, notice, onRaise, onAskNow, onSubmitText, onDone, onCancel, onContinue,
+    level, lang, transcript, answer, error, notice, onRaise, onAskNow, onSubmitText, onDone, onCancel, onContinue,
   } = props;
   const rootRef = useRef<HTMLElement>(null);
   const doneRef = useRef<HTMLButtonElement>(null);
@@ -203,7 +205,7 @@ export default function RaiseHandPanel(props: Props) {
       {answer && (phase === 'answering' || phase === 'resumed') && (
         <div className="raise-hand__answer" data-testid="qa-answer">
           <span className="eyebrow">Answer</span>
-          <p>{answer.text}</p>
+          <p lang={lang}>{answer.text}</p>
           {source && <span className="small muted" data-testid="qa-answer-source">{source}</span>}
         </div>
       )}
@@ -226,7 +228,7 @@ export default function RaiseHandPanel(props: Props) {
 
       {typeForm}
 
-      <p className="sr-only" aria-live="polite" data-testid="qa-live">{live}</p>
+      <p className="sr-only" aria-live="polite" data-testid="qa-live" lang={phase === 'answering' && answer ? lang : undefined}>{live}</p>
     </section>
   );
 }

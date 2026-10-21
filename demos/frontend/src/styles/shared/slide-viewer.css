@@ -25,6 +25,25 @@
   background: var(--c-stage);
 }
 
+/* The picture takes a moment to arrive: the frame reads as loading (same 16:9 box), not as a blank white slide. */
+.slide-viewer__screen--image.is-loading {
+  background:
+    linear-gradient(100deg, transparent 30%, var(--c-paper) 50%, transparent 70%) 0 0 / 200% 100% no-repeat,
+    var(--c-line);
+  animation: slide-skeleton 1.4s linear infinite;
+}
+
+@keyframes slide-skeleton {
+  from { background-position: 100% 0, 0 0; }
+  to { background-position: -100% 0, 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-viewer__screen--image.is-loading {
+    animation: none;
+  }
+}
+
 /* Bulleted body inside the text-only slide (.slide-text owns the colours). */
 .slide-viewer__bullets {
   list-style: none;

@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { type Presentation, type QaMode } from '../services/api';
 import { useAuth } from '../services/auth';
 import { pickDefaultAvatar, useAvatars } from '../services/avatars';
 import { Mic, Pause, PhoneOff, Play, RotateCcw, Square, StepForward, Volume2 } from 'lucide-react';
-import { Alert, Button, HostDisc, LivePill, Waveform, langAttr, languageName } from '../ui';
+import { Alert, Button, HostDisc, LivePill, Waveform, langAttr, languageName, recordingTitle } from '../ui';
 import { GateNotice } from './AuthGate';
 import RaiseHandPanel, { type QaAnswerView, type QaPhase } from './RaiseHandPanel';
 import DemoOutcome, { DemoNarrationDone } from './DemoOutcome';
@@ -57,6 +58,8 @@ interface Props {
   deckTitle?: string;
   /** Admin: catalog deck bound to the voice session (`session.deck_id`, `context.switch`). */
   deckId?: string;
+  /** Demo only: the deck's captioned recording, offered before Start (null while unknown or when there is none). */
+  preStartRecording?: Recording | null;
   /** Admin: legacy Live upload bound to the voice session (`session.presentation_id`). */
   presentationId?: string;
 }
@@ -111,7 +114,7 @@ function monoNow(): number {
 export default function AvatarPanel({
   presentation, currentSlide, language, onSlideChange, videoPlaying = false, onRequestVideoAutoPlay,
   selectedAvatar, selectedVoice, autoStart = false, mode = 'wide', access = 'admin', demoSessionSeconds = 180,
-  demoQa, deckTitle, deckId, presentationId,
+  demoQa, deckTitle, deckId, preStartRecording, presentationId,
 }: Props) {
   const [connected, setConnected] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -1769,6 +1772,7 @@ export default function AvatarPanel({
       onTypedFocus={noteQuestionActivity}
       remaining={isDemo ? remainingQuestions : null}
       level={micLevel}
+      lang={langAttr(language)}
       transcript={qa.transcript}
       answer={qa.answer}
       error={qa.error}
@@ -1813,6 +1817,8 @@ export default function AvatarPanel({
   useEffect(() => { if (narrationDone === 'limit') resolveRecording(); }, [narrationDone, resolveRecording]);
 
   const quotaReasonId = React.useId();
+  // The card of a failure already offers the retry (with its own label): the bar must not offer a second "Start".
+  const retryInCard = !!outcome && outcome.retry !== 'none';
   const startButton = (
     <Button
       ref={startRef}
@@ -1830,7 +1836,7 @@ export default function AvatarPanel({
   );
   const demoControls = (
     <div className="avatar-rail__controls">
-      {!connected && startButton}
+      {!connected && !retryInCard && startButton}
       {stalledButton}
       {(connected || demoConnecting) && (
         <Button data-testid="demo-stop" size={connected ? 'sm' : 'md'} variant="ghost" icon={Square} onClick={stopSession}>
@@ -1952,6 +1958,24 @@ export default function AvatarPanel({
               </>
             )}
           </div>
+          {!connected && !outcome && !demoConnecting && (
+            <div className="avatar-rail__help" data-testid="demo-prestart-help">
+              <p className="avatar-rail__note" data-testid="demo-mic-note">
+                {demoQa?.enabled
+                  ? 'Listening needs no microphone. To ask a question by voice, allow the microphone when your browser asks.'
+                  : 'No microphone needed.'}
+              </p>
+              {preStartRecording && (
+                <p className="avatar-rail__note">
+                  Prefer a recording?{' '}
+                  <Link className="avatar-rail__help-link" to={preStartRecording.to} data-testid="demo-prestart-recording">
+                    {preStartRecording.watchable ? 'Watch' : 'Listen to'} {recordingTitle(preStartRecording.title)}
+                    {preStartRecording.kind === 'video' ? ' with captions' : ''}
+                  </Link>
+                </p>
+              )}
+            </div>
+          )}
         </>
       ) : !auth.loading && (!canUseAvatar || authBlock) ? (
         <div className="avatar-rail__panel">

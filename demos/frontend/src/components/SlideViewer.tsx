@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { type Presentation } from '../services/api';
 import { useAuth } from '../services/auth';
 import { narrationFor } from '../services/narration';
-import { Button, Chip, Segments, languageName } from '../ui';
+import { Button, Chip, Segments, langAttr, languageName } from '../ui';
 import '../styles/shared/slide-viewer.css';
 
 interface Props {
@@ -19,16 +19,42 @@ interface Props {
 
 const ALT_MAX_CHARS = 250;
 
+const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+const endsSentence = (s: string) => /[.!?…:;]$/.test(s);
+
+/** "BEGINNER LEVEL" → "Beginner level"; short shouted words ("AI", "SQL") and mixed-case runs are left alone. */
+function sentenceCaseShout(run: string): string {
+  const letters = run.replace(/[^\p{L}]/gu, '');
+  if (letters.length < 6 || run !== run.toLocaleUpperCase() || run === run.toLocaleLowerCase()) return run;
+  const lower = run.toLocaleLowerCase();
+  return lower.charAt(0).toLocaleUpperCase() + lower.slice(1);
+}
+
 /**
- * Alt text of a slide picture: "{title}: {text}" — the slide's visible text (public payload `text`) is what the picture
- * shows, so a screen-reader user gets the content, not only the title. Truncated at a word; the title alone without it.
+ * Alt text of a slide picture, read as sentences: the title first, then the slide's visible text (public payload `text`,
+ * one run per line) with repeated runs dropped and shouted eyebrows sentence-cased. Cut at a sentence, or at a word.
  */
 function slideAlt(slide: { title?: string; text?: string }, index: number): string {
-  const title = (slide.title ?? '').trim() || `Slide ${index + 1}`;
-  const text = (slide.text ?? '').replace(/\s+/g, ' ').trim();
-  if (!text) return title;
-  const full = `${title}: ${text}`;
-  return full.length <= ALT_MAX_CHARS ? full : `${full.slice(0, ALT_MAX_CHARS).replace(/\s+\S*$/, '')}…`;
+  const title = collapse(slide.title ?? '') || `Slide ${index + 1}`;
+  const seen = new Set([title.toLocaleLowerCase()]);
+  const runs: string[] = [];
+  for (const raw of (slide.text ?? '').split(/\r?\n+/)) {
+    const run = sentenceCaseShout(collapse(raw));
+    const key = run.toLocaleLowerCase().replace(/[.!?…:;]+$/, '');
+    if (!run || seen.has(key) || seen.has(run.toLocaleLowerCase())) continue;
+    seen.add(key);
+    runs.push(endsSentence(run) ? run : `${run}.`);
+  }
+  let alt = endsSentence(title) ? title : `${title}.`;
+  if (runs.length === 0) return alt.replace(/\.$/, '');
+  for (const run of runs) {
+    const next = `${alt} ${run}`;
+    if (next.length <= ALT_MAX_CHARS) { alt = next; continue; }
+    // Not even the first sentence fits: keep its start, at a word.
+    if (runs[0] === run) alt = `${next.slice(0, ALT_MAX_CHARS).replace(/\s+\S*$/, '')}…`;
+    break;
+  }
+  return alt;
 }
 
 function formatBody(body: string) {
@@ -49,9 +75,10 @@ export default function SlideViewer({ presentation, currentSlide, onSlideChange,
   const isOwner = useAuth().is_admin;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [imgError, setImgError] = React.useState(false);
+  const [imgLoaded, setImgLoaded] = React.useState(false);
 
-  // Reset image error state when slide changes
-  useEffect(() => { setImgError(false); }, [currentSlide, slide?.image_url]);
+  // Reset image state when slide changes
+  useEffect(() => { setImgError(false); setImgLoaded(false); }, [currentSlide, slide?.image_url]);
 
   // Auto-play the video when the avatar triggers it during presentation mode
   useEffect(() => {
@@ -85,7 +112,7 @@ export default function SlideViewer({ presentation, currentSlide, onSlideChange,
         </div>
       )}
 
-      <div className="media-frame">
+      <div className="media-frame" lang={langAttr(presentation.language)}>
         {slide.video_url ? (
           <div className="media-frame__screen slide-viewer__screen--video">
             <video
@@ -100,11 +127,13 @@ export default function SlideViewer({ presentation, currentSlide, onSlideChange,
             />
           </div>
         ) : slide.image_url && !imgError ? (
-          <div className="media-frame__screen">
+          <div className={['media-frame__screen', 'slide-viewer__screen--image', !imgLoaded && 'is-loading'].filter(Boolean).join(' ')}>
             <img
               key={slide.image_url}
+              ref={(el) => { if (el?.complete && el.naturalWidth > 0) setImgLoaded(true); }}
               src={slide.image_url}
               alt={slideAlt(slide, currentSlide)}
+              onLoad={() => setImgLoaded(true)}
               onError={() => setImgError(true)}
             />
           </div>

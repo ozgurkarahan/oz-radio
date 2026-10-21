@@ -166,6 +166,27 @@
   font-size: var(--fs-sm);
 }
 
+/* What to know before Start (microphone, the recording): quiet text under the controls, never in the fixed phone bar. */
+.avatar-rail__help {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+.avatar-rail__help-link {
+  display: inline-block;
+  padding-block: 0.7rem;
+  color: var(--c-ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.avatar-rail__help-link:hover {
+  text-decoration-thickness: 2px;
+}
+
 .avatar-rail__status {
   color: var(--c-ink-2);
   font-size: var(--fs-sm);
@@ -449,6 +470,11 @@
     max-height: calc(3 * 1.45em + 2 * var(--caption-pad) + 2 * var(--bw));
   }
 
+  /* The avatar tile scrolled into view lands above the bar (and the mini-player under it), never behind them. */
+  .avatar-rail--demo .avatar-rail__stage {
+    scroll-margin-bottom: calc(var(--demo-dock-h, 0px) + var(--mini-player-h, 0px) + var(--sp-3));
+  }
+
   /*
    * Thumb zone: Start (then Stop), the captions and the questions live in a bar fixed to the bottom of the screen, so
    * they are reachable without scrolling while the slide above stays readable. presenter.css keeps the page clear of it.
@@ -460,7 +486,7 @@
     left: 0;
     z-index: 40;
     gap: var(--sp-1);
-    max-height: 55vh;
+    max-height: min(45vh, 24rem);
     overflow-y: auto;
     overscroll-behavior: contain;
     padding:
@@ -472,11 +498,23 @@
     border-top: var(--bw) solid var(--c-rule);
   }
 
-  /* The questions sit tight in the bar: no hairline, no extra padding. */
+  /* A long answer scrolls inside its own box and gives way before the controls do: they stay on screen. */
+  .avatar-rail--demo .avatar-dock .raise-hand__answer {
+    flex: 0 1 auto;
+    min-height: 4.5rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* The questions sit tight in the bar: no hairline. The 4 px of padding (given back by the margin) keep focus rings
+     inside the box that clips the answer. */
   .avatar-rail--demo .avatar-dock .raise-hand {
     gap: var(--sp-1);
-    padding-top: 0;
+    min-height: 0;
+    margin: -4px;
+    padding: 4px;
     border-top: 0;
+    overflow: hidden;
   }
 
   /* The fixed mini-player sits at the very bottom: the dock rides on top of it. */

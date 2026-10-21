@@ -41,16 +41,15 @@
 .home-hero__status {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px var(--sp-3);
+  gap: 2px var(--sp-4);
   min-height: 1.5rem;
   margin-top: calc(var(--sp-2) * -1);
   font-size: var(--fs-sm);
   color: var(--c-muted);
 }
 
-.home-hero__status span + span::before {
-  content: '·';
-  margin-right: var(--sp-3);
+.home-hero__seg {
+  white-space: nowrap;
 }
 
 .home-episodes__loading {
@@ -206,6 +205,19 @@
 .home-dept__lock {
   color: var(--c-muted);
   font-weight: 500;
+}
+
+/* Owner tools are not for a first-time visitor: the group stays in the page, quieter than the public sections. */
+.home-section--locked .home-dept__title {
+  font-size: 1.25rem;
+}
+
+.home-section--locked .home-dept__kicker {
+  color: var(--c-ink-2);
+}
+
+.home-section--locked .home-dept__desc {
+  font-size: var(--fs-sm);
 }
 
 @media (max-width: 960px) {

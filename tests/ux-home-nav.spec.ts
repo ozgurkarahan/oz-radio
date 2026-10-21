@@ -1059,7 +1059,7 @@ test.describe('owner tools', () => {
     const list = main.getByRole('list', { name: 'Owner tools' });
     await expect(list.getByRole('listitem')).toHaveCount(5);
     await expect(list.getByRole('link')).toHaveText([
-      /Playlists/, /Search/, /Live presentation/, /Narrated video/, /Two-host podcast/,
+      /Playlists/, /Search/, /Present a deck live/, /Create a narrated video/, /Create a podcast/,
     ]);
     for (const item of await list.getByRole('listitem').all()) {
       await expect(item).toContainText('Sign-in required');
@@ -1099,7 +1099,7 @@ test.describe('owner tools', () => {
     const trigger = main.getByRole('button', { name: /^Create/ });
     await trigger.click();
     const list = main.getByRole('list', { name: 'Create' });
-    await expect(list.getByRole('link')).toHaveText([/Live presentation/, /Narrated video/, /Two-host podcast/]);
+    await expect(list.getByRole('link')).toHaveText([/Present a deck live/, /Create a narrated video/, /Create a podcast/]);
     await expect(list).not.toContainText('Sign-in required');
     const owner = page.getByTestId('home-owner-tools');
     await expect(owner).not.toContainText('Sign-in required');
@@ -1254,6 +1254,12 @@ test.describe('phone (Pixel 7 viewport)', () => {
     // the visitor's sheet: public sections, then the owner tools, each wall marked
     await expect(sheet.getByRole('navigation', { name: 'Sections' }).getByRole('link')).toHaveText(['Home', 'Decks', 'Videos', 'Podcasts']);
     const tools = sheet.getByRole('navigation', { name: 'Owner tools' });
+    // owner tools are folded by default behind one disclosure
+    const toolsToggle = tools.getByRole('button', { name: 'Owner tools' });
+    await expect(toolsToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(tools.getByRole('link')).toHaveCount(0);
+    await toolsToggle.click();
+    await expect(toolsToggle).toHaveAttribute('aria-expanded', 'true');
     await expect(tools.getByRole('link')).toHaveCount(5);
     for (const link of await tools.getByRole('link').all()) await expect(link).toContainText('Sign-in required');
 

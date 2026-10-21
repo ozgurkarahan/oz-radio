@@ -917,7 +917,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
     setNeedsGesture(false);
     claimSession();
     setPlayingState(true);
-    updatePositionState();
+    setBuffering(true); // until the media fires 'playing': one status, never \
   };
 
   const onAudioPause = () => {
@@ -1221,6 +1221,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
       tabIndex={-1}
       data-testid="radio-player"
       data-state={state}
+      data-transcript={hasCues && transcriptOpen ? 'open' : 'closed'}
       onKeyDown={onRootKeyDown}
     >
       <audio
@@ -1311,7 +1312,7 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
               </>
             )}
           </p>
-          {!captionCue && <p className="radio-player__caption-hint" aria-hidden>Live captions appear here.</p>}
+          {!captionCue && state === 'playing' && <p className="radio-player__caption-hint" aria-hidden>Live captions appear here.</p>}
         </div>
       )}
 
@@ -1345,9 +1346,9 @@ export const RadioPlayer = forwardRef<RadioPlayerHandle, RadioPlayerProps>(funct
           </div>
           <div className="radio-player__timeline">
             <span className="radio-player__time" data-testid="radio-time">{elapsedText} / {totalText}</span>
-            <span className={['radio-player__onair', playing && 'is-on'].filter(Boolean).join(' ')} aria-hidden={playing ? undefined : true}>
-              <Waveform active={playing && !reducedMotion} />
-              <LivePill idle={!playing}>Playing</LivePill>
+            <span className={['radio-player__onair', state === 'playing' && 'is-on'].filter(Boolean).join(' ')} aria-hidden={state === 'playing' ? undefined : true}>
+              <Waveform active={state === 'playing' && !reducedMotion} />
+              <LivePill idle={state !== 'playing'}>Playing</LivePill>
             </span>
           </div>
         </div>

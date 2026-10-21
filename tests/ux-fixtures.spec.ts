@@ -26,6 +26,7 @@ import {
 } from '../demos/frontend/src/services/demoProtocol';
 import {
   LIBRARY_UNAVAILABLE_DETAIL, classifyLoadError, isFrench, langAttr, levelLabel, loadErrorMessage, normalizeTitle, primaryLanguage,
+  recordingTitle,
 } from '../demos/frontend/src/ui/format';
 import {
   deckNeedsNotesTranslation, isAdminSlide, mergeDeckTranslations, presenterSlides, type DeckDetail, type PublicSlideInfo,
@@ -54,6 +55,14 @@ test.describe('contract helpers (node)', () => {
     expect(normalizeTitle('zero\u200Bwidth')).toBe('zerowidth');
     expect(normalizeTitle(null)).toBe('');
     expect(normalizeTitle(42)).toBe('');
+  });
+
+  test('recordingTitle: a recording never claims to be live', () => {
+    expect(recordingTitle('AI in three minutes · Live demo')).toBe('AI in three minutes · Demo recording');
+    expect(recordingTitle('L\u2019IA en trois minutes · Démo en direct')).toBe('L\u2019IA en trois minutes · Démo enregistrée');
+    expect(recordingTitle('Live demo tips')).toBe('Live demo tips');
+    expect(recordingTitle('ai-enablement')).toBe('AI enablement');
+    expect(recordingTitle(null)).toBe('Untitled');
   });
 
   test('level and language helpers', () => {
@@ -100,8 +109,8 @@ test.describe('contract helpers (node)', () => {
     // by normalized title (straight vs typographic apostrophe), language first, video before podcast
     const hit = findRecording(deckFr, [video('sv-en', deckEn.title, 'en-US'), video('sv-fr', "L'IA en trois minutes · Démo en direct", 'fr-FR')], [podcast('job-fr', deckFr.title, 'fr-FR')]);
     expect(hit).toMatchObject({ kind: 'video', id: 'sv-fr', matchedBy: 'title', sameLanguage: true, to: '/video/library?video=sv-fr' });
-    expect(hit?.label).toBe("Watch L'IA en trois minutes · Démo en direct · Français · 3:12"); // the item's own title, as published
-    expect(findRecording(deckEn, [video('sv-en', deckEn.title, 'en-US')], [])?.label).toBe('Watch AI in three minutes · Live demo · English · 3:12');
+    expect(hit?.label).toBe("Watch L'IA en trois minutes · Démo enregistrée · Français · 3:12"); // a recording never reads "live"
+    expect(findRecording(deckEn, [video('sv-en', deckEn.title, 'en-US')], [])?.label).toBe('Watch AI in three minutes · Demo recording · English · 3:12');
 
     // source_deck_id beats the title, per medium
     const byId = findRecording(deckEn, [video('sv-a', deckEn.title, 'en-US'), video('sv-b', 'Anything', 'en-US', { source_deck_id: 'deck-en' })], []);
@@ -116,7 +125,7 @@ test.describe('contract helpers (node)', () => {
     // an audio-only podcast is the last resort and reads "Listen to"
     const audio = findRecording(deckFr, [], [podcast('job-a', deckFr.title, 'fr-FR', { format: 'audio', has_video: false, audio_duration_sec: 61 })]);
     expect(audio).toMatchObject({ watchable: false, durationSec: 61, to: '/podcast/library?episode=job-a&mode=listen' });
-    expect(audio?.label).toBe("Listen to L\u2019IA en trois minutes · Démo en direct · Français · 1:01");
+    expect(audio?.label).toBe("Listen to L\u2019IA en trois minutes · Démo enregistrée · Français · 1:01");
     expect(findRecording(deckFr, [], [podcast('job-a', deckFr.title, 'fr-FR', { format: 'audio', has_video: false }), podcast('job-v', deckFr.title, 'fr-FR')])?.id).toBe('job-v');
 
     // newest wins, then job id
@@ -1052,7 +1061,7 @@ test.describe('mockDemoSocket', () => {
     expect(errors).toEqual([]);
   });
 
-  test('refusing the handshake leaves the demo page usable (outcome card + Start again)', async ({ page }) => {
+  test('refusing the handshake leaves the demo page usable (outcome card + one retry)', async ({ page }) => {
     test.setTimeout(75_000); // loads the whole app: a cold Vite compiles it on first use
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -1062,7 +1071,9 @@ test.describe('mockDemoSocket', () => {
     await expect(start).toBeVisible({ timeout: 30_000 });
     await start.click();
     await expect(page.getByTestId('demo-outcome')).toHaveAttribute('data-outcome', /^(connect|outage)$/, { timeout: 10_000 });
-    await expect(start).toBeVisible({ timeout: 10_000 });
+    // The card's own retry replaces the dock's Start, so only one retry action is offered.
+    await expect(page.getByTestId('demo-outcome-retry')).toBeVisible({ timeout: 10_000 });
+    await expect(start).toBeHidden();
     expect(errors).toEqual([]);
   });
 });

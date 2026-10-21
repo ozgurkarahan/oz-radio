@@ -197,6 +197,33 @@
   border-bottom: var(--bw) solid var(--c-line);
 }
 
+/* The folded "Owner tools" heading: a full-width 44 px button that looks like the other eyebrows. */
+.sheet__group .sheet__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--tap);
+  padding: 0 0 var(--sp-2);
+  background: none;
+  border-width: 0 0 var(--bw);
+  cursor: pointer;
+}
+
+.sheet__toggle svg {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--dur) var(--ease);
+}
+
+.sheet__toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.sheet__tools {
+  display: flex;
+  flex-direction: column;
+}
+
 .sheet__hint {
   padding-block: var(--sp-2);
   border-bottom: var(--bw) solid var(--c-line);

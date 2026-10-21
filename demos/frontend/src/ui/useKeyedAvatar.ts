@@ -94,11 +94,36 @@ function process(url: string): Promise<string | null> {
   });
 }
 
+/**
+ * The backend derives a display-size, already-keyed WebP for `/static/avatars/<id>.<ext>` as `<id>-disc.webp`
+ * (~15 KB instead of ~250 KB). Using it skips the download of the original and the canvas read altogether.
+ * Avatars it cannot be built for (green-screen photos, custom thumbnails) answer 404, or anything but image/webp
+ * (a dev server's HTML fallback): those take the original + canvas key path.
+ */
+const DISC_SOURCE_RE = /^(\/static\/avatars\/[A-Za-z0-9][A-Za-z0-9_-]{0,63})\.(?:png|jpe?g|webp)$/;
+
+export function lightAvatarUrl(url: string): string | null {
+  const m = DISC_SOURCE_RE.exec(url);
+  return m && !m[1].endsWith('-disc') ? `${m[1]}-disc.webp` : null;
+}
+
+async function fetchLight(url: string): Promise<string | null> {
+  const light = lightAvatarUrl(url);
+  if (!light) return null;
+  try {
+    const res = await fetch(light);
+    if (!res.ok || !/^image\/webp/i.test(res.headers.get('content-type') ?? '')) return null;
+    return URL.createObjectURL(await res.blob());
+  } catch {
+    return null;
+  }
+}
+
 export function keyAvatar(url: string): Promise<string | null> {
   if (resolved.has(url)) return Promise.resolve(resolved.get(url) ?? null);
   let p = inflight.get(url);
   if (!p) {
-    p = process(url).then((out) => {
+    p = fetchLight(url).then((light) => light ?? process(url)).then((out) => {
       remember(url, out);
       inflight.delete(url);
       return out;
@@ -136,3 +161,4 @@ export function useKeyedAvatar(url: string | null | undefined): { src: string | 
 
   return state;
 }
+

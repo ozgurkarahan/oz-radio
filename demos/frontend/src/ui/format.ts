@@ -40,6 +40,21 @@ export function humanizeTitle(title: string | null | undefined): string {
 
 const ACRONYMS = new Set(['ai', 'ia', 'ki', 'api', 'pdf', 'llm', 'slm', 'mcp', 'rag', 'tts', 'stt', 'ux', 'iot']);
 
+// A recording inherits its deck's title, so "· Live demo" would promise a live session on a pre-recorded item.
+const LIVE_SUFFIXES: Array<[RegExp, string]> = [
+  [/\s*·\s*live demo\s*$/i, ' · Demo recording'],
+  [/\s*·\s*démo en direct\s*$/i, ' · Démo enregistrée'],
+];
+
+/** Display title of a recorded video or podcast: humanized, with a trailing "· Live demo" turned into "· Demo recording". */
+export function recordingTitle(title: string | null | undefined): string {
+  const t = humanizeTitle(title);
+  for (const [re, replacement] of LIVE_SUFFIXES) {
+    if (re.test(t)) return t.replace(re, replacement);
+  }
+  return t;
+}
+
 /** 98 → "1:38"; 3725 → "1:02:05"; null → "—". */
 export function formatDuration(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
