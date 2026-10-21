@@ -13,7 +13,7 @@ import { AdminOnly, GatedPanel } from '../components/AuthGate';
 import { Alert, PageHeader, Spinner, humanizeTitle, pluralize } from '../ui';
 import '../styles/pages/live.css';
 
-const EYEBROW = 'Create · Live presentation';
+const EYEBROW = 'Create · Present live';
 
 export default function LivePage() {
   const auth = useAuth();
@@ -34,9 +34,9 @@ export default function LivePage() {
         />
         <GatedPanel
           icon={Mic}
-          title="The live presenter is limited to demo users"
-          description="Upload a PowerPoint deck with speaker notes and a live AI avatar presents it in your language, with slide-aware Q&A. Published decks and videos remain browsable without signing in."
-          action="upload a deck and try the live avatar"
+          title="Uploading decks for live presentation is for the site owner"
+          description="The owner uploads a PowerPoint deck with speaker notes and a live AI avatar presents it in their language, with slide-aware Q&A. You can start the live demo of a published deck without signing in, or browse the decks and videos."
+          action="upload your own decks for live presentation"
           links={[{ href: '/decks', label: 'Browse the decks' }, { href: '/video/library', label: 'Browse the video library' }]}
         />
       </div>

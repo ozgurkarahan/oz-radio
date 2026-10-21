@@ -36,7 +36,7 @@ function lazyRoute(path: string, title: string, load: () => Promise<PageModule>)
 }
 
 const ROUTES = [
-  lazyRoute('/live', 'Live presentation · Oz Radio', () => import('./pages/LivePage')),
+  lazyRoute('/live', 'Present a deck live · Oz Radio', () => import('./pages/LivePage')),
   lazyRoute('/decks', 'Decks · Oz Radio', () => import('./pages/DecksPage')),
   lazyRoute('/decks/:deckId/present', 'Live demo · Oz Radio', () => import('./pages/DeckPresentPage')),
   lazyRoute('/search', 'Search · Oz Radio', () => import('./pages/SearchPage')),
@@ -68,14 +68,42 @@ function focusIsUnclaimed(): boolean {
   return !active.closest('[role="dialog"], [role="alertdialog"], .mini-player');
 }
 
+/** Scrolls to the element a `#hash` names once it exists (a lazy page renders it a little later); false if none does. */
+function scrollToHash(hash: string): boolean {
+  const id = decodeURIComponent(hash.slice(1));
+  const target = id ? document.getElementById(id) : null;
+  if (!target) return false;
+  target.scrollIntoView({ block: 'start' });
+  return true;
+}
+
 function RoutedContent({ children }: { children: React.ReactNode }) {
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const navigationType = useNavigationType();
   const shownPath = useRef(pathname);
+  const scrolledPath = useRef(pathname);
 
   // Layout effects run before every passive effect of the commit: a page that sets its own title (or refines it once its
   // data is there) wins over this generic one, and it is never overwritten later.
   useLayoutEffect(() => { document.title = titleFor(pathname); }, [pathname]);
+
+  // A new page opens at its top (or at its `#anchor`), before it paints: without this the previous page's scroll offset
+  // carries over and the new title is hidden. Only for a link (PUSH) to another pathname: Back/Forward (POP) keep the
+  // browser's own restoration, redirects (REPLACE) and query-only changes (`?episode=…`) keep the current position.
+  // Focus is untouched: the effect below and the pages' own focus calls use `preventScroll`.
+  useLayoutEffect(() => {
+    if (scrolledPath.current === pathname) return undefined;
+    scrolledPath.current = pathname;
+    if (navigationType !== 'PUSH') return undefined;
+    if (hash && scrollToHash(hash)) return undefined;
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    if (!hash) return undefined;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => { scrollToHash(hash); });
+    });
+    return () => cancelAnimationFrame(frame);
+    // Only a change of pathname re-runs this; it reads the navigation type and hash of the render that changed it.
+  }, [pathname]);
 
   // After a change of pathname (never the first load, never a search, hash or state-only navigation such as
   // `?episode=…&mode=…`, not a redirect) focus goes to #main — but only once the new route has painted (two animation

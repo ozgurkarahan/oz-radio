@@ -24,6 +24,9 @@ import {
 } from '../ui';
 import '../styles/pages/presenter.css';
 
+/** The "Live demo" tail of a live-demo deck's title, in the languages the decks are published in. */
+const LIVE_TITLE_SUFFIX = /\s*·\s*(live demo|démo en direct)\s*$/i;
+
 function deckToPresentation(d: DeckDetail, admin: boolean): Presentation {
   return {
     id: d.id ?? d.deck_id,
@@ -185,11 +188,16 @@ export default function DeckPresentPage() {
   // The deck's own words (title, language name) carry the deck's language, not the interface's.
   const deckLang = langAttr(deck?.language);
   const selectedLang = langAttr(language);
-  const title: React.ReactNode = presentation
-    ? <span lang={deckLang}>{humanizeTitle(deck?.title || presentation.filename)}</span>
-    : error != null ? 'Deck' : 'Loading deck…';
   // "Live demo" only on a deck that can be started live; every other deck is "Slides". No kicker while the deck loads.
   const canPresentLive = demoMode || isAdmin;
+  // The kicker already says "Live demo": the heading drops the same words from the end of the deck's title (the tab keeps
+  // the full title). Elsewhere a wrapped heading never starts a line with "·".
+  const shownTitle = humanizeTitle(deck?.title || presentation?.filename);
+  const kickerSaysLive = deck?.live_demo === true && (canPresentLive || railLoading);
+  const headingText = (kickerSaysLive ? shownTitle.replace(LIVE_TITLE_SUFFIX, '') : shownTitle).replace(/\s+·/g, '\u00a0·');
+  const title: React.ReactNode = presentation
+    ? <span lang={deckLang}>{headingText}</span>
+    : error != null ? 'Deck' : 'Loading deck…';
   const eyebrow = presentation ? (
     <>
       {[railLoading ? null : canPresentLive ? 'Live demo' : 'Slides', pluralize(presentation.slide_count, 'slide')].filter(Boolean).join(' · ')}
@@ -247,7 +255,12 @@ export default function DeckPresentPage() {
       )}
 
       {!presentation && error == null && (
-        <div className="presenter__loading"><Spinner label="Loading slides…" /></div>
+        // The heading already says "Loading deck…": the spinner's own words are for screen readers only, so it is
+        // announced once and never read twice on screen.
+        <div className="presenter__loading">
+          <span className="spinner" aria-hidden />
+          <span className="sr-only" role="status">Loading slides…</span>
+        </div>
       )}
 
       {presentation && (

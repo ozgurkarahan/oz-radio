@@ -67,6 +67,54 @@
   padding-block: var(--sp-7);
 }
 
+/* The format leads each row as a badge (all viewports), so the generic kind column is gone from this list. */
+@media (min-width: 961px) {
+  .home-episodes .episode-row {
+    grid-template-columns: 52px minmax(0, 1fr) 84px 72px auto;
+  }
+}
+
+.home-episodes .episode-row__kind.episode-row__kind--lead {
+  display: inline-flex;
+  gap: 6px;
+  margin-bottom: var(--sp-1);
+  padding: 2px var(--sp-2);
+  border: var(--bw) solid currentColor;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+
+.home-episodes .episode-row__kind--lead svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.home-episodes .episode-row__kind--lead[data-tone='clay'] {
+  color: var(--c-clay-ink);
+}
+
+/* Not sage: the audience-level chip already is, and two green pills in a row read as one kind of label. */
+.home-episodes .episode-row__kind--lead[data-tone='ink'] {
+  color: var(--c-ink);
+}
+
+/* "All podcasts" / "All videos": quiet links under the list, full-height touch targets. */
+.home-episodes__more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-5);
+  padding-top: var(--sp-2);
+}
+
+.home-episodes__more .btn {
+  min-height: var(--tap);
+}
+
 .home-owner__hint {
   padding-block: var(--sp-3);
   color: var(--c-muted);

@@ -166,7 +166,8 @@
   font-size: var(--fs-sm);
 }
 
-/* What to know before Start (microphone, the recording): quiet text under the controls, never in the fixed phone bar. */
+/* What to know before Start (microphone, the recording): quiet text under the controls. It sits in the demo dock, so on a
+   phone it rides in the bar with Start instead of ending up a screen below it. */
 .avatar-rail__help {
   display: flex;
   flex-direction: column;
@@ -517,10 +518,21 @@
     overflow: hidden;
   }
 
-  /* The fixed mini-player sits at the very bottom: the dock rides on top of it. */
+  /* The fixed mini-player (only while an episode is playing) sits at the very bottom: the dock rides on top of it. */
   :root[data-mini-player] .avatar-rail--demo .avatar-dock {
     bottom: calc(var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
     padding-bottom: var(--sp-2);
+  }
+
+  /* Compact bar: Start, then one reassurance line and the quiet recording link. The voice-question hint is for the
+     wider rail. */
+  .avatar-rail--demo .avatar-dock .avatar-rail__help {
+    gap: 0;
+    margin-top: 0;
+  }
+
+  .avatar-rail__note-more {
+    display: none;
   }
 
   .demo-outcome__actions .btn {

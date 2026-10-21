@@ -59,8 +59,9 @@ def test_the_admin_slide_payload_does_not_gain_text():
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("body,expected", [
     ("Hello", "Hello"),
-    ("  Hello \n\n world\t!  ", "Hello world !"),
-    ("A short live demo\nBeginner level\r\nWhat a model is", "A short live demo Beginner level What a model is"),
+    ("  Hello \n\n world\t!  ", "Hello\nworld !"),
+    ("A short live demo\nBeginner level\r\nWhat a model is", "A short live demo\nBeginner level\nWhat a model is"),
+    ("one  line \t with   gaps\n\n\n  next\u00a0line  ", "one line with gaps\nnext line"),
     ("non\u00a0breaking\u2003and\u2009thin", "non breaking and thin"),
     ("", ""),
     ("   \n\t ", ""),
@@ -69,7 +70,7 @@ def test_the_admin_slide_payload_does_not_gain_text():
     (["a", "b"], ""),
     ("Un modèle produit des mots · L’IA", "Un modèle produit des mots · L’IA"),
 ])
-def test_slide_text_is_the_body_with_collapsed_whitespace(body, expected):
+def test_slide_text_keeps_one_line_per_run_with_collapsed_whitespace(body, expected):
     from routers.decks import _slide_text
 
     assert _slide_text({"body": body}) == expected
@@ -84,9 +85,11 @@ def test_slide_text_is_capped_at_600_characters_including_the_ellipsis():
     assert cut == "x" * 599 + "…" and len(cut) == 600
     long_words = _slide_text({"body": " ".join(["word"] * 1000)})
     assert len(long_words) == 600 and long_words.endswith("…")
-    assert _slide_text({"body": "a\n" * 700}).endswith("…")
+    long_lines = _slide_text({"body": "a\n" * 700})
+    assert len(long_lines) == 600 and long_lines.endswith("…")
     # Whitespace is collapsed before the cap: 700 characters of padding do not count.
     assert _slide_text({"body": "x" * 300 + " " * 700 + "y" * 100}) == "x" * 300 + " " + "y" * 100
+    assert _slide_text({"body": "x" * 300 + "\n" * 700 + "y" * 100}) == "x" * 300 + "\n" + "y" * 100
 
 
 def test_slide_text_never_reads_the_notes():
@@ -140,7 +143,7 @@ def test_public_deck_slides_carry_the_visible_text_and_never_the_notes(client, e
     assert r.status_code == 200
     slides = r.json()["slides"]
     assert all(set(s) == PUBLIC_SLIDE_KEYS for s in slides)
-    assert slides[0]["text"] == "A short live demo Beginner level"
+    assert slides[0]["text"] == "A short live demo\nBeginner level"
     assert len(slides[1]["text"]) == 600 and slides[1]["text"].endswith("…")
     assert slides[2]["text"] == ""
     for secret in (SECRET_NOTES, SECRET_FR, "translated_notes", '"notes"', '"body"'):

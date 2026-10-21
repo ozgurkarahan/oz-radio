@@ -5,7 +5,8 @@
  * native controls): cover art, both hosts lit from the radio transcript (glow on
  * backchannel cues), the current speaker as text, a visible caption that only
  * changes with the cue (not announced: it would duplicate the audio for screen-reader
- * users, who have the transcript on demand), a collapsible click-to-seek transcript,
+ * users, who have the transcript on demand), a collapsible click-to-seek transcript
+ * (one block per speaker turn, the cues flowing as sentences),
  * a seekable peaks waveform (role="slider", turn ticks), ±15 s, speed, keyboard
  * shortcuts (Space/K, J/L), Media Session (through playback/mediaSession.ts),
  * autoplay-rejection handling and SAS-expiry recovery (at most one automatic source refresh
@@ -26,7 +27,7 @@
  * (studio card).
  */
 import React, {
-  forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
+  Fragment, forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 import {
   AudioLines, ChevronDown, Headphones, Pause, Play, Radio as RadioIcon, RotateCcw, RotateCw, ScrollText, Sparkles,
@@ -512,11 +513,45 @@ interface TranscriptListProps {
   reactionLabel: string;
 }
 
-/** Full transcript; re-renders only when the active cue changes. */
+interface TranscriptGroup {
+  speaker: Speaker;
+  /** Indexes (into the cue list) of the cues of this turn, backchannels included. */
+  indexes: number[];
+}
+
+/**
+ * Groups the cues into speaker turns: a speech cue of another speaker (or another script turn) opens a new turn;
+ * a backchannel stays inside the turn it interrupts.
+ */
+function groupTurns(cues: TranscriptCue[]): TranscriptGroup[] {
+  const groups: TranscriptGroup[] = [];
+  let key = '';
+  cues.forEach((cue, i) => {
+    const last = groups[groups.length - 1];
+    if (cue.kind === 'reaction' && last) {
+      last.indexes.push(i);
+      return;
+    }
+    const cueKey = `${cue.speaker}:${cue.turn_idx}`;
+    if (last && cueKey === key) {
+      last.indexes.push(i);
+      return;
+    }
+    key = cueKey;
+    groups.push({ speaker: cue.speaker, indexes: [i] });
+  });
+  return groups;
+}
+
+/**
+ * Full transcript, one block per speaker turn: the speaker and the start time are shown (and announced) once, and the
+ * turn's cues flow as one paragraph of inline buttons, each still a click-to-seek target and tab stop.
+ * Re-renders only when the active cue changes.
+ */
 const TranscriptList = memo(function TranscriptList({
   cues, activeIndex, reactionIndex, names, onSeek, onUserScroll, listRef, lang, reactionLabel,
 }: TranscriptListProps) {
-  let previousSpeech: TranscriptCue | null = null;
+  const groups = useMemo(() => groupTurns(cues), [cues]);
   return (
     <ol
       ref={listRef}
@@ -526,43 +561,50 @@ const TranscriptList = memo(function TranscriptList({
       onTouchMove={onUserScroll}
       onPointerDown={onUserScroll}
     >
-      {cues.map((cue, i) => {
-        const reaction = cue.kind === 'reaction';
-        const name = names[cue.speaker];
-        const showName = !reaction && (!previousSpeech
-          || previousSpeech.speaker !== cue.speaker || previousSpeech.turn_idx !== cue.turn_idx);
-        if (!reaction) previousSpeech = cue;
-        const current = i === activeIndex;
+      {groups.map((group) => {
+        const first = group.indexes[0];
         return (
-          <li key={i} data-cue-index={i}>
-            <button
-              type="button"
-              className={[
-                'radio-player__cue',
-                reaction && 'radio-player__cue--reaction',
-                i === reactionIndex && 'is-reacting',
-              ].filter(Boolean).join(' ')}
-              aria-current={current ? 'true' : undefined}
-              data-testid="radio-cue"
-              data-kind={cue.kind}
-              onClick={() => onSeek(cue.start)}
-            >
-              <span className="radio-player__cue-time">{clock(cue.start)}</span>
-              <span className="radio-player__cue-body">
-                {reaction ? (
-                  <span className="radio-player__cue-text">
-                    {name} · {cue.text}<span className="sr-only">{reactionLabel}</span>
-                  </span>
-                ) : (
-                  <>
-                    {showName
-                      ? <span className="radio-player__cue-name">{name}</span>
-                      : <span className="sr-only">{name}: </span>}
-                    <span className="radio-player__cue-text">{cue.text}</span>
-                  </>
-                )}
-              </span>
-            </button>
+          <li key={first} className="radio-player__turn" data-testid="radio-turn" data-turn-index={cues[first].turn_idx}>
+            <div className="radio-player__turn-head">
+              <span className="radio-player__cue-name" data-testid="radio-turn-speaker">{names[group.speaker]}</span>
+              <span className="radio-player__cue-time">{clock(cues[first].start)}</span>
+            </div>
+            <p className="radio-player__turn-text">
+              {group.indexes.map((i) => {
+                const cue = cues[i];
+                const reaction = cue.kind === 'reaction';
+                return (
+                  <Fragment key={i}>
+                    {i !== first && ' '}
+                    {/* A span, not a <button>: buttons are inline-block and cannot wrap with the sentence. */}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className={[
+                        'radio-player__cue',
+                        reaction && 'radio-player__cue--reaction',
+                        i === reactionIndex && 'is-reacting',
+                      ].filter(Boolean).join(' ')}
+                      aria-current={i === activeIndex ? 'true' : undefined}
+                      data-testid="radio-cue"
+                      data-kind={cue.kind}
+                      data-cue-index={i}
+                      onClick={() => onSeek(cue.start)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onSeek(cue.start);
+                      }}
+                    >
+                      {reaction
+                        ? <>{names[cue.speaker]} · {cue.text}<span className="sr-only">{reactionLabel}</span></>
+                        : cue.text}
+                    </span>
+                  </Fragment>
+                );
+              })}
+            </p>
           </li>
         );
       })}

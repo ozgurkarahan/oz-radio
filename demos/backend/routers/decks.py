@@ -191,10 +191,12 @@ def _doc_to_summary(doc: dict) -> DeckSummary:
 
 
 def _slide_text(slide: dict) -> str:
-    """Visible text of a slide for the anonymous payload: its body, whitespace collapsed, capped at
+    """Visible text of a slide for the anonymous payload: its body, whitespace collapsed within each line and one ``\\n``
+    kept between non-empty lines (a reader — the picture's alt text — needs the runs apart), capped at
     ``PUBLIC_SLIDE_TEXT_MAX_CHARS`` characters (a trailing ``…`` included). Never the speaker notes."""
     body = slide.get("body")
-    text = " ".join(body.split()) if isinstance(body, str) else ""
+    lines = (" ".join(line.split()) for line in body.splitlines()) if isinstance(body, str) else ()
+    text = "\n".join(line for line in lines if line)
     if len(text) > PUBLIC_SLIDE_TEXT_MAX_CHARS:
         text = text[: PUBLIC_SLIDE_TEXT_MAX_CHARS - 1] + "…"
     return text

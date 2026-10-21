@@ -49,8 +49,8 @@ export default function PlaylistPlayerPage() {
         <PageHeader eyebrow="Playlists" title="Follow a learning path" />
         <GatedPanel
           icon={ListVideo}
-          title="Playlists are limited to demo users"
-          description="Playlists track your progress across several decks and are presented live by the AI avatar. Published decks remain browsable without signing in."
+          title="Playlists are for the site owner"
+          description="Playlists track the owner's progress across several decks, presented live by the AI avatar. You can start the live demo of a published deck without signing in, or browse the decks and videos."
           action="follow a playlist"
           links={[{ href: '/decks', label: 'Browse the decks' }, { href: '/video/library', label: 'Browse the video library' }]}
         />

@@ -1,6 +1,5 @@
 /* Global style entry — imported once from main.tsx. */
-@import '@fontsource-variable/newsreader/opsz.css';
-@import '@fontsource-variable/newsreader/opsz-italic.css';
+@import './fonts.css';
 @import '@fontsource-variable/hanken-grotesk/wght.css';
 @import './tokens.css';
 @import './base.css';

@@ -26,8 +26,8 @@ export default function SearchPage() {
         <h1 className="sr-only">Search</h1>
         <GatedPanel
           icon={Search}
-          title="AI search across decks is limited to demo users"
-          description="Search runs a semantic search over every deck and lets the live avatar present the matching slide. Published decks remain browsable without signing in."
+          title="Search across decks is for the site owner"
+          description="Search runs a semantic search over every deck and lets the live avatar present the matching slide. You can start the live demo of a published deck without signing in, or browse the decks and videos."
           action="ask questions across the decks"
           links={[{ href: '/decks', label: 'Browse the decks' }, { href: '/video/library', label: 'Browse the video library' }]}
         />

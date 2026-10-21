@@ -22,36 +22,85 @@ const ALT_MAX_CHARS = 250;
 const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
 const endsSentence = (s: string) => /[.!?…:;]$/.test(s);
 
-/** "BEGINNER LEVEL" → "Beginner level"; short shouted words ("AI", "SQL") and mixed-case runs are left alone. */
+/** Words that stay upper case when a shouted run is sentence-cased ("AI", "SQL"); every other shouted word is lower-cased. */
+const ACRONYMS = new Set(['AI', 'UI', 'UX', 'API', 'LLM', 'SLM', 'MCP', 'RAG', 'TTS', 'STT', 'SQL', 'PDF', 'FAQ', 'GPU', 'CPU', 'SDK', 'URL', 'ROI']);
+
+const SHOUT_WORD = /^[\p{Lu}\p{N}&'’/-]+$/u;
+const SHOUT_SEPARATOR = /^[·•|]$/;
+const letterCount = (s: string) => s.replace(/[^\p{L}]/gu, '').length;
+const isShoutWord = (t: string) => letterCount(t) >= 2 && SHOUT_WORD.test(t);
+
+/** "OZ RADIO · AI ENABLEMENT" → "Oz radio · AI enablement": shouted words are lower-cased, acronyms kept. */
 function sentenceCaseShout(run: string): string {
-  const letters = run.replace(/[^\p{L}]/gu, '');
-  if (letters.length < 6 || run !== run.toLocaleUpperCase() || run === run.toLocaleLowerCase()) return run;
-  const lower = run.toLocaleLowerCase();
-  return lower.charAt(0).toLocaleUpperCase() + lower.slice(1);
+  const lowered = run.replace(/[\p{L}][\p{L}'’-]*/gu, (word) => (ACRONYMS.has(word) ? word : word.toLocaleLowerCase()));
+  return lowered.charAt(0).toLocaleUpperCase() + lowered.slice(1);
+}
+
+/**
+ * A shouted eyebrow at the start of a run ("OZ RADIO · AI ENABLEMENT · LIVE DEMO A quick look…" → the eyebrow, then the
+ * rest). It must be two shouted words or more (or hold a "·"), or the whole run: a single capital "A" or "I" starts the
+ * sentence that follows. Mixed-case runs and short acronyms are left alone.
+ */
+function splitShout(run: string): { shout: string | null; rest: string } {
+  const tokens = run.split(' ');
+  let end = 0;
+  let words = 0;
+  let separators = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    if (isShoutWord(tokens[i])) { words += 1; end = i + 1; }
+    else if (SHOUT_SEPARATOR.test(tokens[i]) && i + 1 < tokens.length && isShoutWord(tokens[i + 1])) separators += 1;
+    else break;
+  }
+  const shout = tokens.slice(0, end).join(' ');
+  const whole = end === tokens.length;
+  if (end === 0 || letterCount(shout) < 6 || (!whole && words < 2 && separators === 0)) return { shout: null, rest: run };
+  return { shout, rest: tokens.slice(end).join(' ') };
 }
 
 /**
  * Alt text of a slide picture, read as sentences: the title first, then the slide's visible text (public payload `text`,
- * one run per line) with repeated runs dropped and shouted eyebrows sentence-cased. Cut at a sentence, or at a word.
+ * one run per line — or, from the older one-line payload still cached, one run) with repeated runs dropped, shouted
+ * eyebrows sentence-cased, page counters ("1 / 5") and a footer that repeats the eyebrow's brand line left out. Cut at a
+ * sentence, or at a word.
  */
 function slideAlt(slide: { title?: string; text?: string }, index: number): string {
   const title = collapse(slide.title ?? '') || `Slide ${index + 1}`;
   const seen = new Set([title.toLocaleLowerCase()]);
-  const runs: string[] = [];
+  const pieces: string[] = [];
+  let brand = '';
   for (const raw of (slide.text ?? '').split(/\r?\n+/)) {
-    const run = sentenceCaseShout(collapse(raw));
+    const line = collapse(raw);
+    if (!line) continue;
+    const { shout, rest } = splitShout(line);
+    if (shout) {
+      const eyebrow = sentenceCaseShout(shout);
+      if (pieces.length === 0) brand = eyebrow.split(' · ').slice(0, 2).join(' · ').toLocaleLowerCase();
+      pieces.push(eyebrow);
+    }
+    if (rest) pieces.push(rest);
+  }
+  const hasBrand = brand.includes(' · ');
+  const runs: string[] = [];
+  pieces.forEach((piece, i) => {
+    let run = piece;
+    if (hasBrand && i > 0) {
+      const at = run.toLocaleLowerCase().indexOf(brand);
+      if (at === 0) return;
+      if (at > 0) run = run.slice(0, at);
+    }
+    run = collapse(run.replace(/\s*\b\d{1,3}\s*\/\s*\d{1,3}\s*$/, ''));
     const key = run.toLocaleLowerCase().replace(/[.!?…:;]+$/, '');
-    if (!run || seen.has(key) || seen.has(run.toLocaleLowerCase())) continue;
+    if (!run || seen.has(key) || seen.has(run.toLocaleLowerCase())) return;
     seen.add(key);
     runs.push(endsSentence(run) ? run : `${run}.`);
-  }
+  });
   let alt = endsSentence(title) ? title : `${title}.`;
   if (runs.length === 0) return alt.replace(/\.$/, '');
   for (const run of runs) {
     const next = `${alt} ${run}`;
     if (next.length <= ALT_MAX_CHARS) { alt = next; continue; }
-    // Not even the first sentence fits: keep its start, at a word.
-    if (runs[0] === run) alt = `${next.slice(0, ALT_MAX_CHARS).replace(/\s+\S*$/, '')}…`;
+    // A first sentence, or a paragraph of one run, that does not fit keeps its start, at a word.
+    if (runs[0] === run || run.length > ALT_MAX_CHARS / 2) alt = `${next.slice(0, ALT_MAX_CHARS).replace(/\s+\S*$/, '')}…`;
     break;
   }
   return alt;

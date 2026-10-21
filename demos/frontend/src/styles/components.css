@@ -285,6 +285,13 @@
   text-decoration: none;
 }
 
+/* Same look, a 44 px hit area on touch screens. */
+@media (pointer: coarse) {
+  .back-link {
+    min-height: var(--tap);
+  }
+}
+
 .back-link:hover {
   color: var(--c-clay-ink);
 }

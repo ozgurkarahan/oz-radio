@@ -305,7 +305,7 @@ test.describe('titles, focus and page chunks', () => {
       ['/video/library', 'Videos · Oz Radio'],
       ['/search', 'Search · Oz Radio'],
       ['/playlists', 'Playlists · Oz Radio'],
-      ['/live', 'Live presentation · Oz Radio'],
+      ['/live', 'Present a deck live · Oz Radio'],
       ['/podcast', 'Create a podcast · Oz Radio'],
       ['/video', 'Create a video · Oz Radio'],
       ['/playlists/pl-1', 'Playlist · Oz Radio'],

@@ -554,11 +554,11 @@ test.describe('Decks list', () => {
 
 // ── [T1-10a…e] [T1-12] [T1-13] gate pages ───────────────────────────────────────────────────────
 const GATES: [string, string, RegExp][] = [
-  ['[T1-10a]', '/live', /The live presenter is limited to demo users/],
-  ['[T1-10b]', '/search', /AI search across decks is limited to demo users/],
-  ['[T1-10c]', '/playlists', /Playlists are limited to demo users/],
-  ['[T1-10d]', '/podcast', /Podcast creation is limited to demo users/],
-  ['[T1-10e]', '/video', /Video generation is limited to demo users/],
+  ['[T1-10a]', '/live', /Uploading decks for live presentation is for the site owner/],
+  ['[T1-10b]', '/search', /Search across decks is for the site owner/],
+  ['[T1-10c]', '/playlists', /Playlists are for the site owner/],
+  ['[T1-10d]', '/podcast', /Podcast creation is for the site owner/],
+  ['[T1-10e]', '/video', /Video generation is for the site owner/],
 ];
 
 test.describe('gate pages', () => {
@@ -586,7 +586,7 @@ test.describe('gate pages', () => {
       expect(y.actions).toBeLessThan(y.notice);
 
       const notice = panel.getByTestId('auth-gate');
-      await expect(notice).toContainText('Sign in to ');
+      await expect(notice).toContainText('Owner tools need sign-in');
       const signIn = notice.getByRole('link', { name: 'Owner sign-in' });
       await expect(signIn).toBeVisible();
       await expect(signIn).toHaveAttribute('href', `/sign-in?next=${encodeURIComponent(route)}`);

@@ -128,17 +128,27 @@ test.describe('Podcast library — rows', () => {
     expect(errors).toEqual([]);
   });
 
-  test('the title opens Watch for video episodes and Listen for audio-only ones', async ({ page }) => {
+  test('the title opens Listen for every episode with audio, Watch only for video-only ones', async ({ page }) => {
     const { errors } = await openLibrary(page, 'visitor');
     const d = dialog(page);
 
     await rowOf(page, VIDEO_TITLE).getByRole('button', { name: VIDEO_TITLE, exact: true }).click();
+    await expect(page).toHaveURL(/\/podcast\/library\?episode=pod-2&mode=listen$/);
+    await expect(d).toHaveAttribute('data-mode', 'listen');
+    await expect(radioAudio(page)).toHaveAttribute('src', POD_VIDEO.mp3_url);
+    await expect(videoEl(page)).toHaveCount(0);
+    await expect(d.getByRole('tablist', { name: 'Episode format' })).toBeVisible();
+    await expect(d.getByRole('tab', { name: 'Listen' })).toHaveAttribute('aria-selected', 'true');
+    await expect(d.getByTestId('format-chip')).toHaveText('Video + audio');
+    await page.keyboard.press('Escape');
+    await expect(page).toHaveURL(/\/podcast\/library$/);
+
+    // Watch stays one tap away on the row.
+    await rowOf(page, VIDEO_TITLE).getByTestId('library-watch').click();
     await expect(page).toHaveURL(/\/podcast\/library\?episode=pod-2&mode=watch$/);
     await expect(d).toHaveAttribute('data-mode', 'watch');
     await expect(videoEl(page)).toHaveAttribute('src', POD_VIDEO.mp4_url!);
-    await expect(d.getByRole('tablist', { name: 'Episode format' })).toBeVisible();
     await expect(d.getByRole('tab', { name: 'Watch' })).toHaveAttribute('aria-selected', 'true');
-    await expect(d.getByTestId('format-chip')).toHaveText('Video + audio');
     await page.keyboard.press('Escape');
     await expect(page).toHaveURL(/\/podcast\/library$/);
 
@@ -377,10 +387,11 @@ test.describe('Podcast library — deep links & loading', () => {
     expect(errors).toEqual([]);
   });
 
-  test('home episode rows deep-link into Watch or Listen', async ({ page }) => {
+  test('home episode rows deep-link into Listen (Watch only without audio)', async ({ page }) => {
     const { errors } = await openLibrary(page, 'visitor', {}, '/');
     const listenLink = page.locator(`a[href="/podcast/library?episode=${POD_AUDIO.job_id}&mode=listen"]`).first();
-    await expect(page.locator(`a[href="/podcast/library?episode=${POD_VIDEO.job_id}&mode=watch"]`).first()).toBeVisible();
+    await expect(page.locator(`a[href="/podcast/library?episode=${POD_VIDEO.job_id}&mode=listen"]`).first()).toBeVisible();
+    await expect(page.locator(`a[href="/podcast/library?episode=${POD_VIDEO.job_id}&mode=watch"]`)).toHaveCount(0);
     await listenLink.click();
     await expect(page).toHaveURL(/\/podcast\/library\?episode=pod-3&mode=listen$/);
     await expect(dialog(page)).toHaveAttribute('data-mode', 'listen');
@@ -403,12 +414,12 @@ test.describe('Podcast library — deep links & loading', () => {
     await expect(videoEl(page)).toHaveAttribute('src', '/media/pod-1.mp4');
     await expect(radioAudio(page)).toHaveCount(0);
 
-    // No (or an unknown) mode: Watch.
+    // No (or an unknown) mode: Listen when the episode has audio.
     for (const query of ['episode=pod-2', 'episode=pod-2&mode=sideways']) {
       await page.goto(`/podcast/library?${query}`);
-      await expect(d).toHaveAttribute('data-mode', 'watch');
-      await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
-      await expect(videoEl(page)).toHaveAttribute('src', POD_VIDEO.mp4_url!);
+      await expect(d).toHaveAttribute('data-mode', 'listen');
+      await expect(page).toHaveURL(/\?episode=pod-2&mode=listen$/);
+      await expect(radioAudio(page)).toHaveAttribute('src', POD_VIDEO.mp3_url);
     }
     expect(errors).toEqual([]);
   });
@@ -600,9 +611,9 @@ test.describe('Podcast library — downloads, motion, layout, focus', () => {
     await expect(listen).toBeVisible();
     const w = (await watch.boundingBox())!;
     const l = (await listen.boundingBox())!;
-    expect(w.x).toBeGreaterThanOrEqual(0);
-    expect(w.x + w.width).toBeLessThanOrEqual(l.x + 0.5);
-    expect(l.x + l.width).toBeLessThanOrEqual(390);
+    expect(l.x).toBeGreaterThanOrEqual(0);
+    expect(l.x + l.width).toBeLessThanOrEqual(w.x + 0.5); // Listen leads, Watch follows
+    expect(w.x + w.width).toBeLessThanOrEqual(390);
     expect(Math.abs(w.y - l.y)).toBeLessThan(1);
     await expect(rowOf(page, AUDIO_TITLE).getByTestId('library-listen')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);

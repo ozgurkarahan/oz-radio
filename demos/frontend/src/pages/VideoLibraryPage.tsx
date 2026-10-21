@@ -16,7 +16,7 @@ import {
   LibraryEmpty as PublicEmpty, LibraryListError, LibraryOpenError, actionFailureMessage, describeOpenFailure,
   type OpenFailure,
 } from '../playback/libraryStates';
-import { VideoProblem, VideoReconnecting, useVideoRecovery } from '../playback/videoRecovery';
+import { VideoBuffering, VideoProblem, VideoReconnecting, useVideoBuffering, useVideoRecovery } from '../playback/videoRecovery';
 import { useSuppressMiniPlayer } from '../playback/PlaybackProvider';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner,
@@ -240,6 +240,9 @@ export default function VideoLibraryPage() {
     apply: (fresh) => setSelected((prev) => (prev && prev.job_id === fresh.job_id ? fresh : prev)),
   });
 
+  // The app says so while the video has no frame to show yet (each refresh or video starts afresh).
+  const buffering = useVideoBuffering(`${selected?.job_id ?? ''}:${recovery.generation}`);
+
   // ---- Admin actions ------------------------------------------------------------------
   async function togglePublish(jobId: string, next: boolean) {
     setPublishing(jobId);
@@ -415,6 +418,7 @@ export default function VideoLibraryPage() {
                       onPause={(e) => recovery.track(e.currentTarget, false)}
                       onTimeUpdate={(e) => recovery.track(e.currentTarget)}
                       onError={recovery.onError}
+                      {...buffering.handlers}
                     >
                       {/* Captions are burned into the picture: the track is there for assistive technology and is never `default`. */}
                       {selected.captions_vtt_url && (
@@ -429,6 +433,7 @@ export default function VideoLibraryPage() {
                     </video>
                   )}
                   {/* The video stays mounted (hidden) under these: a failed one is replaced by a fresh element on the next refresh. */}
+                  {selected.video_url && buffering.active && recovery.fault === null && <VideoBuffering />}
                   {recovery.fault === 'refreshing' && <VideoReconnecting />}
                   {recovery.fault !== 'refreshing' && (!selected.video_url || recovery.fault === 'failed') && (
                     <VideoProblem kind={selected.video_url ? 'failed' : 'unavailable'} onRetry={recovery.retry} instead={listenInstead} />

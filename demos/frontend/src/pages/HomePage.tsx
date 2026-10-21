@@ -6,9 +6,8 @@ import {
 import { useAuth } from '../services/auth';
 import { type Deck, listDecks } from '../services/decksApi';
 import { listLibrary as listVideos, type LibrarySummary as VideoSummary } from '../services/videoApi';
-import { listLibrary as listPodcasts, hasAudio, isAudioOnly, type LibrarySummary as PodcastSummary } from '../services/podcast';
+import { listLibrary as listPodcasts, hasAudio, type LibrarySummary as PodcastSummary } from '../services/podcast';
 import { type AvatarInfo, pickDefaultAvatar, useAvatars } from '../services/avatars';
-import { usePrefersListen } from '../playback/prefersListen';
 import { markHomeCta } from '../services/telemetry';
 import {
   DemoActionLink, LiveDemoBadge, OWNER_SIGN_IN_HINT, liveSessionsLeft, recordedDemoReason, useDemoEntry, type DemoEntry,
@@ -36,7 +35,7 @@ const OWNER_DEPARTMENTS: Dept[] = [
   { to: '/live', icon: Mic, kicker: 'Live', title: 'Present a deck live', desc: 'Drop a .pptx and the avatar presents it, with Q&A grounded in the slides.' },
 ];
 
-type Kind = { icon: LucideIcon; label: string };
+type Kind = { icon: LucideIcon; label: string; tone?: 'clay' | 'ink' };
 
 type Episode = {
   key: string;
@@ -55,17 +54,20 @@ type Episode = {
 // "Live presentation" is only a deck that visitors can actually start live; the other decks are slides.
 const DECK_LIVE: Kind = { icon: Mic, label: 'Live presentation' };
 const DECK_SLIDES: Kind = { icon: Layers, label: 'Slides' };
-const VIDEO: Kind = { icon: Clapperboard, label: 'Narrated video' };
-const PODCAST: Kind = { icon: Headphones, label: 'Podcast' };
+const VIDEO: Kind = { icon: Clapperboard, label: 'Narrated video', tone: 'ink' };
+const PODCAST: Kind = { icon: Headphones, label: 'Podcast', tone: 'clay' };
 
 const time = (iso?: string | null) => (iso ? new Date(iso).getTime() || 0 : 0);
 
+/** Rows of the "Latest" list; the header and the "All …" links say so when more exist. */
+const LATEST_ROWS = 6;
+
 /**
- * Deep link that opens the episode in the podcast library player: Listen for audio-only episodes,
- * and on touch phones (`listenFirst`) for every episode with audio, like the library rows.
+ * Deep link that opens the episode in the podcast library player: Listen for every episode with audio (the radio
+ * leads with Listen on every device, like the library rows), Watch only for a video-only episode.
  */
-const podcastLink = (p: PodcastSummary, listenFirst: boolean) => {
-  const mode = isAudioOnly(p) || (listenFirst && hasAudio(p)) ? 'listen' : 'watch';
+const podcastLink = (p: PodcastSummary) => {
+  const mode = hasAudio(p) ? 'listen' : 'watch';
   return `/podcast/library?${new URLSearchParams({ episode: p.job_id, mode })}`;
 };
 
@@ -155,7 +157,6 @@ export default function HomePage() {
   const entry = useDemoEntry();
   useEffect(() => markHomeCta(entry.kind), [entry.kind]); // telemetry: the call to action is shown in its final form
   const { avatars } = useAvatars();
-  const listenFirst = usePrefersListen();
   const { data, retry, retrying } = useHomeData();
 
   const lead = pickDefaultAvatar(avatars);
@@ -171,7 +172,7 @@ export default function HomePage() {
   const ready = data.phase === 'ready' && entry.kind !== 'pending';
   const liveNow = entry.kind === 'live';
 
-  const episodes = useMemo<Episode[]>(() => {
+  const allEpisodes = useMemo<Episode[]>(() => {
     const items: Episode[] = [
       ...data.decks.map((d) => {
         const live = !!d.live_demo && liveNow;
@@ -182,28 +183,30 @@ export default function HomePage() {
         };
       }),
       ...data.videos.map((v) => ({
-        key: `video-${v.job_id}`, kind: VIDEO,         title: recordingTitle(v.title || v.document_title), date: time(v.created_at),
-                to: `/video/library?video=${encodeURIComponent(v.job_id)}`, meta: ['Narrated video', languageName(v.language)], hosts: [lead],
+        key: `video-${v.job_id}`, kind: VIDEO, title: recordingTitle(v.title || v.document_title), date: time(v.created_at),
+        to: `/video/library?video=${encodeURIComponent(v.job_id)}`, meta: [languageName(v.language)], hosts: [lead],
         duration: formatDuration(v.duration_sec), level: v.audience_level, language: v.language,
       })),
       ...data.podcasts.map((p) => {
         const named = (p.speaker_names ?? []).map(byName).filter(Boolean) as AvatarInfo[];
         return {
           key: `podcast-${p.job_id}`, kind: PODCAST, title: recordingTitle(p.title || p.document_title), date: time(p.created_at),
-          to: podcastLink(p, listenFirst), meta: ['Podcast', languageName(p.language)],
+          to: podcastLink(p), meta: [languageName(p.language)],
           hosts: named.length ? named : [lead, co], duration: formatDuration(p.duration_sec),
           level: p.audience_level, language: p.language,
         };
       }),
     ];
-    return items.sort((a, b) => b.date - a.date).slice(0, 6);
+    return items.sort((a, b) => b.date - a.date);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, avatars, liveNow, listenFirst]);
+  }, [data, avatars, liveNow]);
+
+  const episodes = allEpisodes.slice(0, LATEST_ROWS);
+  const hiddenCount = allEpisodes.length - episodes.length;
 
   const failedCount = Object.values(data.failed).filter(Boolean).length;
   const allFailed = failedCount === 3;
-  const episodeCount = data.videos.length + data.podcasts.length; // decks are slides, not episodes
-  const total = data.decks.length + episodeCount;
+  const total = allEpisodes.length;
 
   return (
     <div className="container page" style={{ paddingTop: 0 }}>
@@ -255,7 +258,7 @@ export default function HomePage() {
         <SectionHead
           className="home-section__head"
           title={<span id="home-episodes">Latest on Oz Radio</span>}
-          aside={ready && episodeCount > 0 ? pluralize(episodeCount, 'episode') : undefined}
+          aside={ready && total > 0 ? (hiddenCount > 0 ? `Latest ${episodes.length} of ${total}` : pluralize(total, 'item')) : undefined}
         />
         {!ready ? (
           <div className="home-episodes__loading" aria-busy="true"><Spinner label="Loading episodes…" /></div>
@@ -270,16 +273,18 @@ export default function HomePage() {
               </Alert>
             )}
             {episodes.length > 0 && (
-              <EpisodeList label="Latest episodes">
+              <EpisodeList label="Latest episodes" className="home-episodes">
                 {episodes.map((e, i) => (
                   <EpisodeRow
                     key={e.key}
                     data-testid="home-episode"
+                    className="home-episode"
                     num={episodeNumber(i + 1)}
                     title={e.title}
                     to={e.to}
                     meta={e.meta}
                     kind={e.kind}
+                    kindLead
                     level={e.level}
                     lang={e.language}
                     hosts={<HostsMini hosts={e.hosts} />}
@@ -298,6 +303,16 @@ export default function HomePage() {
                   />
                 ))}
               </EpisodeList>
+            )}
+            {hiddenCount > 0 && (data.podcasts.length > 0 || data.videos.length > 0) && (
+              <nav className="home-episodes__more" aria-label="All episodes" data-testid="home-see-all">
+                {data.podcasts.length > 0 && (
+                  <ButtonLink to="/podcast/library" variant="link" iconRight={ArrowRight}>All podcasts</ButtonLink>
+                )}
+                {data.videos.length > 0 && (
+                  <ButtonLink to="/video/library" variant="link" iconRight={ArrowRight}>All videos</ButtonLink>
+                )}
+              </nav>
             )}
             {failedCount === 0 && total === 0 && (
               <EmptyState icon={Headphones} title="No episodes are published yet" className="home-empty">

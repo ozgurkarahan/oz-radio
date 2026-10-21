@@ -56,9 +56,9 @@ export default function PodcastPage() {
         {!auth.loading && (
           <GatedPanel
             icon={Headphones}
-            title="Podcast creation is limited to demo users"
-            description="Generating a podcast uploads a document, writes a script with an LLM and renders two AI avatars. You can still watch every published podcast in the library."
-            action="create your own podcast"
+            title="Podcast creation is for the site owner"
+            description="The owner uploads a document, writes a script with an LLM and renders two AI avatars. You can listen to every published podcast in the library without signing in, or start the live demo."
+            action="create podcasts"
             links={[{ href: '/podcast/library', label: 'Browse the podcast library' }, { href: '/video/library', label: 'Browse the video library' }]}
           />
         )}
