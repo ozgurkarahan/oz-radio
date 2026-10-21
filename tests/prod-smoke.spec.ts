@@ -19,6 +19,8 @@ const expect = baseExpect.configure({ timeout: 30_000 });
 const PROD_SMOKE = process.env.OZ_RADIO_PROD_SMOKE === '1';
 const PHONE_VIEWPORT = { width: 390, height: 844 };
 const BLOB_ORIGIN = /^https:\/\/[a-z0-9]+\.blob\.core\.windows\.net$/;
+/** Same as `minimum_size` of the backend's `/assets/` gzip middleware (demos/backend/app.py). */
+const GZIP_MIN_BYTES = 1024;
 
 test.skip(!PROD_SMOKE, 'Production smoke: set OZ_RADIO_PROD_SMOKE=1 and AI_PRESENTER_BASE_URL to the deployed origin');
 test.use({
@@ -118,12 +120,13 @@ test('a phone listens: one tap plays the Blob radio, minimising keeps it playing
 test('the app shell /assets/*.js are gzip-compressed and cached as immutable', async ({ page, baseURL }) => {
   const { errors, annotate } = await readOnly(page);
   const origin = new URL(baseURL!).origin;
-  const pending: Promise<{ path: string; status: number; encoding: string; cacheControl: string }>[] = [];
+  const pending: Promise<{ path: string; status: number; encoding: string; cacheControl: string; bytes: number }>[] = [];
   page.on('response', (response) => {
     const url = new URL(response.url());
     if (url.origin !== origin || !/^\/assets\/[^/]+\.js$/.test(url.pathname)) return;
-    pending.push(response.allHeaders().then((h) => ({
+    pending.push(Promise.all([response.allHeaders(), response.body().catch(() => Buffer.alloc(0))]).then(([h, body]) => ({
       path: url.pathname, status: response.status(), encoding: h['content-encoding'] ?? '(none)', cacheControl: h['cache-control'] ?? '(none)',
+      bytes: body.length,
     })));
   });
   await page.goto('/');
@@ -132,9 +135,11 @@ test('the app shell /assets/*.js are gzip-compressed and cached as immutable', a
 
   const assets = await Promise.all(pending);
   expect(assets.length, 'the page loaded /assets/*.js').toBeGreaterThan(0);
+  expect(assets.some((a) => a.bytes >= GZIP_MIN_BYTES), 'at least one asset is large enough to be compressed').toBe(true);
   for (const a of assets) {
     expect.soft(a.status, `${a.path} status`).toBe(200);
-    expect.soft(a.encoding, `${a.path} content-encoding`).toBe('gzip');
+    // The server compresses bodies from GZIP_MIN_BYTES on; a smaller chunk (the bundler runtime) is sent as is.
+    if (a.bytes >= GZIP_MIN_BYTES) expect.soft(a.encoding, `${a.path} content-encoding`).toBe('gzip');
     expect.soft(a.cacheControl, `${a.path} cache-control`).toContain('immutable');
   }
   annotate();
