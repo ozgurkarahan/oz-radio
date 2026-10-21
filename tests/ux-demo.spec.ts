@@ -41,7 +41,7 @@ test.use({
 const DECK_PATH = '/decks/deck-demo-en/present';
 const SLIDES = DEMO_DECK_EN.slide_count;
 /** The same-deck recording every ending offers (mock catalog `demo`: video `vid-demo-en`, 192 s). */
-const RECORDING = { label: 'Watch AI in three minutes · Live demo · English · 3:12', href: '/video/library?video=vid-demo-en' };
+const RECORDING = { label: 'Watch AI in three minutes · Demo recording · English · 3:12', href: '/video/library?video=vid-demo-en' };
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -582,7 +582,7 @@ test.describe('outcome card', () => {
     await expect(c).not.toContainText(/demo avatar is busy, try again in a minute|not available for this deck/i);
     const retry = c.getByTestId('demo-outcome-retry');
     await expect(retry).toHaveText('Try again in a minute');
-    await expect(page.getByTestId('demo-start')).toBeEnabled();
+    await expect(page.getByTestId('demo-start'), 'the card offers the retry: no second "Start" in the bar').toHaveCount(0);
     mock.options.onOpen = 'session';
     await retry.click();
     await expect.poll(() => mock.connections).toBe(2);
@@ -625,7 +625,7 @@ test.describe('outcome card', () => {
     await expect(c.getByTestId('demo-outcome-retry')).toHaveText('Try again');
     await expect(page.locator('.avatar-rail')).not.toContainText(/not available for this deck/i);
     expect(mock.connections).toBe(0);
-    await expect(page.getByTestId('demo-start')).toBeEnabled();
+    await expect(page.getByTestId('demo-start')).toHaveCount(0);
   });
 
   test('[T3-05] a refused handshake while the demo is switched off says so (config re-checked), with no retry', async ({ page }) => {
@@ -649,9 +649,13 @@ test.describe('outcome card', () => {
       await tapStart(page, mock);
       const c = await expectOutcome(page, row.kind, COPY[row.kind].title, COPY[row.kind].role);
       await expect(c.getByTestId('demo-outcome-detail')).toHaveText(COPY[row.kind].detail);
-      if (COPY[row.kind].retry === 'none') await expect(c.getByTestId('demo-outcome-retry')).toHaveCount(0);
-      else await expect(c.getByTestId('demo-outcome-retry')).toHaveText('Try again');
-      await expect(page.getByTestId('demo-start')).toBeEnabled();
+      if (COPY[row.kind].retry === 'none') {
+        await expect(c.getByTestId('demo-outcome-retry')).toHaveCount(0);
+        await expect(page.getByTestId('demo-start')).toBeEnabled();
+      } else {
+        await expect(c.getByTestId('demo-outcome-retry')).toHaveText('Try again');
+        await expect(page.getByTestId('demo-start')).toHaveCount(0);
+      }
     });
   }
 
@@ -664,7 +668,7 @@ test.describe('outcome card', () => {
     const c = await expectOutcome(page, 'interrupted', COPY.interrupted.title, 'alert');
     await expect(c.getByTestId('demo-outcome-retry')).toHaveText('Try again');
     await expect(page.getByTestId('live-captions')).toHaveCount(0);
-    await expect(page.getByTestId('demo-start')).toBeEnabled();
+    await expect(page.getByTestId('demo-start')).toHaveCount(0);
   });
 
   test('[T3-07] the avatar service errors (error event, then 1011): "isn\'t responding", never "Azure", "Voice API" or the raw text', async ({ page }) => {
@@ -726,7 +730,7 @@ test.describe('setup and media failures', () => {
     await expect(page.getByTestId('demo-time-left'), 'the countdown does not burn to the cap').toHaveCount(0);
     await expect.poll(() => mock.ofType('demo.finish').length, { message: 'the client asks the server to finish' }).toBe(1);
     await expect.poll(() => mock.closes, { message: 'the slot is freed' }).toEqual([{ code: CLOSE.FINISHED, reason: 'Demo finished' }]);
-    await expect(page.getByTestId('demo-start')).toBeEnabled();
+    await expect(page.getByTestId('demo-start')).toHaveCount(0);
   });
 
   test('[T3-08] the network blocks the avatar stream (ICE never connects): the network hint + "Try again", the socket is closed, relay-only is kept', async ({ page }) => {
@@ -1576,29 +1580,32 @@ test.describe('deck page states', () => {
     await expect(page.getByText(/sign in to try the live avatar/i)).toHaveCount(0);
   });
 
-  test('[P2-6] a slide picture is named "{title}: {text}", truncated at a word, and by its title alone without text', async ({ page }) => {
+  test('[P2-6] a slide picture is named by its title, then its text as sentences: no repeats, no shouting, cut at a sentence or a word', async ({ page }) => {
     const long = Array.from({ length: 80 }, (_, i) => `word${i}`).join(' ');
     const deck = {
       ...DEMO_DECK_EN,
       id: DEMO_DECK_EN.deck_id,
       filename: DEMO_DECK_EN.title,
-      slide_count: 3,
+      slide_count: 4,
       slides: [
         { index: 0, title: "Hi, I'm an AI presenter", image_url: '/media/slide-0.png', text: 'A short live demo\nBeginner level' },
         { index: 1, title: 'A long slide', image_url: '/media/slide-1.png', text: long },
         { index: 2, title: 'Only a title', image_url: '/media/slide-2.png', text: '' },
+        { index: 3, title: 'Why it matters', image_url: '/media/slide-3.png', text: 'WHY IT MATTERS\nWHAT WE LEARNED\nFaster  answers\nFaster answers\nWhy it matters' },
       ],
     };
     await open(page, { before: async () => { await page.route('**/api/decks/deck-demo-en', (route) => route.fulfill({ json: deck })); } });
     const img = page.locator('.slide-viewer img');
-    await expect(img).toHaveAttribute('alt', "Hi, I'm an AI presenter: A short live demo Beginner level");
+    await expect(img).toHaveAttribute('alt', "Hi, I'm an AI presenter. A short live demo. Beginner level.");
     await page.getByTestId('slide-next').click();
-    await expect(img).toHaveAttribute('alt', /^A long slide: word0 word1 /);
+    await expect(img).toHaveAttribute('alt', /^A long slide\. word0 word1 /);
     const alt = (await img.getAttribute('alt')) ?? '';
     expect(alt.length, 'title + text, at most 250 characters and an ellipsis').toBeLessThanOrEqual(251);
     expect(alt).toMatch(/ word\d+…$/);
     await page.getByTestId('slide-next').click();
     await expect(img).toHaveAttribute('alt', 'Only a title');
+    await page.getByTestId('slide-next').click();
+    await expect(img).toHaveAttribute('alt', 'Why it matters. What we learned. Faster answers.');
   });
 });
 

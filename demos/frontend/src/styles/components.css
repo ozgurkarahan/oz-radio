@@ -198,7 +198,8 @@
   height: 7px;
   border-radius: 50%;
   background: var(--c-clay);
-  animation: ozradio-pulse 1.4s ease-in-out infinite;
+  /* Decorative: a few beats, then a steady dot. */
+  animation: ozradio-pulse 1.4s ease-in-out 3;
 }
 
 .live-pill--idle {
@@ -560,6 +561,15 @@
   background: var(--c-sand);
 }
 
+/* Reads as loading, not blank, until the keyed portrait arrives. */
+.host-disc[data-avatar-status='pending'] .host-disc__face {
+  background: color-mix(in srgb, var(--c-sage) 22%, var(--c-sage-50));
+}
+
+.host-disc--sand[data-avatar-status='pending'] .host-disc__face {
+  background: color-mix(in srgb, var(--c-clay) 16%, var(--c-sand));
+}
+
 .host-disc__face img {
   position: absolute;
   left: 0;
@@ -597,7 +607,7 @@
   border: 2px dashed var(--c-clay);
   border-radius: 50%;
   opacity: 0.5;
-  animation: ozradio-spin 40s linear infinite;
+  animation: ozradio-spin 40s linear 3;
   pointer-events: none;
 }
 

@@ -14,7 +14,7 @@
  *   WU-C (Home)    links to `demoDeckPath()`.
  *   WU-E (library) opens the deep links built by `recordingPath()`.
  */
-import { formatDuration, humanizeTitle, languageName, normalizeTitle, primaryLanguage } from '../ui/format';
+import { formatDuration, languageName, normalizeTitle, primaryLanguage, recordingTitle } from '../ui/format';
 import type { QaAnswerMessage, QaReadyMessage, QaTranscriptMessage, QaUnavailableMessage } from './api';
 
 // ── Constants ───────────────────────────────────────────────────────────────────────────────────────
@@ -531,7 +531,7 @@ export function findRecording(
   const durationSec = best.kind === 'podcast' && !best.watchable
     ? item.audio_duration_sec ?? item.duration_sec ?? null
     : item.duration_sec ?? null;
-  const title = humanizeTitle(item.title);
+  const title = recordingTitle(item.title);
   const language = typeof item.language === 'string' ? item.language : '';
   const parts = [`${best.watchable ? 'Watch' : 'Listen to'} ${title}`];
   if (language) parts.push(languageName(language));

@@ -127,6 +127,8 @@ test.describe('The Listen sheet on a phone', () => {
   test('P1-4 control: without the sheet\'s scroll-padding the same cues do hide behind the dock (the probe can fail)', async ({ page, browserName }) => {
     test.skip(browserName === 'webkit', 'WebKit\'s Tab key skips buttons (Safari\'s default: "Press Tab to highlight each item" is off)');
     const errors = await openLibrary(page);
+    // A short screen: the compact reading dock leaves every cue on screen on a tall one.
+    await page.setViewportSize({ width: 390, height: 520 });
     const player = await openSheetWithTranscript(page);
     await page.addStyleTag({ content: '.modal__panel.library-player--podcast { scroll-padding: 0 !important; }' });
     await player.getByTestId('radio-transcript-toggle').focus();

@@ -26,7 +26,7 @@ import { useAvatars } from '../services/avatars';
 import {
   RadioPlayer, toRadioHosts, type RadioMediaActions, type RadioPlayerHandle, type RadioStatus,
 } from '../components/RadioPlayer';
-import { humanizeTitle } from '../ui';
+import { recordingTitle } from '../ui';
 import ErrorBoundary from '../components/ErrorBoundary';
 import * as prepared from './prepare';
 import { progressStore } from './progress';
@@ -206,7 +206,7 @@ const RootRadio = memo(function RootRadio({ episode, radioRef, ...handlers }: Ro
       tone="stage"
       episodeKey={episode.jobId}
       src={episode.src}
-      title={humanizeTitle(item.title)}
+      title={recordingTitle(item.title)}
       language={item.language}
       level={item.audience_level ?? null}
       transcript={item.transcript ?? null}

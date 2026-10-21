@@ -35,6 +35,15 @@
   color: var(--c-clay-ink);
 }
 
+/* Same look, a 44 px hit area on touch screens. */
+@media (pointer: coarse) {
+  .gate-notice__signin {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--tap);
+  }
+}
+
 .gate-notice__hint {
   color: var(--c-muted);
   font-weight: 400;

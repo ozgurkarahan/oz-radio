@@ -759,7 +759,9 @@ test.describe('Language and level', () => {
     const { errors } = await openLibrary(page);
     const dur = rowOf(page, VIDEO_TITLE).locator('.episode-row__dur');
     await expect(dur).toBeVisible();
-    await expect(dur).toHaveText('0:40');
+    // Audio and video differ here: each format carries its own length.
+    await expect(dur).toContainText('0:40');
+    await expect(dur).toContainText('0:30');
     expect(errors).toEqual([]);
   });
 
@@ -797,13 +799,13 @@ test.describe('Language and level', () => {
 
   test('a French narrated video: level chip, French title and language marks, a French captions track', async ({ page }) => {
     const { errors } = await openLibrary(page, 'visitor', { catalog: 'demo' }, '/video/library');
-    const row = rowOf(page, 'Démo en direct');
+    const row = rowOf(page, 'Démo enregistrée');
     await expect(row.locator('.episode-row__title')).toHaveAttribute('lang', 'fr');
     await expect(row.getByTestId('episode-level')).toHaveText('Beginner');
     await expect(row.locator('.episode-row__meta [lang="fr"]')).toHaveText('Français');
     await row.getByRole('button', { name: /^Play / }).click();
     const d = dialog(page);
-    await expect(page.getByRole('dialog', { name: /Démo en direct/ })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: /Démo enregistrée/ })).toBeVisible();
     await expect(d.locator('h2.library-player__title')).toHaveAttribute('lang', 'fr');
     await expect(d.locator('.library-player__meta [lang="fr"]')).toHaveText('Français');
     await expect(d).not.toHaveAttribute('lang', /./);
@@ -1022,8 +1024,10 @@ test.describe('Focus ring on the dark player (P2-3)', () => {
     test(`${name} has a focus ring of at least 3:1 against the stage`, async ({ page }) => {
       const { errors } = await openLibrary(page);
       await open(page);
-      await page.keyboard.press('Tab');
       const button = dialog(page).getByRole('button', { name: close });
+      // Listen opens with focus on Play (the close button is behind it); Watch opens on the panel (the close button is next).
+      const direction = close === 'Close' ? 'Tab' : 'Shift+Tab';
+      for (let i = 0; i < 8 && !(await button.evaluate((el) => el === document.activeElement)); i += 1) await page.keyboard.press(direction);
       await expect(button).toBeFocused();
       const ring = await button.evaluate((el) => {
         const s = getComputedStyle(el);

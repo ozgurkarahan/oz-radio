@@ -20,7 +20,7 @@ import { lookupRecording, useDemoConfig } from '../services/demo';
 import { DEMO_FALLBACK_LINKS, demoDeckPath, type Recording } from '../services/demoProtocol';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, Field, LivePill, PageHeader, Select, Spinner,
-  classifyLoadError, humanizeTitle, languageName, loadErrorMessage, pluralize,
+  classifyLoadError, humanizeTitle, langAttr, languageName, loadErrorMessage, pluralize,
 } from '../ui';
 import '../styles/pages/presenter.css';
 
@@ -175,16 +175,28 @@ export default function DeckPresentPage() {
   const railLoading = auth.loading || (!isAdmin && demo.loading);
   const demoUnavailable = !!presentation && !railLoading && !isAdmin && !demoMode;
   const liveDemoPath = useLiveDemoPath(error != null || (demoUnavailable && demo.enabled));
-  const unavailableRecording = useDeckRecording(deck, demoUnavailable);
+  // The deck's recording: the way out of a deck without a live avatar, and an alternative offered before Start.
+  const deckRecording = useDeckRecording(deck, demoUnavailable || demoMode);
   // The demo avatar is chosen server-side (registry default).
   const avatarMode = isPhotoAvatar(
     demoMode ? pickDefaultAvatar(avatars) : avatars.find((a) => a.id === selectedAvatar),
   ) ? 'portrait' : 'wide';
 
-  const title = presentation ? humanizeTitle(deck?.title || presentation.filename) : 'Live presentation';
-  const eyebrow = presentation
-    ? ['Live presentation', pluralize(presentation.slide_count, 'slide'), languageName(language)].join(' · ')
-    : 'Live presentation';
+  // The deck's own words (title, language name) carry the deck's language, not the interface's.
+  const deckLang = langAttr(deck?.language);
+  const selectedLang = langAttr(language);
+  const title: React.ReactNode = presentation
+    ? <span lang={deckLang}>{humanizeTitle(deck?.title || presentation.filename)}</span>
+    : error != null ? 'Deck' : 'Loading deck…';
+  // "Live demo" only on a deck that can be started live; every other deck is "Slides". No kicker while the deck loads.
+  const canPresentLive = demoMode || isAdmin;
+  const eyebrow = presentation ? (
+    <>
+      {[railLoading ? null : canPresentLive ? 'Live demo' : 'Slides', pluralize(presentation.slide_count, 'slide')].filter(Boolean).join(' · ')}
+      {' · '}
+      <span lang={selectedLang}>{languageName(language)}</span>
+    </>
+  ) : undefined;
 
   const accessBadge = !isAdmin && !auth.loading && presentation ? (
     demoMode ? (
@@ -235,7 +247,7 @@ export default function DeckPresentPage() {
       )}
 
       {!presentation && error == null && (
-        <div className="presenter__loading"><Spinner label="Loading deck…" /></div>
+        <div className="presenter__loading"><Spinner label="Loading slides…" /></div>
       )}
 
       {presentation && (
@@ -299,7 +311,7 @@ export default function DeckPresentPage() {
                   detail={demo.enabled
                     ? 'Only the live-demo deck can be presented by the avatar. Start it, or watch the recording.'
                     : "A live session can't start at the moment. The recording shows the same demo."}
-                  recording={unavailableRecording}
+                  recording={deckRecording}
                   actions={demo.enabled ? startLiveDemo : null}
                 />
               ) : (
@@ -319,6 +331,7 @@ export default function DeckPresentPage() {
                   demoQa={demo.qa}
                   deckTitle={deck?.title}
                   deckId={demoMode ? undefined : deck?.deck_id}
+                  preStartRecording={demoMode ? deckRecording : null}
                 />
               )}
             </aside>

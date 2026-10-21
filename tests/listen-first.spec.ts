@@ -279,11 +279,11 @@ test.describe('Desktop keeps Watch', () => {
     expect(await page.evaluate(() => matchMedia('(hover: none) and (pointer: coarse)').matches)).toBe(false);
     const row = rowOf(page, VIDEO_TITLE);
     await expectPlayButtons(row, ['library-watch', 'library-listen']);
-    // Only the first row has a primary button (Listen here: that episode has no video).
-    await expect(row.getByTestId('library-watch')).not.toHaveClass(/\bbtn--primary\b/);
+    // Every row has the same variant: the preferred action (Watch, or Listen for an audio-only episode) is primary, the other outline.
+    await expect(row.getByTestId('library-watch')).toHaveClass(/\bbtn--primary\b/);
     await expect(row.getByTestId('library-listen')).not.toHaveClass(/\bbtn--primary\b/);
     await expect(rowOf(page, AUDIO_TITLE).getByTestId('library-listen')).toHaveClass(/\bbtn--primary\b/);
-    await expect(page.getByTestId('library-item').locator('.btn--primary')).toHaveCount(1);
+    await expect(page.getByTestId('library-item').locator('.btn--primary')).toHaveCount(3);
 
     await titleOf(row, VIDEO_TITLE).click();
     await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
@@ -293,14 +293,15 @@ test.describe('Desktop keeps Watch', () => {
     expect(errors).toEqual([]);
   });
 
-  test('the first row\'s Watch stays the primary button', async ({ page }) => {
+  test('every row\'s Watch is the primary button (no row is singled out)', async ({ page }) => {
     const errors = await open(page, '/podcast/library', { publicAudio: false });
     const first = page.getByTestId('library-item').first();
     await expect(first).toContainText(VIDEO_TITLE);
     await expect(first.getByTestId('library-watch')).toHaveClass(/\bbtn--primary\b/);
     const legacy = rowOf(page, LEGACY_TITLE);
     await expectPlayButtons(legacy, ['library-watch', 'library-listen']);
-    await expect(legacy.locator('.btn--primary')).toHaveCount(0);
+    await expect(legacy.getByTestId('library-watch')).toHaveClass(/\bbtn--primary\b/);
+    await expect(legacy.getByTestId('library-listen')).not.toHaveClass(/\bbtn--primary\b/);
     expect(errors).toEqual([]);
   });
 

@@ -13,7 +13,7 @@
 import { useId, useLayoutEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Headphones, Pause, Play, X } from 'lucide-react';
-import { Button, humanizeTitle, langAttr } from '../ui';
+import { Button, recordingTitle, langAttr } from '../ui';
 import { useTransitionAnnouncement } from './announce';
 import { usePlaybackCommands, usePlaybackState } from './PlaybackProvider';
 import { OPENED_HERE, nowPlayingPath } from './types';
@@ -78,7 +78,7 @@ export function MiniPlayer() {
   if (!current) return null;
 
   const { jobId, item } = current;
-  const title = humanizeTitle(item.title);
+  const title = recordingTitle(item.title);
   const cover = item.cover_url || item.thumbnail_url || null;
   const progress = duration > 0 ? Math.min(1, Math.max(0, finished ? 1 : time / duration)) : 0;
 

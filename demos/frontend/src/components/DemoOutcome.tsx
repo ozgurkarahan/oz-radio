@@ -53,7 +53,7 @@ export default function DemoOutcome({ title, detail, tone, role, kind, recording
     >
       <Icon aria-hidden />
       <div className="demo-outcome__body">
-        <h3 id={titleId} className="demo-outcome__title" data-testid="demo-outcome-title">{title}</h3>
+        <h2 id={titleId} className="demo-outcome__title" data-testid="demo-outcome-title">{title}</h2>
         <p id={detailId} className="demo-outcome__detail" data-testid="demo-outcome-detail">{detail}</p>
         <div className="demo-outcome__actions">
           {recording ? (

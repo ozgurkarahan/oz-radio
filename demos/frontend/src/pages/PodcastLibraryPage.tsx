@@ -28,7 +28,7 @@ import { VideoProblem, VideoReconnecting, useVideoRecovery } from '../playback/v
 import { prefersListen, usePrefersListen } from '../playback/prefersListen';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner, Tabs,
-  type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, humanizeTitle, langAttr, languageName, pluralize,
+  type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, recordingTitle, langAttr, languageName, pluralize,
 } from '../ui';
 import '../styles/pages/library.css';
 
@@ -61,6 +61,21 @@ interface Playback {
 }
 
 const duration = (sec: number | null | undefined) => (sec && sec > 0 ? formatDuration(sec) : '—');
+/** One length, or — when the audio and the video genuinely differ — each format's own ("Listen 7:01 / Watch 7:07"). */
+function rowDuration(it: LibrarySummary, canWatch: boolean, canListen: boolean) {
+  const video = it.duration_sec && it.duration_sec > 0 ? it.duration_sec : null;
+  const audio = it.audio_duration_sec && it.audio_duration_sec > 0 ? it.audio_duration_sec : null;
+  if (canWatch && canListen && video && audio && formatDuration(video) !== formatDuration(audio)) {
+    return (
+      <span className="library-row__durs" data-testid="library-durations">
+        <span data-format="listen">Listen {formatDuration(audio)}</span>
+        <span className="sr-only">, </span>
+        <span data-format="watch">Watch {formatDuration(video)}</span>
+      </span>
+    );
+  }
+  return duration(video ?? audio);
+}
 const styleLabel = (style: string) => style.charAt(0).toUpperCase() + style.slice(1);
 function speakersOf(item: LibrarySummary): string[] {
   const names = item.speaker_names?.filter(Boolean) ?? [];
@@ -392,6 +407,26 @@ export default function PodcastLibraryPage() {
   // The mini-player stays hidden behind any episode dialog (Watch, loading); Listen shows the player itself.
   useSuppressMiniPlayer(!!(selected || loadingId));
 
+  // Listen: initial focus goes to Play (so K / Space work at once), unless focus already moved on (e.g. the format tab).
+  // The radio's DOM is re-parented while the sheet opens (which drops focus), so it is re-checked for about a second.
+  const listeningId = listening ? selected?.job_id : null;
+  useEffect(() => {
+    if (!listeningId) return undefined;
+    let frames = 0;
+    let frame = 0;
+    const focusPlay = () => {
+      const panel = document.querySelector<HTMLElement>('.library-player--podcast[role="dialog"]');
+      const active = document.activeElement;
+      if (!active || active === panel || active === document.body) {
+        const play = panel?.querySelector<HTMLButtonElement>('[data-testid="radio-play"]');
+        if (play && !play.disabled) play.focus();
+      }
+      if (++frames < 60) frame = requestAnimationFrame(focusPlay);
+    };
+    focusPlay();
+    return () => cancelAnimationFrame(frame);
+  }, [listeningId]);
+
   // Watch: one automatic refresh of an expired / failing video link, then "Try again" and "Listen instead".
   const recovery = useVideoRecovery<LibraryItem>({
     jobId: selected && mode === 'watch' ? selected.job_id : null,
@@ -513,7 +548,7 @@ export default function PodcastLibraryPage() {
     }
   }
 
-  const title = selected ? humanizeTitle(selected.title) : '';
+  const title = selected ? recordingTitle(selected.title) : '';
   const titleLang = langAttr(selected?.language);
   const audioOnlySelected = !!selected && isAudioOnly(selected);
   const formatText = audioOnlySelected ? 'Audio only' : showTabs ? 'Video + audio' : 'Video';
@@ -562,14 +597,14 @@ export default function PodcastLibraryPage() {
           <div className="library__count eyebrow">{pluralize(items.length, 'episode')}</div>
           <EpisodeList label="Podcasts" className="library-list">
             {items.map((it, i) => {
-              const rowTitle = humanizeTitle(it.title);
+              const rowTitle = recordingTitle(it.title);
               const speakers = speakersOf(it);
               const audioOnly = isAudioOnly(it);
               const canWatch = hasVideo(it);
               const canListen = hasAudio(it);
               const titleMode: Mode = (listenFirst ? canListen : audioOnly) ? 'listen' : 'watch';
-              // Primary button: on phones every row's title action; on desktop only the first row's.
-              const lead: Mode | null = listenFirst ? titleMode : i === 0 ? (canWatch ? 'watch' : 'listen') : null;
+              // Primary button: the row's preferred action, the same on every row (no row reads as "special").
+              const lead: Mode = listenFirst ? titleMode : canWatch ? 'watch' : 'listen';
               const watchButton = canWatch && (
                 <Button
                   size="sm"
@@ -622,7 +657,7 @@ export default function PodcastLibraryPage() {
                   ]}
                   kind={KIND}
                   hosts={<HostsMini hosts={hostsFor(it)} label={speakers.join(' and ') || undefined} />}
-                  duration={duration(it.duration_sec ?? it.audio_duration_sec)}
+                  duration={rowDuration(it, canWatch, canListen)}
                   extra={it.thumbnail_url
                     ? <img className="library-thumb" src={it.thumbnail_url} alt="" width={THUMB_WIDTH} height={THUMB_HEIGHT} loading="lazy" decoding="async" />
                     : undefined}

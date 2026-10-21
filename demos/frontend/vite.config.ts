@@ -37,6 +37,30 @@ function preloadCriticalFonts(): Plugin {
 }
 
 /**
+ * Build only: the entry stylesheet no longer blocks the first paint. `index.html` carries the branded shell's own styles
+ * inline, so the shell paints from the first byte. `media="print"` keeps the sheet from blocking rendering, but browsers
+ * then fetch it at the lowest priority (Firefox one at a time), so a `preload` restores a high-priority, parallel fetch.
+ * `main.tsx` waits for the sheet and then sets `media="all"` before React renders, so the app never shows unstyled.
+ */
+function nonBlockingEntryCss(): Plugin {
+  return {
+    name: 'oz-non-blocking-entry-css',
+    apply: 'build',
+    transformIndexHtml: {
+      order: 'post',
+      handler(html) {
+        return html.replace(/<link rel="stylesheet"([^>]*)>/g, (tag, attrs: string) => {
+          if (/\bmedia=|data-oz-entry-css/.test(attrs)) return tag;
+          const href = /\bhref="([^"]+)"/.exec(attrs)?.[1];
+          const preload = href ? `<link rel="preload" as="style" crossorigin href="${href}">` : '';
+          return `${preload}<link rel="stylesheet"${attrs} media="print" data-oz-entry-css>`;
+        });
+      },
+    },
+  };
+}
+
+/**
  * Dev server only: a browser that resets a connection (WebKit aborts media requests it loads outside the test mocks) must
  * not crash Vite. Node throws an `error` event that has no listener, and such a reset reaches the client socket as
  * `read ECONNRESET`: every incoming socket gets a listener (Node's own handling of the socket still runs).
@@ -58,7 +82,7 @@ function survivePeerResets(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), preloadCriticalFonts(), survivePeerResets()],
+  plugins: [react(), preloadCriticalFonts(), nonBlockingEntryCss(), survivePeerResets()],
   server: {
     port: 5173,
     // Test servers shared by parallel Playwright runs set OZ_VITE_HMR=off, so an edit never reloads a page under test.
