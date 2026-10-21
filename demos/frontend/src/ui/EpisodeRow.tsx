@@ -16,7 +16,7 @@ import { langAttr, levelLabel, type AudienceLevelValue } from './format';
  * Extra props (e.g. `data-testid`) are applied to the <li>.
  */
 export function EpisodeRow({
-  num, title, to, onOpen, openLabel, meta, kind, hosts, duration, actions, extra, titleProps, className, level, lang, ...rest
+  num, title, to, onOpen, openLabel, meta, kind, kindLead, hosts, duration, actions, extra, titleProps, className, level, lang, ...rest
 }: {
   num?: React.ReactNode;
   title: React.ReactNode;
@@ -27,7 +27,12 @@ export function EpisodeRow({
   /** Accessible label for the title action when the title alone is ambiguous. */
   openLabel?: string;
   meta?: React.ReactNode[];
-  kind?: { icon: LucideIcon; label: string };
+  kind?: { icon: LucideIcon; label: string; tone?: 'clay' | 'ink' };
+  /**
+   * Mixed lists (Home): the format leads the row as a badge above the title, on every viewport, instead of
+   * the desktop-only column. The row then has one cell fewer: its grid template must drop the kind column.
+   */
+  kindLead?: boolean;
   hosts?: React.ReactNode;
   duration?: React.ReactNode;
   actions?: React.ReactNode;
@@ -48,10 +53,16 @@ export function EpisodeRow({
   ) : (
     <span className="episode-row__title" lang={titleLang} {...titleProps}>{title}</span>
   );
+  const kindNode = (
+    <span className={['episode-row__kind', kindLead && 'episode-row__kind--lead'].filter(Boolean).join(' ')} data-tone={kind?.tone}>
+      {KindIcon && <KindIcon aria-hidden />}{kind?.label}
+    </span>
+  );
   return (
     <li className={['episode-row', className].filter(Boolean).join(' ')} {...rest}>
       <span className="episode-row__num" aria-hidden>{num}</span>
       <div className="episode-row__body">
+        {kindLead && kind && kindNode}
         {titleNode}
         {(levelText !== '' || (meta && meta.length > 0)) && (
           <div className="episode-row__meta">
@@ -63,7 +74,7 @@ export function EpisodeRow({
         )}
         {extra && <div className="episode-row__extra">{extra}</div>}
       </div>
-      <span className="episode-row__kind">{KindIcon && <KindIcon aria-hidden />}{kind?.label}</span>
+      {!kindLead && kindNode}
       <span className="episode-row__hosts">{hosts}</span>
       <span className="episode-row__dur">{duration}</span>
       <div className="episode-row__actions">{actions}</div>

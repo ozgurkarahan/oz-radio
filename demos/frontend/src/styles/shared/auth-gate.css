@@ -1,5 +1,7 @@
-/* AuthGate — gate notices, gated panels, publish / live-demo controls. */
-.gate-notice {
+/* AuthGate — gate notices, gated panels, publish / live-demo controls.
+   These rules override .alert / .empty / .btn from components.css, whose CSS is emitted after this file in the
+   production build: every override doubles its selector so it wins by specificity, not by stylesheet order. */
+.alert.gate-notice {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-2) var(--sp-3);
@@ -49,7 +51,7 @@
   font-weight: 400;
 }
 
-.gate-notice--compact {
+.alert.gate-notice--compact {
   padding: var(--sp-2) var(--sp-3);
   font-size: 0.78125rem;
 }
@@ -58,7 +60,7 @@
   flex-basis: auto;
 }
 
-.gated-panel {
+.empty.gated-panel {
   max-width: 720px;
   margin-inline: auto;
   background: var(--c-paper);
@@ -67,13 +69,13 @@
   padding-inline: clamp(var(--sp-4), 4vw, var(--sp-7));
 }
 
-.gated-panel__title {
+.empty__title.gated-panel__title {
   font-size: clamp(1.5rem, 1.25rem + 1vw, 2rem);
   line-height: 1.15;
   text-wrap: balance;
 }
 
-.gated-panel__text {
+.empty__text.gated-panel__text {
   max-width: 560px;
 }
 
@@ -168,8 +170,10 @@
   gap: var(--sp-3);
 }
 
-/* "Back to where you were": the quietest action, still a full-height touch target. */
-.sign-in__back {
+/* "Back to where you were": the quietest action, still a full-height touch target (.btn--link resets min-height). */
+.btn.btn--link.sign-in__back {
+  display: inline-flex;
+  align-items: center;
   min-height: var(--tap);
 }
 

@@ -64,7 +64,7 @@ test.describe('deck page labels (S4)', () => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Loading deck…');
     await expect(eyebrow(page)).toHaveCount(0);
     await expect(page.getByText('Live presentation')).toHaveCount(0);
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText('AI in three minutes · Live demo', { timeout: 15_000 });
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('AI in three minutes', { timeout: 15_000 });
   });
 });
 

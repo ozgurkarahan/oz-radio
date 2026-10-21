@@ -165,7 +165,33 @@
 }
 
 .library-player__screen {
+  position: relative;
   background: var(--c-stage);
+}
+
+/* "Loading video…" over the picture until it has a frame; clicks fall through to the native controls. */
+.library-player__buffering {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  background: color-mix(in srgb, var(--c-stage) 60%, transparent);
+  color: var(--c-on-stage);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+
+.library-player__buffering .spinner {
+  border-color: color-mix(in srgb, var(--c-on-stage) 35%, transparent);
+  border-top-color: var(--c-on-stage);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-player__buffering .spinner {
+    animation-duration: 2.4s;
+  }
 }
 
 .library-player__screen video {
@@ -188,13 +214,24 @@
     height: 100vh;
     height: 100dvh;
     max-height: none;
+    /* A top bar of its own: the 44 px close button (top-right) sits above the video, never over it. */
     padding:
-      env(safe-area-inset-top, 0px)
+      calc(env(safe-area-inset-top, 0px) + var(--tap) + var(--sp-2))
       env(safe-area-inset-right, 0px)
       env(safe-area-inset-bottom, 0px)
       env(safe-area-inset-left, 0px);
     border-radius: 0;
     box-shadow: none;
+  }
+
+  /* Same top bar for the Close button: below the notch, 44 px high, above the video. */
+  .modal__panel.library-player:not(.library-player--podcast) .modal__close {
+    top: calc(env(safe-area-inset-top, 0px) + var(--sp-1));
+  }
+
+  /* The top bar already clears the Close button: no extra room above a fault panel. */
+  .modal__panel.library-player:not(.library-player--podcast) .library-player__problem {
+    padding-top: var(--sp-5);
   }
 }
 

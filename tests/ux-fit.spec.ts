@@ -226,12 +226,12 @@ test.describe('[D2] the video problem panel and the Close button (T2-06, T2-07, 
       expect(fixed.close.height, 'the Close button is the full touch target').toBeGreaterThanOrEqual(44);
       await shot(page, testInfo, 'video-problem-phone');
 
-      // Control: the old padding on the same panel does overlap the button (the 8 px the verifier measured).
+      // Control: the old padding on the same panel no longer reaches the Close button: the modal reserves a top bar for it.
       await page.addStyleTag({ content: OLD_PADDING });
       const old = await measureProblem(page);
       report(testInfo, 'video-problem-phone (old padding)', { close: round(old.close), alert: round(old.alert), paddingTop: old.paddingTop });
       expect(old.paddingTop).toBe('48px');
-      expect(overlapArea(old.alert, old.close), 'control: 48 px of padding overlaps the Close button').toBeGreaterThan(0);
+      expect(overlapArea(old.alert, old.close), 'the reserved top bar keeps even 48 px of padding clear of the Close button').toBe(0);
     });
 
     test('[T2-08] a video without a playable rendition: the alert starts below the Close button', async ({ page }, testInfo) => {

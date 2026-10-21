@@ -2,13 +2,13 @@ import { test, expect as baseExpect, type Locator, type Page } from '@playwright
 import { POD_AUDIO, POD_VIDEO, mockApi, type MockApiOptions } from './support/mock-api';
 
 /**
- * Listen-first episode rows on phones, and listening-progress chips on every device.
+ * Listen-first episode rows (phones and desktop alike), and listening-progress chips on every device.
  *
- * The owner listens with the screen locked (a video stops when an iPhone locks), so on touch
- * phones — `(hover: none) and (pointer: coarse)`, emulated here with `isMobile` + `hasTouch` —
- * an episode row's title opens Listen whenever the episode has audio, Listen is each row's
- * primary (and first) button, and Home links episodes with audio into Listen. Desktop keeps
- * Watch. Every device shows the saved progress (`oz-radio.progress.v1`, src/playback/progress.ts)
+ * The app is a radio, and the owner listens with the screen locked (a video stops when an iPhone locks): on every
+ * device an episode row's title opens Listen whenever the episode has audio, Listen is each row's primary (and
+ * first) button, and Home links episodes with audio into Listen. Watch stays the secondary button (and the lead
+ * of a video-only episode). Phones are `(hover: none) and (pointer: coarse)`, emulated here with `isMobile` +
+ * `hasTouch`. Every device shows the saved progress (`oz-radio.progress.v1`, src/playback/progress.ts)
  * on the rows: "Resume · m:ss left" or "Played". Every /api call is mocked
  * (tests/support/mock-api.ts, `podcastV2`); media are real fixtures served with byte ranges.
  */
@@ -271,44 +271,53 @@ test.describe('Phones lead with Listen', () => {
   }
 });
 
-test.describe('Desktop keeps Watch', () => {
+test.describe('Desktop leads with Listen too', () => {
   test.use(DESKTOP);
 
-  test('the title of a Watch + Listen episode still opens Watch; button styles as before', async ({ page }) => {
+  test('the title of a Watch + Listen episode opens Listen; Watch is the outline alternative', async ({ page }) => {
     const errors = await open(page);
     expect(await page.evaluate(() => matchMedia('(hover: none) and (pointer: coarse)').matches)).toBe(false);
     const row = rowOf(page, VIDEO_TITLE);
-    await expectPlayButtons(row, ['library-watch', 'library-listen']);
-    // Every row has the same variant: the preferred action (Watch, or Listen for an audio-only episode) is primary, the other outline.
-    await expect(row.getByTestId('library-watch')).toHaveClass(/\bbtn--primary\b/);
-    await expect(row.getByTestId('library-listen')).not.toHaveClass(/\bbtn--primary\b/);
+    await expectPlayButtons(row, ['library-listen', 'library-watch']);
+    // Every row with audio has the same variant: Listen is primary, Watch the outline alternative.
+    await expect(row.getByTestId('library-listen')).toHaveClass(/\bbtn--primary\b/);
+    await expect(row.getByTestId('library-watch')).not.toHaveClass(/\bbtn--primary\b/);
     await expect(rowOf(page, AUDIO_TITLE).getByTestId('library-listen')).toHaveClass(/\bbtn--primary\b/);
     await expect(page.getByTestId('library-item').locator('.btn--primary')).toHaveCount(3);
 
     await titleOf(row, VIDEO_TITLE).click();
-    await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
-    await expect(dialog(page)).toHaveAttribute('data-mode', 'watch');
-    await expect(page.getByTestId('library-player')).toHaveAttribute('src', POD_VIDEO.mp4_url!);
-    await expect(radioAudio(page)).toHaveCount(0);
+    await expect(page).toHaveURL(/\?episode=pod-2&mode=listen$/);
+    await expect(dialog(page)).toHaveAttribute('data-mode', 'listen');
+    await expect(radioAudio(page)).toHaveAttribute('src', POD_VIDEO.mp3_url);
+    await expect(page.getByTestId('library-player')).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 
-  test('every row\'s Watch is the primary button (no row is singled out)', async ({ page }) => {
+  test('an episode without audio keeps Watch as its primary button', async ({ page }) => {
     const errors = await open(page, '/podcast/library', { publicAudio: false });
     const first = page.getByTestId('library-item').first();
     await expect(first).toContainText(VIDEO_TITLE);
+    await expectPlayButtons(first, ['library-watch']);
     await expect(first.getByTestId('library-watch')).toHaveClass(/\bbtn--primary\b/);
-    const legacy = rowOf(page, LEGACY_TITLE);
-    await expectPlayButtons(legacy, ['library-watch', 'library-listen']);
-    await expect(legacy.getByTestId('library-watch')).toHaveClass(/\bbtn--primary\b/);
-    await expect(legacy.getByTestId('library-listen')).not.toHaveClass(/\bbtn--primary\b/);
+    await titleOf(first, VIDEO_TITLE).click();
+    await expect(page).toHaveURL(/\?episode=pod-2&mode=watch$/);
     expect(errors).toEqual([]);
   });
 
-  test('Home links keep Watch for video episodes', async ({ page }) => {
+  test('a legacy episode (Watch + Listen buttons) leads with Listen', async ({ page }) => {
+    const errors = await open(page);
+    const legacy = rowOf(page, LEGACY_TITLE);
+    await expectPlayButtons(legacy, ['library-listen', 'library-watch']);
+    await expect(legacy.getByTestId('library-listen')).toHaveClass(/\bbtn--primary\b/);
+    await expect(legacy.getByTestId('library-watch')).not.toHaveClass(/\bbtn--primary\b/);
+    expect(errors).toEqual([]);
+  });
+
+  test('Home links every episode with audio into Listen', async ({ page }) => {
     const errors = await open(page, '/');
-    await expect(page.locator(`a[href="/podcast/library?episode=${POD_VIDEO.job_id}&mode=watch"]`)).toHaveCount(2);
+    await expect(page.locator(`a[href="/podcast/library?episode=${POD_VIDEO.job_id}&mode=listen"]`)).toHaveCount(2);
     await expect(page.locator(`a[href="/podcast/library?episode=${POD_AUDIO.job_id}&mode=listen"]`)).toHaveCount(2);
+    await expect(page.locator(`a[href="/podcast/library?episode=${POD_VIDEO.job_id}&mode=watch"]`)).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 

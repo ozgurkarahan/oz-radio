@@ -262,7 +262,7 @@ test.describe('start flow (C3.1)', () => {
     await open(page);
     await expect(page).toHaveTitle('AI in three minutes · Live demo · Oz Radio');
     await expect(page.locator('.slide-viewer__file')).toHaveCount(0);
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText('AI in three minutes · Live demo');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('AI in three minutes');
     await expect(page.locator('.avatar-rail')).not.toContainText(/azure|voice api|\.pptx/i);
     await expect(page.getByTestId('live-demo-available')).toBeVisible();
   });

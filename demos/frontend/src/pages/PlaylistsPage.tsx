@@ -29,8 +29,8 @@ export default function PlaylistsPage() {
         <h1 className="sr-only">Playlists</h1>
         <GatedPanel
           icon={ListMusic}
-          title="Playlists are limited to demo users"
-          description="Creating, recommending (with AI) and following playlists requires a demo account. Published decks remain browsable without signing in."
+          title="Playlists are for the site owner"
+          description="The owner creates playlists, gets AI recommendations and follows a series of decks. You can start the live demo of a published deck without signing in, or browse the decks and videos."
           action="build and follow playlists"
           links={[{ href: '/decks', label: 'Browse the decks' }, { href: '/video/library', label: 'Browse the video library' }]}
         />

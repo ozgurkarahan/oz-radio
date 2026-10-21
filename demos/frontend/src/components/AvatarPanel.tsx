@@ -24,6 +24,7 @@ import { narrationFor } from '../services/narration';
 import { AvatarPlayback, NarrationRate, rmsDbfs, type Completion, type TurnSnapshot } from '../services/avatarPlayback';
 import { VoiceCapture, micErrorMessage, type CaptureEnd } from '../services/voiceCapture';
 import { trackDemoEnd, trackDemoIce, trackDemoQuestion, trackDemoStage } from '../services/telemetry';
+import { usePlaybackSelector, useSuppressMiniPlayer } from '../playback/PlaybackProvider';
 
 interface Props {
   presentation: Presentation;
@@ -1646,6 +1647,15 @@ export default function AvatarPanel({
     ? '' : status;
   const statusIsError = /^(Error|Connection (failed|closed)|Video connection|WebSocket connection failed|Could not)/.test(statusText);
   const connecting = !connected && (demoConnecting || /^(Connecting|Configuring|Setting up|Starting|Avatar busy)/.test(status));
+  // The live demo owns the stage (starting it pauses an episode, see playback/exclusive.ts), and a parked episode that is
+  // not playing has nothing to offer here: the bar would only cover the rail's own recording link. An episode that has
+  // played on this page keeps its bar for the visit (pausing it there must not make the bar, and its focused Pause
+  // button, vanish); the layout leaves room for it through --mini-player-h.
+  const episodePlaying = usePlaybackSelector((s) => s.playing);
+  const [keepEpisodeBar, setKeepEpisodeBar] = useState(episodePlaying);
+  useEffect(() => { if (episodePlaying) setKeepEpisodeBar(true); }, [episodePlaying]);
+  useSuppressMiniPlayer(isDemo && (connected || demoConnecting || !keepEpisodeBar));
+
   // The server's hard cap starts when the demo socket opens (connection setup
   // included), so the countdown is shown from that moment — not only once the
   // video connects — and rounds up so 0:00 coincides with the cutoff.
@@ -1951,35 +1961,37 @@ export default function AvatarPanel({
                 {coverageText && <p className="avatar-rail__note" data-testid="demo-coverage-note">{coverageText}</p>}
                 {!outcome && (
                   <p className="avatar-rail__note">
-                    {demoQa?.enabled ? 'Narration demo with questions' : 'Narration-only demo'} · up to {formatMinutes(demoSessionSeconds)} · no uploads
+                    {demoQa?.enabled ? 'Ask by voice or text' : 'Narration-only demo'} · up to {formatMinutes(demoSessionSeconds)} · no sign-in
                   </p>
+                )}
+                {!outcome && !demoConnecting && (
+                  <div className="avatar-rail__help" data-testid="demo-prestart-help">
+                    <p className="avatar-rail__note" data-testid="demo-mic-note">
+                      {demoQa?.enabled ? 'Listening needs no microphone.' : 'No microphone needed.'}
+                      {demoQa?.enabled && (
+                        <span className="avatar-rail__note-more"> To ask a question by voice, allow the microphone when your browser asks.</span>
+                      )}
+                    </p>
+                    {preStartRecording && (
+                      <p className="avatar-rail__note">
+                        Prefer a recording?{' '}
+                        <Link className="avatar-rail__help-link" to={preStartRecording.to} data-testid="demo-prestart-recording">
+                          {preStartRecording.watchable ? 'Watch' : 'Listen to'}{' '}
+                          <span lang={langAttr(preStartRecording.language)}>{recordingTitle(preStartRecording.title)}</span>
+                          {preStartRecording.kind === 'video' ? ' with captions' : ''}
+                        </Link>
+                      </p>
+                    )}
+                  </div>
                 )}
                 {statusText && <p className="avatar-rail__status" role="status" data-testid="demo-status">{statusText}</p>}
               </>
             )}
           </div>
-          {!connected && !outcome && !demoConnecting && (
-            <div className="avatar-rail__help" data-testid="demo-prestart-help">
-              <p className="avatar-rail__note" data-testid="demo-mic-note">
-                {demoQa?.enabled
-                  ? 'Listening needs no microphone. To ask a question by voice, allow the microphone when your browser asks.'
-                  : 'No microphone needed.'}
-              </p>
-              {preStartRecording && (
-                <p className="avatar-rail__note">
-                  Prefer a recording?{' '}
-                  <Link className="avatar-rail__help-link" to={preStartRecording.to} data-testid="demo-prestart-recording">
-                    {preStartRecording.watchable ? 'Watch' : 'Listen to'} {recordingTitle(preStartRecording.title)}
-                    {preStartRecording.kind === 'video' ? ' with captions' : ''}
-                  </Link>
-                </p>
-              )}
-            </div>
-          )}
         </>
       ) : !auth.loading && (!canUseAvatar || authBlock) ? (
         <div className="avatar-rail__panel">
-          <GateNotice action="try the live avatar" force={authBlock ?? undefined} />
+          <GateNotice action="present this deck live with the avatar" force={authBlock ?? undefined} />
           {authBlock && auth.is_admin && (
             <div className="avatar-rail__controls">
               <Button

@@ -4,8 +4,8 @@
  * Fixed to the bottom (64 px + the home-indicator inset; full width on phones, 720 px centred
  * on desktop), shown while an episode is loaded and no episode dialog is open. The title
  * area reopens the Now Playing sheet (`/podcast/library?episode=<id>&mode=listen`, pushed
- * with the `OPENED_HERE` history state so closing it returns here); Play/Pause; "Stop and
- * close player" only while paused. Publishes `--mini-player-h` on <html> (the bar height above
+ * with the `OPENED_HERE` history state so closing it returns here); Play/Pause; and "Stop and
+ * close player", always available (playing or paused). Publishes `--mini-player-h` on <html> (the bar height above
  * the inset, "0px" when hidden) for toasts and scroll padding, and renders an in-flow spacer so
  * the page's last content and focused controls are never hidden behind it.
  * Styles: styles/shared/mini-player.css (tokens only).
@@ -127,17 +127,15 @@ export function MiniPlayer() {
             data-testid="mini-player-play"
             onClick={() => { if (playing) pause(); else void play(); }}
           />
-          {!playing && (
-            <Button
-              variant="ghost"
-              iconOnly
-              className="mini-player__stop"
-              icon={X}
-              aria-label="Stop and close player"
-              data-testid="mini-player-stop"
-              onClick={close}
-            />
-          )}
+          <Button
+            variant="ghost"
+            iconOnly
+            className="mini-player__stop"
+            icon={X}
+            aria-label="Stop and close player"
+            data-testid="mini-player-stop"
+            onClick={close}
+          />
         </div>
       </section>
     </>

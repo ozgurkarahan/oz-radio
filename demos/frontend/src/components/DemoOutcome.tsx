@@ -1,10 +1,26 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { AlertCircle, CheckCircle2, Info, MessageCircleQuestionMark, Play, Square } from 'lucide-react';
-import { Button, ButtonLink } from '../ui';
+import { Button, ButtonLink, langAttr } from '../ui';
 import { DEMO_FALLBACK_LINKS, type DemoOutcomeCopy, type Recording } from '../services/demoProtocol';
 import { formatClock } from '../services/demo';
 
 const ICONS = { error: AlertCircle, success: CheckCircle2, info: Info, clay: Info } as const;
+
+/**
+ * "Watch {title} · Français · 3:12" with the title marked in its own language: a French recording title inside an
+ * English button is read in French by a screen reader. Falls back to the plain label when it does not start as expected.
+ */
+function RecordingLabel({ recording }: { recording: Recording }) {
+  const lead = `${recording.watchable ? 'Watch' : 'Listen to'} `;
+  if (!recording.label.startsWith(lead + recording.title)) return <>{recording.label}</>;
+  return (
+    <>
+      {lead}
+      <span lang={langAttr(recording.language)}>{recording.title}</span>
+      {recording.label.slice(lead.length + recording.title.length)}
+    </>
+  );
+}
 
 interface OutcomeProps {
   title: string;
@@ -58,7 +74,7 @@ export default function DemoOutcome({ title, detail, tone, role, kind, recording
         <div className="demo-outcome__actions">
           {recording ? (
             <ButtonLink to={recording.to} variant="primary" icon={Play} data-testid="demo-outcome-recording">
-              {recording.label}
+              <RecordingLabel recording={recording} />
             </ButtonLink>
           ) : (
             DEMO_FALLBACK_LINKS.map((link, i) => (
@@ -135,8 +151,7 @@ export function DemoNarrationDone({ title, secondsLeft, idleSecondsLeft = null, 
           {finishing ? 'Finishing…' : 'Finish demo'}
         </Button>
         {recording && (
-          <ButtonLink to={recording.to} variant="ghost" icon={Play} data-testid="demo-done-recording">{recording.label}</ButtonLink>
-        )}
+          <ButtonLink to={recording.to} variant="ghost" icon={Play}           data-testid="demo-done-recording"><RecordingLabel recording={recording} /></ButtonLink>        )}
       </div>
     </div>
   );

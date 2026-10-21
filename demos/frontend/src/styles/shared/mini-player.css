@@ -169,6 +169,8 @@
 .mini-player .mini-player__stop {
   --btn-h: var(--tap);
   flex: none;
+  /* Extra room from Play/Pause: the destructive action must not be a mis-tap away. */
+  margin-left: var(--sp-3);
   border-color: transparent;
   color: var(--c-on-stage);
 }

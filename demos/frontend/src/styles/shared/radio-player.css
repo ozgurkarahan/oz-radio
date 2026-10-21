@@ -551,19 +551,37 @@
   list-style: none;
 }
 
-.radio-player__cue {
-  display: grid;
-  grid-template-columns: 3.5rem minmax(0, 1fr);
+/* One block per speaker turn: name + start time on top, the turn's cues flowing below as one paragraph. */
+.radio-player__turn {
+  padding: var(--sp-2) var(--sp-1);
+}
+
+.radio-player__turn + .radio-player__turn {
+  border-top: var(--bw) solid var(--rp-line);
+}
+
+.radio-player__turn-head {
+  display: flex;
   align-items: baseline;
   gap: var(--sp-3);
-  width: 100%;
-  min-height: var(--tap);
-  padding: var(--sp-2) var(--sp-3);
-  border: 0;
-  border-radius: var(--r-md);
-  background: none;
-  color: inherit;
-  text-align: left;
+  margin-bottom: var(--sp-1);
+}
+
+.radio-player__turn-text {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.0625rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+/* A cue is a phrase of the paragraph (an inline span: it wraps with the text) that still seeks on click. */
+.radio-player__cue {
+  padding: var(--sp-1) 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
   transition: background-color var(--dur) var(--ease);
 }
 
@@ -575,12 +593,8 @@
   background: var(--rp-active);
 }
 
-.radio-player__cue[aria-current='true'] .radio-player__cue-time {
-  color: var(--rp-accent);
-}
-
 .radio-player .radio-player__cue:focus-visible {
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
 
 .radio-player__cue-time {
@@ -588,13 +602,6 @@
   font-size: var(--fs-xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.radio-player__cue-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
 }
 
 .radio-player__cue-name {
@@ -605,21 +612,14 @@
   text-transform: uppercase;
 }
 
-.radio-player__cue-text {
-  font-family: var(--font-display);
-  font-size: 1.0625rem;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
 /* Backchannels stay subtle: smaller, muted italics. */
-.radio-player__cue--reaction .radio-player__cue-text {
+.radio-player__cue--reaction {
   color: var(--rp-muted);
   font-size: var(--fs-body);
   font-style: italic;
 }
 
-.radio-player__cue--reaction.is-reacting .radio-player__cue-text {
+.radio-player__cue--reaction.is-reacting {
   color: var(--rp-fg);
 }
 

@@ -24,8 +24,7 @@ import {
   LibraryEmpty as PublicEmpty, LibraryListError, LibraryOpenError, actionFailureMessage, describeOpenFailure,
   type OpenFailure,
 } from '../playback/libraryStates';
-import { VideoProblem, VideoReconnecting, useVideoRecovery } from '../playback/videoRecovery';
-import { prefersListen, usePrefersListen } from '../playback/prefersListen';
+import { VideoBuffering, VideoProblem, VideoReconnecting, useVideoBuffering, useVideoRecovery } from '../playback/videoRecovery';
 import {
   Alert, Button, ButtonLink, Chip, EmptyState, EpisodeList, EpisodeRow, HostsMini, Modal, PageHeader, Spinner, Tabs,
   type HostLike, buttonClass, episodeNumber, formatDate, formatDuration, recordingTitle, langAttr, languageName, pluralize,
@@ -104,9 +103,6 @@ function resolveMode(item: LibraryItem, wanted: Mode): Mode {
   return available.includes(wanted) ? wanted : available[0] ?? (isAudioOnly(item) ? 'listen' : 'watch');
 }
 
-// Re-exported for existing importers; the helpers live in playback/prefersListen.ts (no page import from Home).
-export { usePrefersListen };
-
 /** The listener's progress on an episode: "Resume · 1:12 left" (a bookmark) or "Played" (heard to the end). */
 function progressChip(saved: ProgressSnapshot | null) {
   if (!saved) return null;
@@ -179,9 +175,6 @@ export default function PodcastLibraryPage() {
   const radioItem = usePlaybackSelector((s) => s.current?.item ?? null);
   /** The radio could not load the episode: the sheet then offers Watch instead. */
   const radioFailed = usePlaybackSelector((s) => s.radioState === 'error');
-  /** Touch phones: every row leads with Listen (title tap and primary button). */
-  const listenFirst = usePrefersListen();
-
   useLayoutEffect(() => {
     navigateRef.current = navigate;
     selectedRef.current = selected;
@@ -289,7 +282,7 @@ export default function PodcastLibraryPage() {
     activeModeRef.current = null;
     playIntentRef.current = true;
     videoRef.current?.pause();
-    const requested: Mode = wanted ?? (prefersListen() ? 'listen' : 'watch');
+    const requested: Mode = wanted ?? 'listen'; // resolveMode falls back to Watch for an episode without audio
     setPlayback({ mode: requested, start: 0, autoPlay: true });
 
     if (requested === 'listen') {
@@ -433,6 +426,9 @@ export default function PodcastLibraryPage() {
     fetchFresh: refetchEpisode,
     apply: (fresh) => setSelected((prev) => (prev && prev.job_id === fresh.job_id ? fresh : prev)),
   });
+
+  // Watch: the app says so while the video has no frame to show yet (each rendition, refresh or episode starts afresh).
+  const buffering = useVideoBuffering(`${selected?.job_id ?? ''}:${recovery.generation}:${mode}`);
 
   // Keep ?mode= in step with what is shown (fallback rendition, tab switches) without new entries.
   useEffect(() => {
@@ -602,9 +598,9 @@ export default function PodcastLibraryPage() {
               const audioOnly = isAudioOnly(it);
               const canWatch = hasVideo(it);
               const canListen = hasAudio(it);
-              const titleMode: Mode = (listenFirst ? canListen : audioOnly) ? 'listen' : 'watch';
-              // Primary button: the row's preferred action, the same on every row (no row reads as "special").
-              const lead: Mode = listenFirst ? titleMode : canWatch ? 'watch' : 'listen';
+              // Oz Radio: every episode with audio leads with Listen on every device (title and primary button); Watch is the alternative.
+              const titleMode: Mode = canListen ? 'listen' : 'watch';
+              const lead: Mode = titleMode;
               const watchButton = canWatch && (
                 <Button
                   size="sm"
@@ -664,9 +660,8 @@ export default function PodcastLibraryPage() {
                   actions={(
                     <>
                       <span className="library-row__play">
-                        {listenFirst && listenButton}
+                        {listenButton}
                         {watchButton}
-                        {!listenFirst && listenButton}
                       </span>
                       {isAdmin && (
                         <span className="library-row__manage">
@@ -765,6 +760,7 @@ export default function PodcastLibraryPage() {
                       onPause={(e) => onVideoPlayState(false, e.currentTarget)}
                       onTimeUpdate={(e) => recovery.track(e.currentTarget)}
                       onError={recovery.onError}
+                      {...buffering.handlers}
                     >
                       {/* Captions are burned into the picture: the track is there for assistive technology and is never `default`. */}
                       {selected.captions_vtt_url && (
@@ -779,6 +775,7 @@ export default function PodcastLibraryPage() {
                     </video>
                   )}
                   {/* The video stays mounted (hidden) under these: a failed one is replaced by a fresh element on the next refresh. */}
+                  {videoSrc && buffering.active && recovery.fault === null && <VideoBuffering />}
                   {recovery.fault === 'refreshing' && <VideoReconnecting />}
                   {recovery.fault !== 'refreshing' && (!videoSrc || recovery.fault === 'failed') && (
                     <VideoProblem

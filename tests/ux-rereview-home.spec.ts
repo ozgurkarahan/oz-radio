@@ -36,15 +36,18 @@ test.describe('Home rows', () => {
     expect(titles.some((t) => /Demo recording|Démo enregistrée/.test(t))).toBe(true);
   });
 
-  test('[S11] the aside counts episodes (videos + podcasts), not decks', async ({ page }) => {
+  test('[S11] the aside is honest about the list: "Latest 6 of N" (decks, videos and podcasts), never a bare episode count', async ({ page }) => {
     await open(page, '/', { catalog: 'demo' });
-    await expect(page.getByTestId('home-episode').first()).toBeVisible();
-    const expected = await page.evaluate(async () => {
-      const [v, p] = await Promise.all(['/api/video/library', '/api/podcast/library'].map((u) => fetch(u).then((r) => r.json())));
-      return v.length + p.length;
+    const rows = page.getByTestId('home-episode');
+    await expect(rows.first()).toBeVisible();
+    const total = await page.evaluate(async () => {
+      const lists = await Promise.all(['/api/decks', '/api/video/library', '/api/podcast/library'].map((u) => fetch(u).then((r) => r.json())));
+      return lists.reduce((n, l) => n + (Array.isArray(l) ? l : l.items ?? []).length, 0);
     });
-    await expect(page.locator('.section-head, .section-head__aside').filter({ hasText: /episodes?$/ }).first())
-      .toContainText(`${expected} episode`);
+    expect(total).toBeGreaterThan(6);
+    await expect(rows).toHaveCount(6);
+    await expect(page.locator('.section-head').filter({ has: page.locator('#home-episodes') }).locator('.eyebrow'))
+      .toHaveText(`Latest 6 of ${total}`);
   });
 
   test('[S14] one tab stop per row: the play button is hidden from the keyboard and screen readers', async ({ page }) => {

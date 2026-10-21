@@ -65,9 +65,9 @@ export default function VideoPage() {
         ) : (
           <GatedPanel
             icon={Clapperboard}
-            title="Video generation is limited to demo users"
-            description="Generating a video uploads a deck, writes narration with an LLM and renders an AI avatar. You can still watch every published video in the library."
-            action="generate your own avatar video"
+            title="Video generation is for the site owner"
+            description="The owner uploads a deck, writes narration with an LLM and renders an AI avatar video. You can watch every published video in the library without signing in, or start the live demo."
+            action="generate avatar videos"
             links={[{ href: '/video/library', label: 'Browse the video library' }, { href: '/decks', label: 'Browse the decks' }]}
           />
         )}

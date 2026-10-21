@@ -8,7 +8,7 @@
  * (always a fresh fetch — the automatic refresh happens once per open, the button never throttles), and "Listen
  * instead" when the other medium exists. While the re-fetch runs, `VideoReconnecting` says so.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react';
 import { Headphones, RotateCw } from 'lucide-react';
 import { Alert, Button, Spinner } from '../ui';
 
@@ -133,6 +133,53 @@ export function VideoReconnecting() {
   return (
     <div className="library-player__status" data-testid="video-reconnecting">
       <Spinner label="Reconnecting…" />
+    </div>
+  );
+}
+
+/**
+ * Whether a <video> has no frame to show yet: from the start of its load until `loadeddata` / `canplay` / `playing`,
+ * and again during a `waiting` stall. `key` identifies the element on screen (item, refresh generation, rendition):
+ * a new key starts as "buffering" again. A paused element that is not about to autoplay is idle, not loading (a browser
+ * may fetch nothing until Play: `preload=none`, data saver, iOS), so it never keeps the status on screen. Errors are not
+ * handled here — the page hides the status while `useVideoRecovery` has a fault.
+ */
+export function useVideoBuffering(key: string) {
+  const [state, setState] = useState({ key, active: true });
+  const active = state.key === key ? state.active : true;
+  const handlers = useMemo(() => {
+    const set = (next: boolean) => () => setState({ key, active: next });
+    const idleIfPaused = (event: SyntheticEvent<HTMLVideoElement>) => {
+      const video = event.currentTarget;
+      if (video.paused && !video.autoplay) setState({ key, active: false });
+    };
+    // Capture-phase names: the pages already use onPlay / onPause / onLoadedMetadata on the same <video>.
+    return {
+      onLoadStart: set(true),
+      onWaiting: set(true),
+      onPlayCapture: (event: SyntheticEvent<HTMLVideoElement>) => {
+        if (event.currentTarget.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) setState({ key, active: true });
+      },
+      onLoadedMetadataCapture: idleIfPaused,
+      onSuspend: idleIfPaused,
+      onPauseCapture: set(false),
+      onLoadedData: set(false),
+      onCanPlay: set(false),
+      onPlaying: set(false),
+    };
+  }, [key]);
+  return { active, handlers };
+}
+
+/**
+ * "Loading video…" over the video until it can show a frame. Decorative for pointers (the native controls stay usable);
+ * announced politely to assistive technology.
+ */
+export function VideoBuffering() {
+  return (
+    <div className="library-player__buffering" role="status" aria-live="polite" data-testid="video-buffering">
+      <span className="spinner" aria-hidden />
+      <span>Loading video…</span>
     </div>
   );
 }

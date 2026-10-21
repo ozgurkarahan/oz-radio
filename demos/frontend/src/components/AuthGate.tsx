@@ -203,7 +203,8 @@ function linkIcon(href: string): LucideIcon {
 
 /**
  * Inline notice shown in place of an admin-only control.
- * - anonymous → "Sign in to {action}" + the text link "Owner sign-in" (a filled button would invite visitors who cannot sign in)
+ * - anonymous → "Owner tools need sign-in: {action}" + the text link "Owner sign-in". Visitors can already try the product
+ *   (live demo, listening, watching), so the notice never invites them to sign in; a filled button would too
  * - signed in but not allowlisted → "Your account isn't enabled for this demo."
  */
 export function GateNotice({ action, compact = false, style, force, className }: {
@@ -226,7 +227,7 @@ export function GateNotice({ action, compact = false, style, force, className }:
     >
       <Icon aria-hidden className="gate-notice__icon" />
       <span className="gate-notice__text">
-        {forbidden ? NOT_ENABLED_MESSAGE : `Sign in to ${action}`}
+        {forbidden ? NOT_ENABLED_MESSAGE : `Owner tools need sign-in: ${action}`}
       </span>
       {!forbidden && auth.auth_mode !== 'disabled' && (
         <span className="gate-notice__aside">
