@@ -327,7 +327,7 @@ test.describe('demo availability on Home', () => {
   test('the first viewport names what is free, with no "Upload once, ask anything" promise', async ({ page }) => {
     await open(page, '/', { boot: {} });
     await expect(page.locator('.home-hero .lead')).toHaveText(
-      'AI hosts explain slide decks and discuss them as podcasts. Listen, watch, or try the live demo — free, no sign-in.',
+      'An AI presenter for any deck: it presents live and answers spoken questions, and makes narrated videos and two-host podcasts, in more than ten languages. Listen, watch, or try the live demo — free, no sign-in.',
     );
     await expect(page.locator('.home-hero')).not.toContainText(/upload once|ask anything/i);
   });

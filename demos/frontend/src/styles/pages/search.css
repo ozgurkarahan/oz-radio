@@ -18,6 +18,7 @@
   padding: 0 var(--sp-4);
   border-radius: var(--r-lg);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: clamp(1.25rem, 1rem + 1vw, 1.75rem);
   letter-spacing: -0.01em;
 }
@@ -61,18 +62,19 @@
   min-height: 36px;
   padding: 0 var(--sp-4);
   border: var(--bw) solid var(--c-line-strong);
-  border-radius: var(--r-pill);
-  background: var(--c-paper);
-  color: var(--c-ink-2);
+  border-radius: var(--r-control);
+  background: var(--c-surface);
+  color: var(--c-muted);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1rem;
   font-style: italic;
   transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .search-example:hover {
-  border-color: var(--c-clay);
-  color: var(--c-clay-ink);
+  border-color: var(--c-brand);
+  color: var(--c-brand);
 }
 
 .search-example:focus-visible {
@@ -96,6 +98,7 @@
 
 .search-result__num {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.625rem;
   line-height: 1.2;
   color: var(--c-muted);
@@ -110,10 +113,11 @@
 }
 
 .search-result__source {
+  font-family: var(--font-mono);
   display: flex;
   flex-wrap: wrap;
   gap: 2px 8px;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: var(--tracking-eyebrow);
@@ -134,8 +138,9 @@
   max-width: var(--maxw-text);
   padding-left: var(--sp-4);
   border-left: var(--bw) solid var(--c-line-strong);
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.125rem;
   font-style: italic;
   line-height: 1.5;

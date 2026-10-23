@@ -354,7 +354,7 @@ export function LiveDemoBadge({ liveDemo }: { liveDemo: boolean | undefined }) {
   return (
     <Chip
       data-testid="live-demo-badge"
-      tone="clay"
+      tone="live"
       icon={Radio}
       title="Visitors can try the live avatar narrating this deck"
     >

@@ -111,7 +111,7 @@
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-sm);
   /* Token-coloured box while the image loads (never a blank white tile). */
-  background: var(--c-sand);
+  background: var(--c-tint);
 }
 
 .library-row--thumb .episode-row__body {
@@ -156,17 +156,17 @@
   display: flex;
   flex-direction: column;
   /* .modal__panel's light background otherwise wins over .stage. */
-  background: var(--c-stage);
-  color: var(--c-on-stage);
+  background: var(--c-deep);
+  color: var(--c-on-deep);
 }
 
 .library-player .modal__close {
-  background: color-mix(in srgb, var(--c-stage) 55%, transparent);
+  background: color-mix(in srgb, var(--c-deep) 55%, transparent);
 }
 
 .library-player__screen {
   position: relative;
-  background: var(--c-stage);
+  background: var(--c-deep);
 }
 
 /* "Loading video…" over the picture until it has a frame; clicks fall through to the native controls. */
@@ -177,15 +177,15 @@
   align-items: center;
   justify-content: center;
   gap: var(--sp-3);
-  background: color-mix(in srgb, var(--c-stage) 60%, transparent);
-  color: var(--c-on-stage);
+  background: color-mix(in srgb, var(--c-deep) 60%, transparent);
+  color: var(--c-on-deep);
   font-size: var(--fs-sm);
   pointer-events: none;
 }
 
 .library-player__buffering .spinner {
-  border-color: color-mix(in srgb, var(--c-on-stage) 35%, transparent);
-  border-top-color: var(--c-on-stage);
+  border-color: color-mix(in srgb, var(--c-on-deep) 35%, transparent);
+  border-top-color: var(--c-on-deep);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -198,7 +198,7 @@
   display: block;
   width: 100%;
   max-height: 70vh;
-  background: var(--c-stage);
+  background: var(--c-deep);
 }
 
 /* Portrait phones: the video takes the whole width with no height cap (its burned-in text is small), and the video dialog goes full-bleed like the podcast sheet. */
@@ -245,7 +245,7 @@
   place-items: center;
   min-height: 240px;
   padding: var(--sp-8) var(--sp-5);
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
   text-align: center;
 }
 
@@ -299,14 +299,14 @@
   flex-direction: column;
   gap: var(--sp-2);
   padding: var(--sp-5) var(--sp-6) var(--sp-6);
-  border-top: var(--bw) solid color-mix(in srgb, var(--c-on-stage) 14%, transparent);
+  border-top: var(--bw) solid color-mix(in srgb, var(--c-on-deep) 14%, transparent);
 }
 
 .library-player__eyebrow {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
   opacity: 0.7;
 }
 
@@ -321,13 +321,13 @@
   font-size: var(--fs-h2);
   font-weight: 400;
   line-height: 1.1;
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
   overflow-wrap: anywhere;
 }
 
 .library-player__source {
   margin: 0;
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
   opacity: 0.75;
   font-size: var(--fs-sm);
 }
@@ -337,7 +337,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 4px var(--sp-4);
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
   opacity: 0.72;
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
@@ -354,22 +354,22 @@
 .library-player__problem-actions .btn:not(.btn--primary),
 .library-player__instead .btn:not(.btn--primary) {
   background: transparent;
-  border-color: color-mix(in srgb, var(--c-on-stage) 35%, transparent);
-  color: var(--c-on-stage);
+  border-color: color-mix(in srgb, var(--c-on-deep) 35%, transparent);
+  color: var(--c-on-deep);
 }
 
 .library-player__downloads .btn:not(.btn--primary):hover,
 .library-player__problem-actions .btn:not(.btn--primary):hover,
 .library-player__instead .btn:not(.btn--primary):hover {
-  background: var(--c-on-stage);
-  border-color: var(--c-on-stage);
-  color: var(--c-stage);
+  background: var(--c-on-deep);
+  border-color: var(--c-on-deep);
+  color: var(--c-deep);
 }
 
 .library-player__downloads .btn:focus-visible,
 .library-player__problem-actions .btn:focus-visible,
 .library-player__instead .btn:focus-visible {
-  outline-color: var(--c-on-stage);
+  outline-color: var(--c-on-deep);
 }
 
 @media (max-width: 640px) {
@@ -411,13 +411,13 @@
 /* Audio-only covers are square: show them whole on the stage colour. */
 .library--podcast .library-row--audio .library-thumb {
   object-fit: contain;
-  background: var(--c-stage);
+  background: var(--c-deep);
 }
 
 .library-player--podcast .library-player__formats {
   /* Right padding keeps the modal close button clear. */
   padding: var(--sp-2) var(--sp-8) 0 var(--sp-6);
-  border-bottom: var(--bw) solid color-mix(in srgb, var(--c-on-stage) 14%, transparent);
+  border-bottom: var(--bw) solid color-mix(in srgb, var(--c-on-deep) 14%, transparent);
 }
 
 .library-player--podcast .library-player__formats .tabs {
@@ -428,7 +428,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  color: color-mix(in srgb, var(--c-on-stage) 72%, transparent);
+  color: color-mix(in srgb, var(--c-on-deep) 72%, transparent);
   transition: color var(--dur) var(--ease);
 }
 
@@ -440,11 +440,11 @@
 
 .library-player--podcast .library-player__formats .tabs__tab:hover,
 .library-player--podcast .library-player__formats .tabs__tab[aria-selected='true'] {
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
 }
 
 .library-player--podcast .library-player__formats .tabs__tab:focus-visible {
-  outline-color: var(--c-on-stage);
+  outline-color: var(--c-on-deep);
 }
 
 @media (max-width: 960px) {
@@ -529,7 +529,7 @@
     top: 0;
     z-index: 2;
     padding: var(--sp-1) var(--sp-4) 0 calc(var(--tap) + var(--sp-4));
-    background: var(--c-stage);
+    background: var(--c-deep);
   }
 
   /* No tabs (audio only, loading): a top bar of its own for the minimise button. */
@@ -551,8 +551,8 @@
     gap: var(--sp-3);
     margin-inline: calc(-1 * var(--rp-pad-x));
     padding: var(--sp-3) var(--rp-pad-x) var(--sp-3);
-    border-top: var(--bw) solid color-mix(in srgb, var(--c-on-stage) 14%, transparent);
-    background: var(--c-stage);
+    border-top: var(--bw) solid color-mix(in srgb, var(--c-on-deep) 14%, transparent);
+    background: var(--c-deep);
   }
 
   .library-player--podcast .radio-player .radio-player__play {
@@ -667,5 +667,18 @@
 @media (forced-colors: active) {
   .library-player--podcast .radio-player__dock {
     border-top: 1px solid CanvasText;
+  }
+}
+
+/* "Resume · 0:18 left" is a short sentence, not a label: set in Public Sans so it fits a 320 px row beside the duration. */
+.library-row__progress {
+  font-family: var(--font-ui);
+  font-weight: 600;
+}
+
+/* On the narrowest phones the progress chip drops its icon, so "Resume · 0:18 left" wraps inside the meta column. */
+@media (max-width: 360px) {
+  .library-row .library-row__progress svg {
+    display: none;
   }
 }

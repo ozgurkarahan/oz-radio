@@ -5,8 +5,8 @@
   z-index: 50;
   /* viewport-fit=cover: the bar fills the status-bar strip; the left/right insets come from .container. */
   padding-top: env(safe-area-inset-top, 0px);
-  background: var(--c-bg);
-  border-bottom: var(--bw) solid var(--c-rule);
+  background: var(--c-canvas);
+  border-bottom: var(--bw) solid var(--c-line);
 }
 
 .masthead__inner {
@@ -18,17 +18,19 @@
 
 .masthead__brand {
   font-family: var(--font-display);
-  font-size: 1.875rem;
+  font-size: 1.75rem;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: var(--c-ink);
   text-decoration: none;
   white-space: nowrap;
 }
 
+/* The wordmark's "Radio": upright brand indigo (emphasis is never italic in this brand). */
 .masthead__brand em {
-  font-style: italic;
-  color: var(--c-clay-ink);
+  font-style: normal;
+  color: var(--c-brand);
 }
 
 .masthead__brand:hover {
@@ -50,7 +52,7 @@
   padding: 0 10px;
   border: 0;
   background: none;
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: 0.90625rem;
   font-weight: 500;
   text-decoration: none;
@@ -113,7 +115,7 @@
   align-items: center;
   min-height: 40px;
   padding: 0 4px;
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: var(--fs-sm);
   font-weight: 600;
   text-decoration: underline;
@@ -123,7 +125,7 @@
 }
 
 .masthead__signin:hover {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 @media (pointer: coarse) {
@@ -138,7 +140,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--fs-sm);
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .masthead .masthead__menu-btn {
@@ -174,8 +176,8 @@
       max(var(--gutter), env(safe-area-inset-left, 0px));
     scroll-padding-bottom: calc(var(--mini-player-h, 0px) + env(safe-area-inset-bottom, 0px));
     overflow-y: auto;
-    background: var(--c-bg);
-    border-top: var(--bw) solid var(--c-rule);
+    background: var(--c-canvas);
+    border-top: var(--bw) solid var(--c-line);
     animation: ozradio-sheet var(--dur-slow) var(--ease);
   }
 }
@@ -240,12 +242,13 @@
   border-bottom: var(--bw) solid var(--c-line);
   color: var(--c-ink);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.625rem;
   text-decoration: none;
 }
 
 .sheet__link small {
-  font-family: var(--font-ui);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
@@ -253,7 +256,7 @@
 }
 
 .sheet__link[aria-current='page'] {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 @media (max-width: 480px) {
@@ -262,7 +265,7 @@
   }
 
   .masthead__brand {
-    font-size: 1.625rem;
+    font-size: 1.5rem;
   }
 }
 
@@ -272,4 +275,81 @@
   margin: var(--sp-8) auto;
   padding: 0 var(--gutter);
   text-align: center;
+}
+
+/* ---------- Brand touch: the site kicker and footer (ozgurkarahan.com) ---------- */
+/* "01 · Voice": the block marker and kicker of ozgurkarahan.com, a ≥ 44 px link back to that building block. */
+.layer-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  align-self: flex-start;
+  min-height: var(--tap);
+  color: var(--c-brand);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.layer-kicker:hover {
+  color: var(--c-brand);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* Five 5 px bars, 3 px apart: bar n is brand, the rest line. */
+.layer-marker {
+  display: inline-grid;
+  gap: 3px;
+  width: 1.75rem;
+}
+
+.layer-marker i {
+  display: block;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--c-line);
+}
+
+.layer-marker[data-layer='1'] i:nth-child(1),
+.layer-marker[data-layer='2'] i:nth-child(2),
+.layer-marker[data-layer='3'] i:nth-child(3),
+.layer-marker[data-layer='4'] i:nth-child(4),
+.layer-marker[data-layer='5'] i:nth-child(5) {
+  background: var(--c-brand);
+}
+
+.site-footer {
+  border-top: var(--bw) solid var(--c-line);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.site-footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-5);
+  padding-block: var(--sp-4);
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
+}
+
+.site-footer__link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  color: var(--c-brand);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.site-footer__link:hover {
+  color: var(--c-ink);
+  text-decoration-thickness: 2px;
 }

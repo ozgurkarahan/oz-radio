@@ -727,11 +727,11 @@ test.describe('Language and level', () => {
     const style = await chip.evaluate((el) => {
       const s = getComputedStyle(el);
       const root = getComputedStyle(document.documentElement);
-      return { color: s.color, bg: s.backgroundColor, border: s.borderTopColor, sage: root.getPropertyValue('--c-sage').trim() };
+      return { color: s.color, bg: s.backgroundColor, border: s.borderTopColor, sage: root.getPropertyValue('--c-brand-mid').trim() };
     });
     expect(style.bg === 'rgba(0, 0, 0, 0)' || style.bg === 'transparent').toBe(true); // an outline chip, not another filled pill
     expect(style.color).toBe(style.border);
-    expect(contrast(style.color, 'rgb(246, 241, 232)'), 'level chip text on the page background').toBeGreaterThanOrEqual(4.5);
+    expect(contrast(style.color, 'rgb(248, 248, 251)'), 'level chip text on the page background').toBeGreaterThanOrEqual(4.5);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     expect(errors).toEqual([]);
   });

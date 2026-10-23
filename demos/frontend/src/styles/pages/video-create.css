@@ -26,9 +26,10 @@
 
 .video-panel__num {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: var(--fs-h3);
   line-height: 1;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .video-panel__title {
@@ -67,7 +68,7 @@
   align-items: center;
   gap: var(--sp-4);
   padding: var(--sp-4);
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
   min-width: 0;
@@ -80,8 +81,8 @@
   height: var(--tap);
   flex: none;
   border-radius: 50%;
-  background: var(--c-clay-50);
-  color: var(--c-clay-ink);
+  background: var(--c-brand-soft);
+  color: var(--c-brand);
 }
 
 .video-doc__icon svg {
@@ -119,7 +120,7 @@
 .video-strip__item {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: var(--c-surface);
+  background: var(--c-slide);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-xs);
   overflow: hidden;
@@ -146,8 +147,8 @@
   bottom: 4px;
   min-width: 20px;
   padding: 0 5px;
-  border-radius: var(--r-pill);
-  background: var(--c-paper);
+  border-radius: var(--r-control);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   color: var(--c-ink);
   font-size: 10.5px;
@@ -186,7 +187,7 @@
   min-height: var(--tap);
   padding: var(--sp-3);
   text-align: left;
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
   color: var(--c-ink);
@@ -199,8 +200,8 @@
 }
 
 .video-prompts__item.is-active {
-  border-color: var(--c-clay);
-  background: var(--c-clay-50);
+  border-color: var(--c-brand);
+  background: var(--c-brand-soft);
 }
 
 .video-prompts__title {
@@ -215,7 +216,7 @@
   width: 16px;
   height: 16px;
   flex: none;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .video-prompts__text {
@@ -249,6 +250,7 @@
 
 .video-narrations__num {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.5rem;
   line-height: 1.1;
   color: var(--c-muted);
@@ -269,7 +271,7 @@
 }
 
 .video-narrations__text {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   max-width: var(--maxw-text);
 }
 
@@ -325,29 +327,30 @@
 }
 
 .video-review__item:hover {
-  background: var(--c-paper);
+  background: var(--c-surface);
 }
 
 .video-review__item.is-active {
-  background: var(--c-clay-50);
+  background: var(--c-brand-soft);
 }
 
 .video-review__num {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.125rem;
   color: var(--c-muted);
   text-align: center;
 }
 
 .video-review__item.is-active .video-review__num {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .video-review__thumb {
   display: grid;
   place-items: center;
   aspect-ratio: 16 / 9;
-  background: var(--c-surface);
+  background: var(--c-slide);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-xs);
   overflow: hidden;
@@ -375,6 +378,7 @@
 
 .video-review__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.0625rem;
   line-height: 1.25;
   overflow: hidden;
@@ -391,7 +395,7 @@
 }
 
 .video-review__state.is-done {
-  color: var(--c-sage);
+  color: var(--c-brand-mid);
 }
 
 .video-review__state svg {
@@ -448,14 +452,14 @@
   flex-direction: column;
   gap: var(--sp-1);
   padding: var(--sp-4) var(--sp-5);
-  background: var(--c-info-50);
+  background: var(--c-brand-soft);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
 }
 
 .video-render__stage.is-done {
-  background: var(--c-sage-50);
-  border-color: var(--c-sage);
+  background: var(--c-brand-soft);
+  border-color: var(--c-brand-mid);
 }
 
 .video-render__stage.is-failed {
@@ -465,6 +469,7 @@
 
 .video-render__message {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.25rem;
   line-height: var(--lh-snug);
 }
@@ -483,8 +488,8 @@
   height: 32px;
   align-self: center;
   border-radius: 50%;
-  background: var(--c-sage);
-  color: var(--c-on-clay);
+  background: var(--c-brand-mid);
+  color: var(--c-on-brand);
 }
 
 .video-done__badge svg {
@@ -493,7 +498,7 @@
 }
 
 .video-done__lead {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   max-width: var(--maxw-text);
 }
 

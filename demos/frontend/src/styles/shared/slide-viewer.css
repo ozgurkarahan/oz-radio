@@ -22,13 +22,13 @@
 }
 
 .slide-viewer__screen--video {
-  background: var(--c-stage);
+  background: var(--c-deep);
 }
 
 /* The picture takes a moment to arrive: the frame reads as loading (same 16:9 box), not as a blank white slide. */
 .slide-viewer__screen--image.is-loading {
   background:
-    linear-gradient(100deg, transparent 30%, var(--c-paper) 50%, transparent 70%) 0 0 / 200% 100% no-repeat,
+    linear-gradient(100deg, transparent 30%, var(--c-surface) 50%, transparent 70%) 0 0 / 200% 100% no-repeat,
     var(--c-line);
   animation: slide-skeleton 1.4s linear infinite;
 }
@@ -104,8 +104,9 @@
 }
 
 .slide-viewer__notes-text {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.0625rem;
   line-height: 1.55;
   white-space: pre-wrap;

@@ -6,6 +6,7 @@ import { Headphones, Layers, Play } from 'lucide-react';
 import HomePage from './pages/HomePage';
 import TopNav from './components/TopNav';
 import AuthToast from './components/AuthToast';
+import SiteFooter from './components/SiteFooter';
 import ErrorBoundary, { liveDemoHref } from './components/ErrorBoundary';
 import { AuthProvider, installAuthErrorInterceptor } from './services/auth';
 import { initTelemetry } from './services/telemetry';
@@ -214,6 +215,7 @@ entryCssReady().then(() => ReactDOM.createRoot(rootElement).render(
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </RoutedContent>
+            <SiteFooter />
             <MiniPlayer />
           </PlaybackProvider>
         </BrowserRouter>

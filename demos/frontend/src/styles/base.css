@@ -20,7 +20,7 @@ html {
 body {
   min-height: 100vh;
   min-height: 100dvh;
-  background: var(--c-bg);
+  background: var(--c-canvas);
   color: var(--c-ink);
   font-family: var(--font-ui);
   font-size: var(--fs-body);
@@ -59,20 +59,23 @@ h2,
 h3,
 h4 {
   font-family: var(--font-display);
-  font-weight: 400;
+  font-weight: 600;
   line-height: var(--lh-snug);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   text-wrap: balance;
 }
 
 h1 {
   font-size: var(--fs-h1);
-  line-height: 1.04;
-  letter-spacing: -0.02em;
+  font-weight: 700;
+  line-height: 1.06;
+  letter-spacing: var(--tracking-display);
 }
 
 h2 {
   font-size: var(--fs-h2);
+  font-weight: 700;
+  letter-spacing: var(--tracking-display);
 }
 
 h3 {
@@ -90,18 +93,19 @@ a {
 }
 
 a:hover {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
+  text-decoration-thickness: 2px;
 }
 
 ::selection {
-  background: var(--c-clay-50);
+  background: var(--c-brand-soft);
   color: var(--c-ink);
 }
 
 :focus-visible {
-  outline: 2px solid var(--c-focus);
+  outline: 3px solid var(--c-focus);
   outline-offset: 3px;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
 }
 
 #root {
@@ -109,6 +113,12 @@ a:hover {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
+}
+
+/* The main area fills the viewport under the masthead, so the site footer always starts below the fold. */
+#main {
+  min-height: calc(100vh - var(--masthead-h) - var(--bw) - env(safe-area-inset-top, 0px));
+  min-height: calc(100dvh - var(--masthead-h) - var(--bw) - env(safe-area-inset-top, 0px));
 }
 
 /* Layout helpers */
@@ -150,34 +160,37 @@ a:hover {
 /* Type helpers */
 .serif {
   font-family: var(--font-display);
+  font-weight: 600;
 }
 
 .display {
   font-family: var(--font-display);
   font-size: var(--fs-display);
-  line-height: 0.98;
-  letter-spacing: -0.02em;
-  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: var(--tracking-display);
+  font-weight: 700;
 }
 
+/* Emphasis in a heading is upright brand indigo, never italic (the brand's heading rule). */
 .display em,
 h1 em,
 h2 em {
-  font-style: italic;
-  color: var(--c-clay-ink);
+  font-style: normal;
+  color: var(--c-brand);
 }
 
 .lead {
   font-size: var(--fs-lead);
   line-height: var(--lh-body);
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   max-width: var(--maxw-text);
 }
 
+/* Labels and numbers are IBM Plex Mono, uppercase and tracked (the site's kicker and chip voice). */
 .eyebrow {
-  font-family: var(--font-ui);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
   color: var(--c-muted);
@@ -185,6 +198,7 @@ h2 em {
 
 /* An eyebrow that is a sentence rather than a label (PageHeader sets it): sentence case, no tracking. */
 .eyebrow--sentence {
+  font-family: var(--font-ui);
   font-size: var(--fs-sm);
   font-weight: 500;
   letter-spacing: normal;
@@ -221,9 +235,9 @@ h2 em {
   top: -100px;
   z-index: 100;
   background: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
   padding: var(--sp-2) var(--sp-4);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-control);
 }
 
 .skip-link:focus {

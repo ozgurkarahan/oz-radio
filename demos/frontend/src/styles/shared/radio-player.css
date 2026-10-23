@@ -25,34 +25,34 @@
 }
 
 .radio-player--light {
-  --rp-bg: var(--c-paper);
+  --rp-bg: var(--c-surface);
   --rp-fg: var(--c-ink);
   --rp-muted: var(--c-muted);
   --rp-line: var(--c-line);
-  --rp-surface: var(--c-bg);
+  --rp-surface: var(--c-canvas);
   --rp-bar: color-mix(in srgb, var(--c-ink) 22%, transparent);
-  --rp-bar-played: var(--c-clay);
+  --rp-bar-played: var(--c-brand);
   --rp-head: var(--c-ink);
-  --rp-accent: var(--c-clay-ink);
-  --rp-active: color-mix(in srgb, var(--c-clay) 12%, transparent);
+  --rp-accent: var(--c-brand);
+  --rp-active: color-mix(in srgb, var(--c-brand) 12%, transparent);
   --rp-focus: var(--c-focus);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-lg);
 }
 
 .radio-player--stage {
-  --rp-bg: var(--c-stage);
-  --rp-fg: var(--c-on-stage);
-  --rp-muted: color-mix(in srgb, var(--c-on-stage) 72%, transparent);
-  --rp-line: color-mix(in srgb, var(--c-on-stage) 16%, transparent);
-  --rp-surface: color-mix(in srgb, var(--c-on-stage) 7%, transparent);
-  --rp-bar: color-mix(in srgb, var(--c-on-stage) 30%, transparent);
-  --rp-bar-played: var(--c-clay);
-  --rp-head: var(--c-on-stage);
-  /* Clay text is too dark on the stage: lift it towards the on-stage colour (≈ 6.8:1). */
-  --rp-accent: color-mix(in srgb, var(--c-clay) 55%, var(--c-on-stage));
-  --rp-active: color-mix(in srgb, var(--c-clay) 22%, transparent);
-  --rp-focus: var(--c-on-stage);
+  --rp-bg: var(--c-deep);
+  --rp-fg: var(--c-on-deep);
+  --rp-muted: color-mix(in srgb, var(--c-on-deep) 72%, transparent);
+  --rp-line: color-mix(in srgb, var(--c-on-deep) 16%, transparent);
+  --rp-surface: color-mix(in srgb, var(--c-on-deep) 7%, transparent);
+  --rp-bar: color-mix(in srgb, var(--c-on-deep) 30%, transparent);
+  --rp-bar-played: var(--c-brand-on-deep);
+  --rp-head: var(--c-on-deep);
+  /* Brand indigo is too dark on the deep field: its light tint is 7.9:1 there. */
+  --rp-accent: var(--c-brand-on-deep);
+  --rp-active: color-mix(in srgb, var(--c-brand-on-deep) 22%, transparent);
+  --rp-focus: var(--c-on-deep);
   color-scheme: dark;
 }
 
@@ -76,7 +76,7 @@
   aspect-ratio: 1 / 1;
   overflow: hidden;
   border-radius: var(--r-lg);
-  background: var(--c-sand);
+  background: var(--c-tint);
   box-shadow: var(--shadow-media);
 }
 
@@ -95,8 +95,8 @@
   justify-content: center;
   gap: var(--sp-3);
   background:
-    repeating-radial-gradient(circle at 50% 42%, transparent 0 13px, color-mix(in srgb, var(--c-clay) 14%, transparent) 13px 14px),
-    var(--c-sand);
+    repeating-radial-gradient(circle at 50% 42%, transparent 0 13px, color-mix(in srgb, var(--c-brand) 14%, transparent) 13px 14px),
+    var(--c-tint);
 }
 
 .radio-player__placeholder-mark {
@@ -105,9 +105,9 @@
   width: 42%;
   aspect-ratio: 1 / 1;
   border-radius: 50%;
-  background: var(--c-paper);
-  color: var(--c-clay-ink);
-  box-shadow: 0 0 0 6px color-mix(in srgb, var(--c-clay) 18%, transparent);
+  background: var(--c-surface);
+  color: var(--c-brand);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--c-brand) 18%, transparent);
 }
 
 .radio-player__placeholder-mark svg {
@@ -117,10 +117,11 @@
 
 .radio-player__placeholder-brand {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.125rem;
   font-style: italic;
   line-height: 1;
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .radio-player__meta {
@@ -171,6 +172,7 @@
 
 .radio-player__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: clamp(1.5rem, 1.2rem + 1vw, 2.125rem);
   line-height: 1.1;
   letter-spacing: -0.01em;
@@ -200,8 +202,8 @@
 /* Backchannel ("mm-hmm"): a brief warm glow around the listening host. */
 .radio-player__host.is-reacting .host-disc__face {
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--c-clay) 35%, transparent),
-    0 0 22px 6px color-mix(in srgb, var(--c-clay) 45%, transparent);
+    0 0 0 3px color-mix(in srgb, var(--rp-bar-played) 35%, transparent),
+    0 0 22px 6px color-mix(in srgb, var(--rp-bar-played) 45%, transparent);
 }
 
 .radio-player__host-text {
@@ -215,6 +217,7 @@
   align-items: center;
   gap: 6px;
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.25rem;
   line-height: 1.15;
   overflow-wrap: anywhere;
@@ -231,6 +234,7 @@
 }
 
 .radio-player__host-role {
+  font-family: var(--font-mono);
   color: var(--rp-muted);
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -271,13 +275,14 @@
   border-radius: var(--r-md);
   background: var(--rp-surface);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.1875rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
 .radio-player__caption-name {
-  font-family: var(--font-ui);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: var(--tracking-eyebrow);
@@ -433,7 +438,7 @@
 
 /* Autoplay was refused: point at the play button (static ring, no pulse). */
 .radio-player__play.is-attention {
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--c-clay) 35%, transparent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--rp-bar-played, var(--c-brand)) 35%, transparent);
 }
 
 .radio-player__speed {
@@ -477,15 +482,15 @@
 
 /* Stage tone: light controls on the dark panel. */
 .radio-player--stage .btn:where(:not(.btn--primary, .btn--link)) {
-  border-color: color-mix(in srgb, var(--c-on-stage) 35%, transparent);
+  border-color: color-mix(in srgb, var(--c-on-deep) 35%, transparent);
   background: transparent;
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
 }
 
 .radio-player--stage .btn:where(:not(.btn--primary, .btn--link)):hover:not(:disabled) {
-  border-color: var(--c-on-stage);
-  background: var(--c-on-stage);
-  color: var(--c-stage);
+  border-color: var(--c-on-deep);
+  background: var(--c-on-deep);
+  color: var(--c-deep);
 }
 
 .radio-player--stage .btn--ghost {
@@ -494,23 +499,23 @@
 
 .radio-player--stage .btn--ghost:hover:not(:disabled) {
   border-color: transparent;
-  background: color-mix(in srgb, var(--c-on-stage) 12%, transparent);
-  color: var(--c-on-stage);
+  background: color-mix(in srgb, var(--c-on-deep) 12%, transparent);
+  color: var(--c-on-deep);
 }
 
 .radio-player--stage .field__control {
-  border-color: color-mix(in srgb, var(--c-on-stage) 35%, transparent);
-  background: color-mix(in srgb, var(--c-on-stage) 8%, var(--c-stage));
-  color: var(--c-on-stage);
+  border-color: color-mix(in srgb, var(--c-on-deep) 35%, transparent);
+  background: color-mix(in srgb, var(--c-on-deep) 8%, var(--c-deep));
+  color: var(--c-on-deep);
 }
 
 .radio-player--stage .field__control:hover:not(:disabled) {
-  border-color: var(--c-on-stage);
+  border-color: var(--c-on-deep);
 }
 
 .radio-player--stage .field__control option {
-  background: var(--c-stage);
-  color: var(--c-on-stage);
+  background: var(--c-deep);
+  color: var(--c-on-deep);
 }
 
 .radio-player--stage .field__select::after {
@@ -570,6 +575,7 @@
 .radio-player__turn-text {
   margin: 0;
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.0625rem;
   line-height: 1.7;
   overflow-wrap: anywhere;
@@ -605,6 +611,7 @@
 }
 
 .radio-player__cue-name {
+  font-family: var(--font-mono);
   color: var(--rp-accent);
   font-size: var(--fs-xs);
   font-weight: 700;

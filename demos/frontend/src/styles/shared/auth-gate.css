@@ -34,7 +34,7 @@
 }
 
 .gate-notice__signin:hover {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 /* Same look, a 44 px hit area on touch screens. */
@@ -63,7 +63,7 @@
 .empty.gated-panel {
   max-width: 720px;
   margin-inline: auto;
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
   padding-inline: clamp(var(--sp-4), 4vw, var(--sp-7));
@@ -124,8 +124,8 @@
   min-width: 16.5rem;
   height: var(--tap);
   border: var(--bw) solid var(--c-line);
-  border-radius: var(--r-pill);
-  background: var(--c-info-50);
+  border-radius: var(--r-control);
+  background: var(--c-brand-soft);
   animation: ozradio-skeleton 1.2s var(--ease) infinite alternate;
 }
 
@@ -191,13 +191,13 @@
 }
 
 .live-demo-toggle.is-on {
-  background: var(--c-clay-50);
-  border-color: var(--c-clay);
-  color: var(--c-clay-ink);
+  background: var(--c-brand-soft);
+  border-color: var(--c-brand);
+  color: var(--c-brand);
 }
 
 .live-demo-toggle.is-on:hover:not(:disabled) {
-  background: var(--c-clay);
-  border-color: var(--c-clay);
-  color: var(--c-on-clay);
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+  color: var(--c-on-brand);
 }

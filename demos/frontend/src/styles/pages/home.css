@@ -80,9 +80,10 @@
   margin-bottom: var(--sp-1);
   padding: 2px var(--sp-2);
   border: var(--bw) solid currentColor;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-chip);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   line-height: 1.4;
@@ -95,10 +96,10 @@
 }
 
 .home-episodes .episode-row__kind--lead[data-tone='clay'] {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
-/* Not sage: the audience-level chip already is, and two green pills in a row read as one kind of label. */
+/* Ink, not brand-mid: the audience-level chip may already be brand-mid, and two alike chips in a row read as one label. */
 .home-episodes .episode-row__kind--lead[data-tone='ink'] {
   color: var(--c-ink);
 }
@@ -150,6 +151,7 @@
 
 .home-host__name {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.5rem;
   line-height: 1;
 }
@@ -172,7 +174,7 @@
 .home-departments {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: var(--bw) solid var(--c-rule);
+  border-top: var(--bw) solid var(--c-line);
 }
 
 .home-dept {
@@ -200,7 +202,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .home-dept__kicker svg {
@@ -210,12 +212,13 @@
 
 .home-dept__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.75rem;
   line-height: 1.1;
 }
 
 .home-dept__desc {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   max-width: 34ch;
 }
 
@@ -261,7 +264,7 @@
 }
 
 .home-section--locked .home-dept__kicker {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .home-section--locked .home-dept__desc {
@@ -308,4 +311,9 @@
     padding-left: 0;
     border-left: 0;
   }
+}
+
+/* The site kicker sits close above the title, like a block head on ozgurkarahan.com. */
+.home-hero__kicker {
+  margin-bottom: calc(var(--sp-3) * -1);
 }

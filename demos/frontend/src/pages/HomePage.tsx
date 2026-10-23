@@ -12,6 +12,7 @@ import { markHomeCta } from '../services/telemetry';
 import {
   DemoActionLink, LiveDemoBadge, OWNER_SIGN_IN_HINT, liveSessionsLeft, recordedDemoReason, useDemoEntry, type DemoEntry,
 } from '../components/AuthGate';
+import { VoiceKicker } from '../components/SiteFooter';
 import {
   Alert, Button, ButtonLink, EmptyState, EpisodeList, EpisodeRow, HostDisc, HostsMini, SectionHead, Spinner,
   episodeNumber, formatDuration, humanizeTitle, languageName, loadErrorMessage, pluralize, recordingTitle,
@@ -212,11 +213,13 @@ export default function HomePage() {
     <div className="container page" style={{ paddingTop: 0 }}>
       <section className="home-hero" aria-labelledby="home-title">
         <div className="home-hero__copy">
+          <VoiceKicker className="home-hero__kicker" />
           <h1 id="home-title" className="display home-hero__title">
             Every deck deserves a <em>great host.</em>
           </h1>
           <p className="lead">
-            AI hosts explain slide decks and discuss them as podcasts. Listen, watch, or try the live demo — free, no sign-in.
+            An AI presenter for any deck: it presents live and answers spoken questions, and makes narrated videos and
+            two-host podcasts, in more than ten languages. Listen, watch, or try the live demo — free, no sign-in.
           </p>
           <div className="home-hero__ctas" aria-busy={entry.kind === 'pending' || undefined}>
             <DemoActionLink

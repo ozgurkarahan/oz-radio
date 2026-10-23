@@ -64,7 +64,7 @@ const expectPlayButtons = (row: Locator, testIds: string[]) => expect.poll(
     .evaluateAll((els) => els.map((el) => el.getAttribute('data-testid'))),
 ).toEqual(testIds);
 
-/** A colour token (e.g. `--c-clay`) as the browser computes it for a background. */
+/** A colour token (e.g. `--c-brand`) as the browser computes it for a background. */
 const tokenColour = (page: Page, token: string) => page.evaluate((t) => {
   const probe = document.createElement('span');
   probe.style.backgroundColor = `var(${t})`;
@@ -131,7 +131,7 @@ test.describe('Phones lead with Listen', () => {
   test('Listen is every row\'s primary button and comes first; Watch is the outline alternative', async ({ page }) => {
     const errors = await open(page);
     await expect(page.getByTestId('library-item')).toHaveCount(3);
-    const clay = await tokenColour(page, '--c-clay');
+    const clay = await tokenColour(page, '--c-brand');
 
     for (const title of [VIDEO_TITLE, LEGACY_TITLE]) {
       const row = rowOf(page, title);

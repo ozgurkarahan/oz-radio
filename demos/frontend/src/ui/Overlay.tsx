@@ -140,7 +140,7 @@ export function Modal({
         <button
           type="button"
           className={['btn btn--icon btn--sm modal__close', variant === 'stage' ? 'btn--ghost' : ''].join(' ')}
-          style={variant === 'stage' ? { color: 'var(--c-on-stage)', borderColor: 'transparent' } : undefined}
+          style={variant === 'stage' ? { color: 'var(--c-on-deep)', borderColor: 'transparent' } : undefined}
           aria-label={closeLabel}
           onClick={onClose}
         >

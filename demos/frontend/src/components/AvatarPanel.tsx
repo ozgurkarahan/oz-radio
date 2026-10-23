@@ -1867,7 +1867,7 @@ export default function AvatarPanel({
         {connected ? (
           <span className="avatar-rail__live">
             <Waveform active={avatarSpeaking && !(isDemo && soundBlocked)} />
-            <LivePill>{pillLabel}</LivePill>
+            <LivePill live>{pillLabel}</LivePill>
           </span>
         ) : demoSecondsLeft != null && (
           <span className="avatar-rail__live">

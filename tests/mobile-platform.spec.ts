@@ -123,7 +123,7 @@ test.describe('Teams themes', () => {
       await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
       const colours = await page.evaluate(() => {
         const probe = document.createElement('div');
-        probe.style.background = 'var(--c-bg)';
+        probe.style.background = 'var(--c-canvas)';
         document.body.append(probe);
         const bg = getComputedStyle(probe).backgroundColor;
         probe.remove();

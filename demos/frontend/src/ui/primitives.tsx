@@ -1,7 +1,8 @@
 import React from 'react';
 import { AlertCircle, CheckCircle2, Info, X, type LucideIcon } from 'lucide-react';
 
-export type Tone = 'default' | 'clay' | 'sage' | 'ink' | 'danger';
+/** Chip tones. 'clay' is the brand-indigo emphasis and 'sage' the success mark (names kept from the first palette); 'live' is the amber Live status. */
+export type Tone = 'default' | 'clay' | 'sage' | 'ink' | 'danger' | 'live';
 
 export function Chip({ tone = 'default', icon: Icon, className, children, ...rest }: {
   tone?: Tone; icon?: LucideIcon;
@@ -14,10 +15,13 @@ export function Chip({ tone = 'default', icon: Icon, className, children, ...res
   );
 }
 
-/** Pulsing clay dot + label, e.g. "Live", "Speaking", "On air". */
-export function LivePill({ idle, children, className, ...rest }: { idle?: boolean } & React.HTMLAttributes<HTMLSpanElement>) {
+/**
+ * Pulsing dot + label, e.g. "Speaking", "Playing", a step in progress (brand indigo).
+ * `live` marks the one Live status a visitor can use now (the live avatar): amber, the brand's single accent.
+ */
+export function LivePill({ idle, live, children, className, ...rest }: { idle?: boolean; live?: boolean } & React.HTMLAttributes<HTMLSpanElement>) {
   return (
-    <span className={['live-pill', idle && 'live-pill--idle', className].filter(Boolean).join(' ')} {...rest}>
+    <span className={['live-pill', idle && 'live-pill--idle', live && !idle && 'live-pill--live', className].filter(Boolean).join(' ')} {...rest}>
       {children}
     </span>
   );

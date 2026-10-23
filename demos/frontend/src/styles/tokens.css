@@ -1,115 +1,123 @@
 /*
- * Oz Radio design tokens — "Radio Editorial".
+ * Oz Radio design tokens: the ozgurkarahan.com brand ("Five Building Blocks", indigo ink and one amber accent).
+ * Source of truth: DESIGN.md in ozgurkarahan/ozgurkarahan. Colour tokens carry the site's role names (canvas, surface,
+ * ink, muted, line, brand, brand-soft, brand-mid, accent, accent-text, accent-soft, deep, on-deep, cta, on-cta).
  * Single source of truth for colour, type, space, shape and motion.
  * Components must reference these variables; never hard-code hex values.
+ *
+ * The one amber rule: amber marks the point and nothing else. Here that is the Live status (the live dot and the
+ * "Live demo" chip) of the one thing a visitor can use now; primary actions, active states and progress are brand indigo.
+ * On the deep (dark) ground, indigo marks use --c-brand-on-deep, and a primary action uses --c-cta / --c-on-cta.
  */
 
 /*
  * Metric-matched fallback faces. While a web font loads (font-display: swap) text is set in a local font whose widths and
- * vertical metrics are adjusted to the real font's, so the swap does not re-wrap lines or move the page (lab CLS ≤ 0.1).
- * Measured in Chromium (Windows) against the shipped latin subsets (headings and sentences of the UI at the design sizes):
- *   Newsreader      unitsPerEm 2000, hhea/typo 1470 / -530 / 0   → ascent 0.735 em, descent 0.265 em, line gap 0
- *   Hanken Grotesk  unitsPerEm 1000, hhea/typo 1000 / -303 / 0   → ascent 1.000 em, descent 0.303 em, line gap 0
- *   Newsreader ÷ Georgia width: 0.91 (18 px), 0.93 (30 px), 0.96 (44 px), 0.98 (56 px), 1.01 (72 px); italic ÷ Georgia Italic 0.83 … 0.91.
- *     96 % (roman) and 89 % (italic) give the best title wrapping over 320–1600 px (the Home title and the page titles wrap
- *     like the real font in 97 % of the viewport widths tried; 92 % or 100 % wrap differently far more often).
- *   Hanken Grotesk ÷ Arial width: 1.002 (400), 1.007 (500) → 100.4 %; ÷ Arial Bold 0.941 (600), 0.945 (700) → 94.3 %.
- * ascent/descent-override are relative to the size-adjusted size: override = metric ÷ size-adjust. The line gap is 0 in both.
- * Without a local match (Android has neither Georgia nor Arial) the face is skipped and the stack falls through as before.
+ * vertical metrics are adjusted to the real font's, so the swap does not re-wrap lines or move the page (lab CLS <= 0.1).
+ * Measured with fontTools on the shipped latin subsets (variable instances at the weight in use) against Windows Arial,
+ * over the Home title, section titles and lead sentence:
+ *   Bricolage Grotesque  unitsPerEm 1000, hhea/typo 930 / -270 / 0  -> width / Arial 0.940 (400), / Arial Bold 0.913 (700)
+ *   Public Sans          unitsPerEm 1000, hhea/typo 950 / -225 / 0  -> width / Arial 1.036 (400), / Arial Bold 0.977 (600)
+ * ascent/descent-override are relative to the size-adjusted size: override = metric / size-adjust. The line gap is 0.
+ * Without a local match (Android has no Arial) the face is skipped and the stack falls through to the system font.
  */
 @font-face {
-  font-family: 'Newsreader Fallback';
-  font-style: normal;
-  font-weight: 400;
-  src: local('Georgia'), local('Gelasio');
-  size-adjust: 96%;
-  ascent-override: 76.56%;
-  descent-override: 27.6%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: 'Newsreader Fallback';
-  font-style: italic;
-  font-weight: 400;
-  src: local('Georgia Italic'), local('Georgia-Italic'), local('Gelasio Italic');
-  size-adjust: 89%;
-  ascent-override: 82.58%;
-  descent-override: 29.78%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: 'Hanken Grotesk Fallback';
+  font-family: 'Bricolage Grotesque Fallback';
   font-style: normal;
   font-weight: 100 500;
   src: local('Arial'), local('Helvetica'), local('Arimo'), local('Liberation Sans');
-  size-adjust: 100.4%;
-  ascent-override: 99.6%;
-  descent-override: 30.18%;
+  size-adjust: 94%;
+  ascent-override: 98.94%;
+  descent-override: 28.72%;
   line-gap-override: 0%;
 }
 
 @font-face {
-  font-family: 'Hanken Grotesk Fallback';
+  font-family: 'Bricolage Grotesque Fallback';
   font-style: normal;
   font-weight: 600 900;
   src: local('Arial Bold'), local('Arial-BoldMT'), local('Helvetica Bold'), local('Helvetica-Bold'), local('Arimo Bold'), local('Liberation Sans Bold');
-  size-adjust: 94.3%;
-  ascent-override: 106.04%;
-  descent-override: 32.13%;
+  size-adjust: 91.3%;
+  ascent-override: 101.86%;
+  descent-override: 29.57%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Public Sans Fallback';
+  font-style: normal;
+  font-weight: 100 500;
+  src: local('Arial'), local('Helvetica'), local('Arimo'), local('Liberation Sans');
+  size-adjust: 103.6%;
+  ascent-override: 91.7%;
+  descent-override: 21.72%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Public Sans Fallback';
+  font-style: normal;
+  font-weight: 600 900;
+  src: local('Arial Bold'), local('Arial-BoldMT'), local('Helvetica Bold'), local('Helvetica-Bold'), local('Arimo Bold'), local('Liberation Sans Bold');
+  size-adjust: 97.7%;
+  ascent-override: 97.24%;
+  descent-override: 23.03%;
   line-gap-override: 0%;
 }
 
 :root {
   /* Surfaces */
-  --c-bg: #F6F1E8;          /* cream page */
-  --c-paper: #FBF8F2;       /* raised paper (cards, inputs) */
-  --c-surface: #FFFFFF;     /* slides, media frames */
-  --c-sand: #EADFCF;        /* host-disc / placeholder fill */
-  --c-stage: #1C1917;       /* behind video players */
-  --c-on-stage: #F6F1E8;
+  --c-canvas: #f8f8fb;      /* page ground                     oklch(0.98 0.004 282) */
+  --c-surface: #ffffff;     /* cards, inputs, raised panels */
+  --c-slide: #ffffff;       /* slides and media frames: white in every theme */
+  --c-tint: #e9eaf2;        /* neutral placeholder fill (co-host disc, cover)  oklch(0.935 0.01 282) */
+  --c-deep: #181737;        /* dark field: behind video players, mini-player  oklch(0.225 0.06 282) */
+  --c-on-deep: #f2f3f9;
+  --c-on-deep-muted: #c7c9de;
 
   /* Ink */
-  --c-ink: #1C1917;
-  --c-ink-2: #3B3631;       /* secondary body text */
-  --c-muted: #6B645D;       /* 5.18:1 on bg — AA */
-  --c-line: #E2D9CA;        /* hairlines */
-  --c-line-strong: #CFC3B0; /* input borders, dashed zones */
-  --c-rule: #1C1917;        /* masthead + section rules */
+  --c-ink: #191a2c;         /* text, primary strokes            16.2:1 on canvas */
+  --c-muted: #535568;       /* secondary text                    6.9:1 on canvas */
+  --c-line: #d9dae4;        /* rules, borders; never text */
+  --c-line-strong: #b4b6c7; /* input borders, dashed zones */
 
-  /* Accent */
-  --c-clay: #B8461E;        /* fills: CTA, live, active */
-  --c-clay-ink: #A63D17;    /* small accent text — 5.65:1 on bg */
-  --c-clay-50: #F6E6DC;     /* tinted backgrounds */
-  --c-on-clay: #FFFFFF;     /* 5.34:1 on clay */
-  --c-sage: #3F6F5E;        /* success / secondary accent — 5.12:1 */
-  --c-sage-50: #E4ECE6;
+  /* Brand (indigo): primary actions, active and current states, progress, kickers */
+  --c-brand: #2f2a6b;       /* 11.9:1 on canvas */
+  --c-brand-soft: #eeeffe;  /* brand fills, agent/host fill, hover */
+  --c-brand-mid: #5e5cb3;   /* focus rings, success and "published" marks, 5.5:1 on canvas */
+  --c-on-brand: #f2f3f9;
+  --c-brand-on-deep: #a7a9ef; /* indigo marks on the deep field */
+
+  /* Accent (amber): the point only: the Live status */
+  --c-accent: #b8791a;      /* marks only, never small text */
+  --c-accent-text: #905c16; /* amber text (Live chip), 5.1:1 on accent-soft */
+  --c-accent-soft: #fef2dd;
+  --c-cta: #ecb259;         /* primary action on the deep field */
+  --c-on-cta: #191a2c;
 
   /* Feedback */
-  --c-danger: #9A2B12;
-  --c-danger-50: #FBE7DF;
-  --c-info-50: #EFE9DE;
-  --c-focus: #A63D17;
-  --c-scrim: rgba(28, 25, 23, 0.72);
+  --c-danger: #a3262a;
+  --c-danger-50: #fdeceb;
+  --c-focus: #5e5cb3;
+  --c-scrim: rgba(24, 23, 55, 0.72);
 
   /* Type */
-  --font-display: 'Newsreader Variable', 'Newsreader Fallback', Newsreader, Georgia, 'Times New Roman', serif;
-  --font-ui: 'Hanken Grotesk Variable', 'Hanken Grotesk Fallback', 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --font-display: 'Bricolage Grotesque', 'Bricolage Grotesque Fallback', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: 'Public Sans', 'Public Sans Fallback', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 
-  --fs-display: clamp(2.75rem, 1.6rem + 3.6vw, 5rem);    /* 44 → 80 */
-  --fs-h1: clamp(2rem, 1.45rem + 1.8vw, 3.25rem);         /* 32 → 52 */
-  --fs-h2: clamp(1.625rem, 1.4rem + 0.75vw, 2.125rem);    /* 26 → 34 */
-  --fs-h3: 1.5625rem;    /* 25 */
-  --fs-lead: 1.15625rem; /* 18.5 */
+  --fs-display: clamp(2.5rem, 1.5rem + 3.2vw, 4.5rem);    /* 40 → 72 */
+  --fs-h1: clamp(1.875rem, 1.4rem + 1.6vw, 3rem);         /* 30 → 48 */
+  --fs-h2: clamp(1.5rem, 1.3rem + 0.7vw, 2rem);           /* 24 → 32 */
+  --fs-h3: 1.375rem;     /* 22 */
+  --fs-lead: 1.125rem;   /* 18 */
   --fs-body: 0.9375rem;  /* 15 */
   --fs-sm: 0.8125rem;    /* 13 */
-  --fs-xs: 0.71875rem;   /* 11.5 — eyebrows */
+  --fs-xs: 0.71875rem;   /* 11.5 — eyebrows (IBM Plex Mono) */
   --lh-tight: 1.02;
   --lh-snug: 1.2;
   --lh-body: 1.6;
-  --tracking-eyebrow: 0.16em;
+  --tracking-display: -0.03em;
+  --tracking-eyebrow: 0.1em;
 
   /* Space (4px grid) */
   --sp-1: 4px;
@@ -122,17 +130,18 @@
   --sp-8: 64px;
   --sp-9: 96px;
 
-  /* Shape */
+  /* Shape: rounded, never pills (6px chips, 8px buttons and controls, 12px cards) */
   --r-xs: 2px;
   --r-sm: 4px;
+  --r-chip: 6px;
   --r-md: 8px;
-  --r-lg: 14px;
-  --r-pill: 999px;
+  --r-control: 8px;
+  --r-lg: 12px;
   --bw: 1px;
 
-  /* Elevation — editorial = flat; only overlays lift */
-  --shadow-overlay: 0 24px 60px rgba(28, 25, 23, 0.22);
-  --shadow-media: 0 12px 32px rgba(28, 25, 23, 0.14);
+  /* Elevation — flat; only overlays lift */
+  --shadow-overlay: 0 24px 60px rgba(25, 26, 44, 0.2);
+  --shadow-media: 0 12px 32px rgba(25, 26, 44, 0.12);
 
   /* Motion */
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -150,55 +159,56 @@
   color-scheme: light;
 }
 
-/* Microsoft Teams — dark theme (set by services/teams via data-theme on <html>) */
+/* Microsoft Teams — dark theme (set by services/teams via data-theme on <html>): the site's dark palette. */
 [data-theme='teams-dark'] {
-  --c-bg: #1F1E1D;
-  --c-paper: #292826;
-  --c-surface: #FFFFFF;
-  --c-sand: #3A352F;
-  --c-stage: #0F0E0D;
-  --c-ink: #F3EEE6;
-  --c-ink-2: #DDD5CA;
-  --c-muted: #B9B0A5;
-  --c-line: #3E3B37;
-  --c-line-strong: #5A544D;
-  --c-rule: #F3EEE6;
-  --c-clay: #B8461E;
-  --c-clay-ink: #F2936C;
-  --c-clay-50: #3B2A21;
-  --c-on-clay: #FFFFFF;
-  --c-sage: #8CC0A9;
-  --c-sage-50: #26332D;
-  --c-danger: #FF9C7F;
-  --c-danger-50: #3D211A;
-  --c-info-50: #2E2B27;
-  --c-focus: #F2936C;
+  --c-canvas: #0f0f19;
+  --c-surface: #171825;
+  --c-slide: #ffffff;
+  --c-tint: #23243a;
+  --c-deep: #070715;
+  --c-ink: #ebecf4;
+  --c-muted: #b4b6c7;
+  --c-line: #353647;
+  --c-line-strong: #535568;
+  --c-brand: #a7a9ef;
+  --c-brand-soft: #23233e;
+  --c-brand-mid: #8d8ee0;
+  --c-on-brand: #0f0f19;
+  --c-brand-on-deep: #a7a9ef;
+  --c-accent: #e7ab54;
+  --c-accent-text: #eab35f;
+  --c-accent-soft: #3c2a13;
+  --c-danger: #ff9b8f;
+  --c-danger-50: #3b1d1f;
+  --c-focus: #8d8ee0;
   color-scheme: dark;
 }
 
 /* Microsoft Teams — high contrast */
 [data-theme='teams-contrast'] {
-  --c-bg: #000000;
-  --c-paper: #000000;
-  --c-surface: #FFFFFF;
-  --c-sand: #000000;
-  --c-stage: #000000;
-  --c-on-stage: #FFFFFF;
+  --c-canvas: #000000;
+  --c-surface: #000000;
+  --c-slide: #FFFFFF;
+  --c-tint: #000000;
+  --c-deep: #000000;
+  --c-on-deep: #FFFFFF;
+  --c-on-deep-muted: #FFFFFF;
   --c-ink: #FFFFFF;
-  --c-ink-2: #FFFFFF;
   --c-muted: #FFFFFF;
   --c-line: #FFFFFF;
   --c-line-strong: #FFFFFF;
-  --c-rule: #FFFFFF;
-  --c-clay: #FFFF00;
-  --c-clay-ink: #FFFF00;
-  --c-clay-50: #000000;
-  --c-on-clay: #000000;
-  --c-sage: #3FF23F;
-  --c-sage-50: #000000;
+  --c-brand: #FFFF00;
+  --c-brand-soft: #000000;
+  --c-brand-mid: #3FF23F;
+  --c-on-brand: #000000;
+  --c-brand-on-deep: #FFFF00;
+  --c-accent: #FFFF00;
+  --c-accent-text: #FFFF00;
+  --c-accent-soft: #000000;
+  --c-cta: #FFFF00;
+  --c-on-cta: #000000;
   --c-danger: #FF6B6B;
   --c-danger-50: #000000;
-  --c-info-50: #000000;
   --c-focus: #00FFFF;
   --c-scrim: rgba(0, 0, 0, 0.9);
   color-scheme: dark;
