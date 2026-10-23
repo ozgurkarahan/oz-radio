@@ -208,7 +208,7 @@ export default function DeckPresentPage() {
 
   const accessBadge = !isAdmin && !auth.loading && presentation ? (
     demoMode ? (
-      <LivePill data-testid="live-demo-available">Live avatar demo available</LivePill>
+      <LivePill live data-testid="live-demo-available">Live avatar demo available</LivePill>
     ) : (
       <Chip icon={Eye}>Read-only preview</Chip>
     )

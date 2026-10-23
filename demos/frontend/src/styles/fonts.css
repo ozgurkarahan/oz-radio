@@ -1,64 +1,89 @@
 /*
- * Newsreader, the display face, cut down to what the site uses (the full variable files were 62 % of Home's bytes).
- * Each file keeps the optical-size axis (opsz 6–72, so large titles keep their display shapes) and pins the weight:
- *   - roman 400: every title and heading (preloaded, see vite.config.ts);
- *   - roman 500–700: the few bold display labels, downloaded only where such text is shown;
- *   - italic 400: the italic accents ("great host.", the wordmark's "Radio").
- * Latin and latin-ext subsets with the upstream unicode ranges; Vietnamese and other scripts use the metric-matched
- * 'Newsreader Fallback' (tokens.css). Source: @fontsource-variable/newsreader 5.x (opsz files), SIL OFL 1.1 (OFL.txt).
- * Regenerate: woff2 → ttf (wawoff2), `python -m fontTools.varLib.instancer <in>.ttf wght=400` (or wght=500:700),
- * ttf → woff2 (wawoff2).
+ * The three faces of the ozgurkarahan.com brand, self-hosted (no third-party font request):
+ *   - Bricolage Grotesque (variable 200–800): titles and headings, set at 700 (display, h1, h2) or 600 (h3, h4);
+ *   - Public Sans (variable 100–900): all reading and interface text;
+ *   - IBM Plex Mono 400 and 500: labels and numbers only (eyebrows, chips, counters, episode numbers).
+ * Latin and latin-ext subsets with the upstream unicode ranges; other scripts fall back to the metric-matched faces in
+ * tokens.css, then the system stack. Files and licences are copied from the site (docs/assets/fonts in
+ * ozgurkarahan/ozgurkarahan), SIL Open Font License 1.1: see the OFL-*.txt files beside them.
  */
-@font-face {
-  font-family: 'Newsreader Variable';
-  font-style: normal;
-  font-display: swap;
-  font-weight: 200 499;
-  src: url('../assets/fonts/newsreader-latin-opsz-400-normal.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
 
+/* Bricolage Grotesque, latin-ext */
 @font-face {
-  font-family: 'Newsreader Variable';
+  font-family: 'Bricolage Grotesque';
   font-style: normal;
-  font-display: swap;
-  font-weight: 200 499;
-  src: url('../assets/fonts/newsreader-latin-ext-opsz-400-normal.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-
-@font-face {
-  font-family: 'Newsreader Variable';
-  font-style: normal;
-  font-display: swap;
-  font-weight: 500 800;
-  src: url('../assets/fonts/newsreader-latin-opsz-500-700-normal.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-@font-face {
-  font-family: 'Newsreader Variable';
-  font-style: normal;
-  font-display: swap;
-  font-weight: 500 800;
-  src: url('../assets/fonts/newsreader-latin-ext-opsz-500-700-normal.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-
-@font-face {
-  font-family: 'Newsreader Variable';
-  font-style: italic;
   font-display: swap;
   font-weight: 200 800;
-  src: url('../assets/fonts/newsreader-latin-opsz-400-italic.woff2') format('woff2');
+  src: url('../assets/fonts/bricolage-grotesque-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Bricolage Grotesque, latin (preloaded, see vite.config.ts) */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('../assets/fonts/bricolage-grotesque-latin.woff2') format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* Public Sans, latin-ext */
 @font-face {
-  font-family: 'Newsreader Variable';
-  font-style: italic;
+  font-family: 'Public Sans';
+  font-style: normal;
   font-display: swap;
-  font-weight: 200 800;
-  src: url('../assets/fonts/newsreader-latin-ext-opsz-400-italic.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  font-weight: 100 900;
+  src: url('../assets/fonts/public-sans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Public Sans, latin (preloaded, see vite.config.ts) */
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../assets/fonts/public-sans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* IBM Plex Mono 400, latin-ext */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('../assets/fonts/ibm-plex-mono-400-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* IBM Plex Mono 400, latin */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('../assets/fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* IBM Plex Mono 500, latin-ext */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500 700;
+  src: url('../assets/fonts/ibm-plex-mono-500-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* IBM Plex Mono 500, latin (also serves 600/700 requests, so a bold label never gets a synthetic bold) */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500 700;
+  src: url('../assets/fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }

@@ -1,6 +1,6 @@
 /*
  * Mini-player (playback/MiniPlayer.tsx) — the fixed "Now playing" bar on every route.
- * Tokens only (tokens.css); Teams dark / contrast themes come through --c-stage / --c-on-stage.
+ * Tokens only (tokens.css); Teams dark / contrast themes come through --c-deep / --c-on-deep.
  * --mini-player-h (set on <html> by MiniPlayer) = the bar height above the home-indicator inset.
  */
 
@@ -27,8 +27,8 @@
   left: 0;
   z-index: 45;
   padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
-  background: var(--c-stage);
-  color: var(--c-on-stage);
+  background: var(--c-deep);
+  color: var(--c-on-deep);
   box-shadow: var(--shadow-overlay);
   color-scheme: dark;
 }
@@ -56,7 +56,7 @@
   left: 0;
   height: 2px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--c-on-stage) 16%, transparent);
+  background: color-mix(in srgb, var(--c-on-deep) 16%, transparent);
   pointer-events: none;
 }
 
@@ -64,7 +64,7 @@
   display: block;
   width: 100%;
   height: 100%;
-  background: var(--c-clay);
+  background: var(--c-brand-on-deep);
   transform: scaleX(0);
   transform-origin: left center;
   transition: transform var(--dur-slow) linear;
@@ -95,11 +95,11 @@
 }
 
 .mini-player__open:hover {
-  background: color-mix(in srgb, var(--c-on-stage) 8%, transparent);
+  background: color-mix(in srgb, var(--c-on-deep) 8%, transparent);
 }
 
 .mini-player :focus-visible {
-  outline-color: var(--c-on-stage);
+  outline-color: var(--c-on-deep);
 }
 
 .mini-player__open:focus-visible {
@@ -114,8 +114,8 @@
   height: 40px;
   overflow: hidden;
   border-radius: var(--r-sm);
-  background: var(--c-sand);
-  color: var(--c-clay-ink);
+  background: var(--c-tint);
+  color: var(--c-brand);
 }
 
 .mini-player__thumb img {
@@ -150,7 +150,7 @@
 }
 
 .mini-player__status {
-  color: color-mix(in srgb, var(--c-on-stage) 72%, transparent);
+  color: color-mix(in srgb, var(--c-on-deep) 72%, transparent);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   line-height: var(--lh-snug);
@@ -172,12 +172,12 @@
   /* Extra room from Play/Pause: the destructive action must not be a mis-tap away. */
   margin-left: var(--sp-3);
   border-color: transparent;
-  color: var(--c-on-stage);
+  color: var(--c-on-deep);
 }
 
 .mini-player .mini-player__stop:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--c-on-stage) 12%, transparent);
-  color: var(--c-on-stage);
+  background: color-mix(in srgb, var(--c-on-deep) 12%, transparent);
+  color: var(--c-on-deep);
 }
 
 /* Teams high contrast: a visible edge between the bar and the page. */

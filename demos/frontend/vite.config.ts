@@ -1,10 +1,10 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
-/** The latin subsets the first view needs: body text (Hanken Grotesk) and the display titles (Newsreader roman 400). */
+/** The latin subsets the first view needs: body text (Public Sans) and the display titles (Bricolage Grotesque). */
 const CRITICAL_FONTS = [
-  /^assets\/hanken-grotesk-latin-wght-normal-[\w-]+\.woff2$/,
-  /^assets\/newsreader-latin-opsz-400-normal-[\w-]+\.woff2$/,
+  /^assets\/public-sans-latin-(?!ext-)[\w-]+\.woff2$/,
+  /^assets\/bricolage-grotesque-latin-(?!ext-)[\w-]+\.woff2$/,
 ];
 
 /**

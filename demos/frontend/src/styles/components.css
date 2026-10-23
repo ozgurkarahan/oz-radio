@@ -13,7 +13,7 @@
   min-height: var(--btn-h);
   padding: 0 20px;
   border: var(--bw) solid var(--c-ink);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-control);
   background: transparent;
   color: var(--c-ink);
   font-family: var(--font-ui);
@@ -34,7 +34,7 @@
 
 .btn:hover:not(:disabled) {
   background: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
 }
 
 .btn:disabled,
@@ -43,15 +43,32 @@
 }
 
 .btn--primary {
-  background: var(--c-clay);
-  border-color: var(--c-clay);
-  color: var(--c-on-clay);
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+  color: var(--c-on-brand);
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: var(--c-clay-ink);
-  border-color: var(--c-clay-ink);
-  color: var(--c-on-clay);
+  background: var(--c-ink);
+  border-color: var(--c-ink);
+  color: var(--c-canvas);
+}
+
+/* The primary action on the deep (dark) field: the site's amber CTA, its label always --c-on-cta (9:1). */
+.stage .btn--primary,
+.radio-player--stage .btn--primary,
+.mini-player .btn--primary {
+  background: var(--c-cta);
+  border-color: var(--c-cta);
+  color: var(--c-on-cta);
+}
+
+.stage .btn--primary:hover:not(:disabled),
+.radio-player--stage .btn--primary:hover:not(:disabled),
+.mini-player .btn--primary:hover:not(:disabled) {
+  background: var(--c-on-deep);
+  border-color: var(--c-on-deep);
+  color: var(--c-on-cta);
 }
 
 .btn--ghost {
@@ -59,7 +76,7 @@
 }
 
 .btn--ghost:hover:not(:disabled) {
-  background: var(--c-info-50);
+  background: var(--c-brand-soft);
   color: var(--c-ink);
 }
 
@@ -111,7 +128,7 @@
 
 .btn--link:hover:not(:disabled) {
   background: transparent;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 @media (pointer: coarse) {
@@ -128,11 +145,12 @@
   min-height: 26px;
   padding: 0 10px;
   border: var(--bw) solid var(--c-line-strong);
-  border-radius: var(--r-pill);
-  background: var(--c-paper);
-  color: var(--c-ink-2);
+  border-radius: var(--r-chip);
+  background: var(--c-surface);
+  color: var(--c-muted);
+  font-family: var(--font-mono);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
@@ -143,21 +161,28 @@
 }
 
 .chip--clay {
-  background: var(--c-clay-50);
+  background: var(--c-brand-soft);
   border-color: transparent;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
+}
+
+/* Live status: the one amber mark (the thing a visitor can use now). */
+.chip--live {
+  background: var(--c-accent-soft);
+  border-color: var(--c-accent);
+  color: var(--c-accent-text);
 }
 
 .chip--sage {
-  background: var(--c-sage-50);
+  background: var(--c-brand-soft);
   border-color: transparent;
-  color: var(--c-sage);
+  color: var(--c-brand-mid);
 }
 
 .chip--ink {
   background: var(--c-ink);
   border-color: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
 }
 
 .chip--danger {
@@ -174,20 +199,21 @@
 }
 
 .episode-row__level[data-level='beginner'] {
-  color: var(--c-sage);
+  color: var(--c-brand-mid);
 }
 
 .episode-row__level[data-level='expert'] {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .live-pill {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
+  font-family: var(--font-mono);
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 500;
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
@@ -197,9 +223,19 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--c-clay);
+  background: var(--c-brand);
   /* Decorative: a few beats, then a steady dot. */
   animation: ozradio-pulse 1.4s ease-in-out 3;
+}
+
+/* The Live status: amber text and dot with its soft halo (the site's live dot), the brand's one accent. */
+.live-pill--live {
+  color: var(--c-accent-text);
+}
+
+.live-pill--live::before {
+  background: var(--c-accent);
+  box-shadow: 0 0 0 3px var(--c-accent-soft);
 }
 
 .live-pill--idle {
@@ -240,7 +276,7 @@
 }
 
 .page-header__lead {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   max-width: var(--maxw-text);
   font-size: 1.0625rem;
 }
@@ -279,7 +315,7 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: var(--fs-sm);
   font-weight: 500;
   text-decoration: none;
@@ -293,7 +329,7 @@
 }
 
 .back-link:hover {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .back-link svg {
@@ -303,7 +339,7 @@
 
 /* ---------- Surfaces ---------- */
 .card {
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
   padding: var(--sp-5);
@@ -316,7 +352,7 @@
 
 .rule {
   border: 0;
-  border-top: var(--bw) solid var(--c-rule);
+  border-top: var(--bw) solid var(--c-line);
 }
 
 .hairline {
@@ -325,7 +361,7 @@
 }
 
 .media-frame {
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-sm);
   padding: var(--sp-3);
@@ -334,7 +370,7 @@
 .media-frame__screen {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: var(--c-surface);
+  background: var(--c-slide);
   border: var(--bw) solid var(--c-line);
   overflow: hidden;
 }
@@ -349,8 +385,8 @@
 }
 
 .stage {
-  background: var(--c-stage);
-  color: var(--c-on-stage);
+  background: var(--c-deep);
+  color: var(--c-on-deep);
   border-radius: var(--r-md);
   overflow: hidden;
 }
@@ -358,7 +394,7 @@
 /* Keyboard focus on a dark surface: the light on-stage ring (≥ 15:1), not the clay one (2.75:1 on the stage colour). */
 .stage:focus-visible,
 .stage :focus-visible {
-  outline-color: var(--c-on-stage);
+  outline-color: var(--c-on-deep);
 }
 
 /* ---------- Alerts, toasts, empty states ---------- */
@@ -369,7 +405,7 @@
   padding: var(--sp-3) var(--sp-4);
   border: var(--bw) solid var(--c-line-strong);
   border-radius: var(--r-md);
-  background: var(--c-info-50);
+  background: var(--c-brand-soft);
   color: var(--c-ink);
   font-size: var(--fs-sm);
   line-height: 1.5;
@@ -389,15 +425,15 @@
 }
 
 .alert--success {
-  background: var(--c-sage-50);
-  border-color: var(--c-sage);
-  color: var(--c-sage);
+  background: var(--c-brand-soft);
+  border-color: var(--c-brand-mid);
+  color: var(--c-brand-mid);
 }
 
 .alert--clay {
-  background: var(--c-clay-50);
-  border-color: var(--c-clay);
-  color: var(--c-clay-ink);
+  background: var(--c-brand-soft);
+  border-color: var(--c-brand);
+  color: var(--c-brand);
 }
 
 .empty {
@@ -417,12 +453,13 @@
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: var(--c-sand);
-  color: var(--c-ink-2);
+  background: var(--c-tint);
+  color: var(--c-muted);
 }
 
 .empty__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.75rem;
 }
 
@@ -447,19 +484,19 @@
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
   border-radius: var(--r-md);
   background: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
   box-shadow: var(--shadow-overlay);
   font-size: var(--fs-sm);
 }
 
 .toast .btn {
   border-color: transparent;
-  color: var(--c-bg);
+  color: var(--c-canvas);
 }
 
 .toast .btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.12);
-  color: var(--c-bg);
+  color: var(--c-canvas);
 }
 
 /* ---------- Spinner, progress, segments, waveform ---------- */
@@ -467,7 +504,7 @@
   width: 18px;
   height: 18px;
   border: 2px solid var(--c-line-strong);
-  border-top-color: var(--c-clay);
+  border-top-color: var(--c-brand);
   border-radius: 50%;
   animation: ozradio-spin 0.8s linear infinite;
 }
@@ -488,7 +525,7 @@
 .progress__bar {
   position: absolute;
   inset: 0;
-  background: var(--c-clay);
+  background: var(--c-brand);
   transform-origin: left center;
   transform: scaleX(var(--progress, 0));
   transition: transform var(--dur-slow) var(--ease);
@@ -512,7 +549,7 @@
 }
 
 .segments > span.is-current {
-  background: var(--c-clay);
+  background: var(--c-brand);
 }
 
 .waveform {
@@ -526,7 +563,7 @@
   width: 3px;
   height: 100%;
   border-radius: 2px;
-  background: var(--c-clay);
+  background: var(--c-brand);
   transform-origin: center;
   animation: ozradio-wave 1s ease-in-out infinite;
 }
@@ -561,20 +598,20 @@
   inset: 0;
   border-radius: 50%;
   overflow: hidden;
-  background: var(--c-sage-50);
+  background: var(--c-brand-soft);
 }
 
 .host-disc--sand .host-disc__face {
-  background: var(--c-sand);
+  background: var(--c-tint);
 }
 
 /* Reads as loading, not blank, until the keyed portrait arrives. */
 .host-disc[data-avatar-status='pending'] .host-disc__face {
-  background: color-mix(in srgb, var(--c-sage) 22%, var(--c-sage-50));
+  background: color-mix(in srgb, var(--c-brand-mid) 22%, var(--c-brand-soft));
 }
 
 .host-disc--sand[data-avatar-status='pending'] .host-disc__face {
-  background: color-mix(in srgb, var(--c-clay) 16%, var(--c-sand));
+  background: color-mix(in srgb, var(--c-brand) 16%, var(--c-tint));
 }
 
 .host-disc__face img {
@@ -599,19 +636,20 @@
   display: grid;
   place-items: center;
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: calc(var(--disc) * 0.42);
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .host-disc--speaking .host-disc__face {
-  outline: 2px solid var(--c-clay);
+  outline: 2px solid var(--c-brand);
   outline-offset: max(3px, calc(var(--disc) * 0.03));
 }
 
 .host-disc__ring {
   position: absolute;
   inset: calc(var(--disc) * -0.1);
-  border: 2px dashed var(--c-clay);
+  border: 2px dashed var(--c-brand);
   border-radius: 50%;
   opacity: 0.5;
   animation: ozradio-spin 40s linear 3;
@@ -632,7 +670,7 @@
 }
 
 .hosts-mini .host-disc__face {
-  box-shadow: 0 0 0 2px var(--c-bg);
+  box-shadow: 0 0 0 2px var(--c-canvas);
 }
 
 .hosts-mini .host-disc__monogram {
@@ -658,11 +696,12 @@
 }
 
 .episode-row:hover {
-  background: var(--c-paper);
+  background: var(--c-surface);
 }
 
 .episode-row__num {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.625rem;
   color: var(--c-muted);
   font-variant-numeric: tabular-nums;
@@ -679,6 +718,7 @@
   background: none;
   text-align: left;
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.5rem;
   line-height: 1.15;
   color: var(--c-ink);
@@ -715,7 +755,7 @@
   gap: 8px;
   font-size: var(--fs-sm);
   font-weight: 500;
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .episode-row__kind svg {
@@ -808,7 +848,7 @@
   right: 0;
   bottom: -1px;
   height: 2px;
-  background: var(--c-clay);
+  background: var(--c-brand);
 }
 
 /* ---------- Form fields ---------- */
@@ -822,7 +862,7 @@
 .field__label {
   font-size: var(--fs-sm);
   font-weight: 600;
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .field__hint {
@@ -841,7 +881,7 @@
   padding: 0 14px;
   border: var(--bw) solid var(--c-line-strong);
   border-radius: var(--r-md);
-  background: var(--c-paper);
+  background: var(--c-surface);
   color: var(--c-ink);
   font-size: var(--fs-body);
   transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
@@ -925,17 +965,17 @@ textarea.field__control {
   gap: var(--sp-2);
   min-height: 32px;
   font-size: var(--fs-sm);
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }
 
 .checkbox input {
   width: 18px;
   height: 18px;
-  accent-color: var(--c-clay);
+  accent-color: var(--c-brand);
 }
 
 input[type='range'] {
-  accent-color: var(--c-clay);
+  accent-color: var(--c-brand);
 }
 
 /* ---------- Dropzone ---------- */
@@ -948,7 +988,7 @@ input[type='range'] {
   padding: var(--sp-7) var(--sp-5);
   border: 1.5px dashed var(--c-line-strong);
   border-radius: var(--r-lg);
-  background: var(--c-paper);
+  background: var(--c-surface);
   color: var(--c-ink);
   text-align: center;
   transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
@@ -956,8 +996,8 @@ input[type='range'] {
 
 .dropzone:hover,
 .dropzone.is-dragover {
-  border-color: var(--c-clay);
-  background: var(--c-clay-50);
+  border-color: var(--c-brand);
+  background: var(--c-brand-soft);
 }
 
 .dropzone.is-busy {
@@ -971,13 +1011,14 @@ input[type='range'] {
   height: 52px;
   margin-bottom: var(--sp-2);
   border-radius: 50%;
-  background: var(--c-bg);
+  background: var(--c-canvas);
   border: var(--bw) solid var(--c-line);
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .dropzone__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.5rem;
 }
 
@@ -1021,15 +1062,15 @@ input[type='range'] {
 }
 
 .steps__item.is-active .steps__num {
-  background: var(--c-clay);
-  border-color: var(--c-clay);
-  color: var(--c-on-clay);
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+  color: var(--c-on-brand);
 }
 
 .steps__item.is-done .steps__num {
   background: var(--c-ink);
   border-color: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
 }
 
 /* ---------- Modal ---------- */
@@ -1056,7 +1097,7 @@ input[type='range'] {
   /* 100%: never spill into the modal's safe-area padding on short (landscape) screens. */
   max-height: min(92dvh, 100%);
   overflow: auto;
-  background: var(--c-bg);
+  background: var(--c-canvas);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-overlay);
 }
@@ -1066,8 +1107,8 @@ input[type='range'] {
 }
 
 .modal__panel.stage {
-  background: var(--c-stage);
-  color: var(--c-on-stage);
+  background: var(--c-deep);
+  color: var(--c-on-deep);
 }
 
 .modal__close {
@@ -1087,7 +1128,7 @@ input[type='range'] {
   z-index: 60;
   min-width: 240px;
   padding: var(--sp-2);
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-overlay);
@@ -1110,7 +1151,7 @@ input[type='range'] {
 
 .menu__item:hover,
 .menu__item:focus-visible {
-  background: var(--c-info-50);
+  background: var(--c-brand-soft);
   color: var(--c-ink);
 }
 
@@ -1118,7 +1159,7 @@ input[type='range'] {
   width: 18px;
   height: 18px;
   margin-top: 2px;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .menu__item small {
@@ -1136,12 +1177,14 @@ input[type='range'] {
   justify-content: center;
   gap: var(--sp-3);
   padding: 6% 8%;
-  color: #1C1917;
+  /* Slides are white in every theme, so the slide text keeps the light-theme ink. */
+  color: #191a2c;
   overflow: auto;
 }
 
 .slide-text__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: clamp(1.5rem, 1rem + 2vw, 2.75rem);
   line-height: 1.08;
 }
@@ -1149,7 +1192,7 @@ input[type='range'] {
 .slide-text__body {
   font-size: clamp(0.875rem, 0.8rem + 0.4vw, 1.125rem);
   line-height: 1.55;
-  color: #3B3631;
+  color: #535568;
   white-space: pre-line;
 }
 
@@ -1160,5 +1203,5 @@ input[type='range'] {
   font-size: var(--fs-xs);
   letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
-  color: #6B645D;
+  color: #535568;
 }

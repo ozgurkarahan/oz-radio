@@ -1,6 +1,5 @@
 /* Global style entry — imported once from main.tsx. */
 @import './fonts.css';
-@import '@fontsource-variable/hanken-grotesk/wght.css';
 @import './tokens.css';
 @import './base.css';
 @import './components.css';
@@ -50,12 +49,13 @@
 
 .crash__brand {
   font-family: var(--font-display);
-  font-size: 1.875rem;
+  font-size: 1.75rem;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 
 .crash__brand em {
-  font-style: italic;
-  color: var(--c-clay-ink);
+  font-style: normal;
+  color: var(--c-brand);
 }

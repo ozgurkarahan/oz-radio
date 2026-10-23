@@ -6,9 +6,9 @@
   width: 100%;
   margin-bottom: var(--sp-5);
   padding: var(--sp-4) var(--sp-5);
-  border: var(--bw) solid var(--c-clay-50);
+  border: var(--bw) solid var(--c-brand-soft);
   border-radius: var(--r-lg);
-  background: var(--c-clay-50);
+  background: var(--c-brand-soft);
   color: var(--c-ink);
   text-align: left;
   text-decoration: none;
@@ -16,7 +16,7 @@
 }
 
 .decks-demo:hover {
-  border-color: var(--c-clay);
+  border-color: var(--c-brand);
   color: var(--c-ink);
 }
 
@@ -29,7 +29,7 @@
 .decks-demo--pending {
   min-height: 7.5rem;
   border-color: var(--c-line);
-  background: var(--c-info-50);
+  background: var(--c-brand-soft);
   animation: ozradio-skeleton 1.2s var(--ease) infinite alternate;
 }
 
@@ -48,22 +48,24 @@
 
 .decks-demo__title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.625rem;
   line-height: 1.15;
 }
 
 .decks-demo__text {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: var(--fs-sm);
 }
 
 .decks-demo__text em {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.0625rem;
 }
 
 .decks-demo__quota {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
@@ -72,7 +74,7 @@
   flex: none;
   width: 22px;
   height: 22px;
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
   transition: transform var(--dur) var(--ease);
 }
 
@@ -120,7 +122,7 @@
 }
 
 .decks-tag {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .decks-toggles {

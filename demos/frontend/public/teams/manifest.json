@@ -21,7 +21,7 @@
     "color": "color.png",
     "outline": "outline.png"
   },
-  "accentColor": "#003366",
+  "accentColor": "#2f2a6b",
   "staticTabs": [
     {
       "entityId": "presenter",

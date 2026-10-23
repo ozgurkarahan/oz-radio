@@ -34,22 +34,22 @@
 .player-debug .player-debug__toggle:hover:not(:disabled) {
   border-color: var(--c-ink);
   background: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
   box-shadow: var(--shadow-media);
 }
 
 .player-debug .player-debug__toggle[aria-expanded='true'],
 .player-debug .player-debug__toggle[aria-expanded='true']:hover:not(:disabled) {
-  border-color: var(--c-clay);
-  background: var(--c-clay);
-  color: var(--c-on-clay);
+  border-color: var(--c-brand);
+  background: var(--c-brand);
+  color: var(--c-on-brand);
 }
 
 .player-debug__badge {
   min-width: 2.25em;
   padding: 0 var(--sp-1);
-  border-radius: var(--r-pill);
-  background: var(--c-bg);
+  border-radius: var(--r-control);
+  background: var(--c-canvas);
   color: var(--c-ink);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -70,7 +70,7 @@
   padding: var(--sp-4);
   border: var(--bw) solid var(--c-line-strong);
   border-radius: var(--r-lg);
-  background: var(--c-paper);
+  background: var(--c-surface);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -110,7 +110,7 @@
   padding: var(--sp-2);
   border: var(--bw) dashed var(--c-line-strong);
   border-radius: var(--r-sm);
-  background: var(--c-bg);
+  background: var(--c-canvas);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   white-space: pre-wrap;
@@ -140,7 +140,7 @@
 
 /* A page load starts with a session entry: the heavier rule separates loads (newest first). */
 .player-debug__entry[data-kind='session'] {
-  border-bottom: 2px solid var(--c-rule);
+  border-bottom: 2px solid var(--c-line);
 }
 
 .player-debug__line {
@@ -157,7 +157,7 @@
 }
 
 .player-debug__kind {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
   font-weight: 700;
 }
 
@@ -169,5 +169,5 @@
 }
 
 .player-debug__detail {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
 }

@@ -57,7 +57,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .presenter-settings__label svg {
@@ -212,6 +212,7 @@
   border: var(--bw) solid var(--c-line-strong);
   border-radius: 50%;
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 0.9375rem;
   font-variant-numeric: tabular-nums;
   transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -238,21 +239,21 @@
 .pp-step.is-done .pp-step__num {
   background: var(--c-ink);
   border-color: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
 }
 
 .pp-step.is-active {
-  border-top-color: var(--c-clay);
+  border-top-color: var(--c-brand);
 }
 
 .pp-step.is-active .pp-step__num {
-  background: var(--c-clay);
-  border-color: var(--c-clay);
-  color: var(--c-on-clay);
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+  color: var(--c-on-brand);
 }
 
 .pp-step.is-active .eyebrow {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
 }
 
 .pp-start {
@@ -264,7 +265,7 @@
   padding: var(--sp-5) var(--sp-6);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
-  background: var(--c-paper);
+  background: var(--c-surface);
 }
 
 .pp-start__text {

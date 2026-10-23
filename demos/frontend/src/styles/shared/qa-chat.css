@@ -26,6 +26,7 @@
   padding: var(--sp-4) 0;
   color: var(--c-muted);
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.0625rem;
   line-height: 1.45;
 }
@@ -43,13 +44,13 @@
 .qa-chat__msg--user {
   align-self: flex-end;
   background: var(--c-ink);
-  color: var(--c-bg);
+  color: var(--c-canvas);
   border-bottom-right-radius: var(--r-xs);
 }
 
 .qa-chat__msg--assistant {
   align-self: flex-start;
-  background: var(--c-paper);
+  background: var(--c-surface);
   color: var(--c-ink);
   border: var(--bw) solid var(--c-line);
   border-bottom-left-radius: var(--r-xs);
@@ -68,6 +69,6 @@
 .qa-chat__form .field__control {
   flex: 1;
   min-width: 0;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-control);
   padding-inline: 18px;
 }

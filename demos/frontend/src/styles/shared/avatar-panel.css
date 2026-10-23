@@ -41,7 +41,7 @@
 }
 
 .avatar-rail.is-speaking .avatar-rail__stage {
-  outline-color: var(--c-clay);
+  outline-color: var(--c-brand);
 }
 
 .avatar-rail__video {
@@ -66,7 +66,7 @@
   justify-content: center;
   gap: clamp(4px, 3cqh, var(--sp-3));
   padding: var(--sp-3);
-  background: var(--c-sand);
+  background: var(--c-tint);
   color: var(--c-ink);
   text-align: center;
 }
@@ -84,12 +84,13 @@
 .avatar-rail__idle-name {
   margin-top: clamp(2px, 2cqh, var(--sp-2));
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: clamp(1.0625rem, 9cqh, 1.75rem);
   line-height: 1.1;
 }
 
 .avatar-rail__idle-line {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: var(--fs-sm);
   line-height: 1.3;
 }
@@ -115,6 +116,7 @@
 
 .avatar-rail__name {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.5rem;
   line-height: 1.1;
 }
@@ -189,7 +191,7 @@
 }
 
 .avatar-rail__status {
-  color: var(--c-ink-2);
+  color: var(--c-muted);
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
@@ -228,7 +230,7 @@
 }
 
 .raise-hand__state {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
@@ -242,7 +244,7 @@
 .raise-hand__meter {
   position: relative;
   height: 6px;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-control);
   background: var(--c-line);
   overflow: hidden;
 }
@@ -250,7 +252,7 @@
 .raise-hand__meter > span {
   position: absolute;
   inset: 0;
-  background: var(--c-clay);
+  background: var(--c-brand);
   transform-origin: left center;
   transform: scaleX(var(--level, 0));
   transition: transform var(--dur-fast) linear;
@@ -264,7 +266,7 @@
   margin: 0;
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
-  background: var(--c-paper);
+  background: var(--c-surface);
   border: var(--bw) solid var(--c-line);
   color: var(--c-ink);
   font-size: var(--fs-sm);
@@ -325,7 +327,7 @@
 }
 
 .avatar-rail__warning {
-  color: var(--c-clay-ink);
+  color: var(--c-brand);
   font-weight: 600;
 }
 
@@ -360,7 +362,7 @@
 
 .live-captions__text:not(:empty) {
   border-color: var(--c-line);
-  background: var(--c-paper);
+  background: var(--c-surface);
 }
 
 .avatar-rail__sound {
@@ -370,8 +372,8 @@
   gap: var(--sp-2) var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
-  background: var(--c-clay-50);
-  color: var(--c-clay-ink);
+  background: var(--c-brand-soft);
+  color: var(--c-brand);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
@@ -384,12 +386,13 @@
   padding: var(--sp-3);
   border: var(--bw) solid var(--c-line);
   border-radius: var(--r-md);
-  background: var(--c-paper);
+  background: var(--c-surface);
 }
 
 .demo-done__title {
   margin: 0;
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.125rem;
   line-height: 1.2;
 }
@@ -495,8 +498,8 @@
       max(var(--gutter), env(safe-area-inset-right, 0px))
       calc(var(--sp-2) + env(safe-area-inset-bottom, 0px))
       max(var(--gutter), env(safe-area-inset-left, 0px));
-    background: var(--c-bg);
-    border-top: var(--bw) solid var(--c-rule);
+    background: var(--c-canvas);
+    border-top: var(--bw) solid var(--c-line);
   }
 
   /* A long answer scrolls inside its own box and gives way before the controls do: they stay on screen. */

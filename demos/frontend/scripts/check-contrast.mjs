@@ -26,14 +26,15 @@ const ratio = (a, b) => {
   return (x + 0.05) / (y + 0.05);
 };
 
-// [foreground, background] pairs used for text in the UI.
+// [foreground, background] pairs used for text in the UI (token names as in tokens.css, the ozgurkarahan.com roles).
 const PAIRS = [
-  ['c-ink', 'c-bg'], ['c-ink', 'c-paper'], ['c-ink-2', 'c-bg'], ['c-ink-2', 'c-paper'],
-  ['c-muted', 'c-bg'], ['c-muted', 'c-paper'],
-  ['c-clay-ink', 'c-bg'], ['c-clay-ink', 'c-paper'], ['c-clay-ink', 'c-clay-50'],
-  ['c-on-clay', 'c-clay'], ['c-sage', 'c-bg'], ['c-sage', 'c-sage-50'],
-  ['c-danger', 'c-danger-50'], ['c-danger', 'c-bg'], ['c-ink', 'c-info-50'], ['c-bg', 'c-ink'],
-  ['c-on-stage', 'c-stage'],
+  ['c-ink', 'c-canvas'], ['c-ink', 'c-surface'], ['c-ink', 'c-brand-soft'], ['c-ink', 'c-tint'],
+  ['c-muted', 'c-canvas'], ['c-muted', 'c-surface'], ['c-muted', 'c-tint'],
+  ['c-brand', 'c-canvas'], ['c-brand', 'c-surface'], ['c-brand', 'c-brand-soft'],
+  ['c-on-brand', 'c-brand'], ['c-brand-mid', 'c-canvas'], ['c-brand-mid', 'c-brand-soft'],
+  ['c-accent-text', 'c-canvas'], ['c-accent-text', 'c-surface'], ['c-accent-text', 'c-accent-soft'],
+  ['c-danger', 'c-danger-50'], ['c-danger', 'c-canvas'], ['c-canvas', 'c-ink'],
+  ['c-on-deep', 'c-deep'], ['c-on-deep-muted', 'c-deep'], ['c-brand-on-deep', 'c-deep'], ['c-on-cta', 'c-cta'],
 ];
 
 const base = block(':root');

@@ -125,7 +125,7 @@ test.describe('static shell and failed bundle', () => {
       await openShell(page);
       const motion = await inspect();
       expect(motion.animation).not.toBe('none');
-      for (const family of motion.fonts) expect(family).not.toMatch(/Newsreader|Hanken/);
+      for (const family of motion.fonts) expect(family).not.toMatch(/Bricolage|Public Sans|IBM Plex/);
 
       await page.emulateMedia({ reducedMotion: 'reduce' });
       expect((await inspect()).animation).toBe('none');
@@ -553,7 +553,7 @@ test.describe('layout stability on a phone', () => {
     await page.goto('/');
     await appRendered(page);
     await expect(page.locator('#main h1').first()).toBeVisible();
-    await page.waitForFunction(() => document.fonts.check('44px "Newsreader Variable"') && document.fonts.check('16px "Hanken Grotesk Variable"'), null, { timeout: 20_000 });
+    await page.waitForFunction(() => document.fonts.check('700 44px "Bricolage Grotesque"') && document.fonts.check('16px "Public Sans"'), null, { timeout: 20_000 });
     await page.waitForLoadState('networkidle');
     await page.waitForTimeout(600);
 
@@ -593,20 +593,20 @@ test.describe('layout stability on a phone', () => {
     await expect(title).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
 
-    // The fallback faces are local fonts: without Georgia (a Linux runner) there is nothing to compare.
+    // The fallback faces are local fonts: without Arial (a Linux runner) there is nothing to compare.
     const fallbackLoaded = await page.evaluate(async () => {
-      const faces = [...document.fonts].filter((face) => face.family.includes('Newsreader Fallback'));
+      const faces = [...document.fonts].filter((face) => face.family.includes('Bricolage Grotesque Fallback'));
       await Promise.allSettled(faces.map((face) => face.load()));
       return faces.length > 0 && faces.every((face) => face.status === 'loaded');
     });
-    test.skip(!fallbackLoaded, 'Georgia is not installed on this machine, so the Newsreader fallback face has no local font to adjust');
+    test.skip(!fallbackLoaded, 'Arial Bold is not installed on this machine, so the Bricolage Grotesque fallback face has no local font to adjust');
 
     const heights = async (width: number) => {
       await page.setViewportSize({ width, height: 915 });
       return title.evaluate((h1: HTMLElement) => {
         const web = h1.getBoundingClientRect().height;
         const original = h1.style.fontFamily;
-        h1.style.fontFamily = "'Newsreader Fallback'";
+        h1.style.fontFamily = "'Bricolage Grotesque Fallback'";
         const fallback = h1.getBoundingClientRect().height;
         h1.style.fontFamily = original;
         return { web, fallback };
